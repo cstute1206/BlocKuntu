@@ -1,0 +1,13 @@
+target/
+src-tauri/target/
+
+node_modules/
+app/dist/
+dist/
+
+.DS_Store
+*.log
+*.tmp
+
+focus-hosts.yml
+focus-hosts.local.yml

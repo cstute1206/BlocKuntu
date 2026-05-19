@@ -1,0 +1,36 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "BlocKuntu",
+  "version": "0.1.0",
+  "identifier": "com.astutecouch.blockuntu",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../app/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Focus Control",
+        "label": "main",
+        "width": 1536,
+        "height": 980,
+        "minWidth": 1000,
+        "minHeight": 720,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Local focus blocker dashboard",
+    "longDescription": "BlocKuntu is a Tauri dashboard for focus-hosts."
+  }
+}

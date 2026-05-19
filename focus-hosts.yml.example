@@ -1,0 +1,94 @@
+tier1:
+  - twitch.tv
+  - www.twitch.tv
+  - facebook.com
+  - www.facebook.com
+  - hqporner.com
+  - www.hqporner.com
+  - noodlemagazine.com
+  - www.bild.de
+  - bild.de
+  - pr0gramm.com
+  - www.pr0gramm.com
+  - 9gag.com
+  - www.9gag.com
+  - www.x.com
+  - x.com
+
+tier2:
+  reddit:
+    domains:
+      - reddit.com
+      - www.reddit.com
+      - old.reddit.com
+    example_url: https://old.reddit.com/r/rust/
+    default_minutes: 2
+    max_minutes: 2
+    cooldown_seconds: 0
+
+  xcancel:
+    domains:
+      - xcancel.com
+    example_url: https://xcancel.com/
+    default_minutes: 2
+    max_minutes: 2
+    cooldown_seconds: 0
+
+  instagram:
+    domains:
+      - instagram.com
+      - www.instagram.com
+    example_url: https://www.instagram.com/
+    default_minutes: 2
+    max_minutes: 2
+    cooldown_seconds: 0
+
+  tiktok:
+    domains:
+      - tiktok.com
+      - www.tiktok.com
+    example_url: https://www.tiktok.com/@example
+    default_minutes: 2
+    max_minutes: 2
+    cooldown_seconds: 0
+  
+  youtube:
+    domains:
+      - www.youtube.com
+      - youtube.com
+    example_url: https://www.youtube.com/watch?v=fLdSLs09Dk8
+    default_minutes: 2
+    max_minutes: 2
+    cooldown_seconds: 60
+
+allowances:
+  reddit:
+    daily_minutes: 10
+    max_session_minutes: 2
+  youtube:
+    daily_minutes: 15
+    max_session_minutes: 5
+
+schedules:
+  workday:
+    days: [mon, tue, wed, thu, fri]
+    start: "09:00"
+    end: "17:30"
+    tier1_extra:
+      - youtube
+    tier2_enabled: true
+
+  evening_shutdown:
+    days: [sun, mon, tue, wed, thu]
+    start: "23:00"
+    end: "06:00"
+    mode: strict
+    tier1_extra:
+      - youtube
+
+settings:
+  hosts_path: /etc/hosts
+  log_path: ~/.local/state/focus-hosts/access.jsonl
+  state_path: /run/focus-hosts/open.json
+  open_limit_per_hour: 2
+  redirect_ip: 0.0.0.0
