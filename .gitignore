@@ -1,5 +1,6 @@
 target/
 src-tauri/target/
+debug
 
 node_modules/
 app/dist/
@@ -8,6 +9,12 @@ dist/
 .DS_Store
 *.log
 *.tmp
+*.pdb
+**/*.rs.bk
+**/mutants.out*/
 
 focus-hosts.yml
 focus-hosts.local.yml
+
+# RustRover / JetBrains project files can be ignored locally if needed.
+#.idea/
