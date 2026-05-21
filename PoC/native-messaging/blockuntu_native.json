@@ -1,0 +1,7 @@
+{
+  "name": "blockuntu_native",
+  "description": "BlocKuntu PoC Firefox Native Messaging host",
+  "path": "/usr/local/bin/blockuntu-native",
+  "type": "stdio",
+  "allowed_extensions": ["blockuntu-poc@example.local"]
+}

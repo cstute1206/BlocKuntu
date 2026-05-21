@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "BlocKuntu PoC",
+  "version": "0.1.1",
+  "description": "Blocks configured websites by checking navigations against a local BlocKuntu policy.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "blockuntu-poc@example.local",
+      "data_collection_permissions": {
+        "required": ["browsingActivity"]
+      },
+      "strict_min_version": "140.0"
+    }
+  },
+  "permissions": ["nativeMessaging", "tabs", "webNavigation"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "scripts": ["background.js"]
+  }
+}
