@@ -1,0 +1,54 @@
+# Rust / Cargo build output
+/target/
+**/target/
+
+# Node / frontend build output
+**/node_modules/
+**/dist/
+**/.vite/
+**/.svelte-kit/
+
+# Tauri generated schemas/cache output
+focus-gui/src-tauri/gen/schemas/
+
+# Firefox extension package artifacts
+browser-extension-firefox/*.xpi
+
+# Local databases and runtime state
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Logs, temporary files, and local backups
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Coverage/profiling output
+coverage/
+**/coverage/
+.nyc_output/
+lcov.info
+*.profraw
+*.profdata
+tarpaulin-report.html
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

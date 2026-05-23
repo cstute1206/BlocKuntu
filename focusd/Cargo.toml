@@ -1,0 +1,23 @@
+[package]
+name = "focusd"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "blockuntud"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+focus-core = { path = "../focus-core" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"

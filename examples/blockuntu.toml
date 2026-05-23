@@ -1,0 +1,81 @@
+[[allowances]]
+id = "social-daily"
+name = "Social daily allowance"
+daily_minutes = 30
+
+[[schedules]]
+id = "work-hours"
+name = "Work hours"
+
+[[schedules.windows]]
+weekday = "mon"
+start = "09:00"
+end = "17:00"
+
+[[schedules.windows]]
+weekday = "tue"
+start = "09:00"
+end = "17:00"
+
+[[schedules.windows]]
+weekday = "wed"
+start = "09:00"
+end = "17:00"
+
+[[schedules.windows]]
+weekday = "thu"
+start = "09:00"
+end = "17:00"
+
+[[schedules.windows]]
+weekday = "fri"
+start = "09:00"
+end = "17:00"
+
+[[rules]]
+id = "instagram-hard"
+name = "Instagram hard block"
+tier = "hard"
+patterns = [
+  { kind = "domain", value = "instagram.com", match_subdomains = true }
+]
+
+[[rules]]
+id = "reddit-hard"
+name = "Reddit hard block"
+tier = "hard"
+patterns = [
+  { kind = "domain", value = "reddit.com", match_subdomains = true },
+  { kind = "domain", value = "redd.it", match_subdomains = true }
+]
+
+[[rules]]
+id = "twitch-hard"
+name = "Twitch hard block"
+tier = "hard"
+patterns = [
+  { kind = "domain", value = "twitch.tv", match_subdomains = true }
+]
+
+[[rules]]
+id = "tiktok-hard"
+name = "TikTok hard block"
+tier = "hard"
+patterns = [
+  { kind = "domain", value = "tiktok.com", match_subdomains = true }
+]
+
+[[rules]]
+id = "youtube-controlled"
+name = "YouTube controlled access"
+tier = "controlled_access"
+schedule_ids = ["work-hours"]
+allowance_id = "social-daily"
+patterns = [
+  { kind = "domain", value = "youtube.com", match_subdomains = true }
+]
+
+[rules.unlock_policy]
+max_session_minutes = 10
+cooldown_minutes = 30
+max_unlocks_per_hour = 2

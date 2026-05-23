@@ -1,0 +1,26 @@
+{
+  "name": "blockuntu-gui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "tauri": "tauri",
+    "verify": "npm run check && npm run build && cargo check --manifest-path src-tauri/Cargo.toml"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@lucide/svelte": "^1.16.0",
+    "svelte": "^5.0.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.2.4",
+    "@tauri-apps/cli": "^2.11.2",
+    "svelte-check": "^4.1.0",
+    "typescript": "^5.6.3",
+    "vite": "^7.0.0"
+  }
+}

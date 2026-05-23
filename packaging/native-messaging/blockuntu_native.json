@@ -1,0 +1,7 @@
+{
+  "name": "blockuntu_native",
+  "description": "BlocKuntu Firefox Native Messaging bridge",
+  "path": "/usr/local/bin/blockuntu-native",
+  "type": "stdio",
+  "allowed_extensions": ["blockuntu@example.local", "blockuntu-poc@example.local"]
+}

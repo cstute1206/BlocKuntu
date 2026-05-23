@@ -1,0 +1,18 @@
+[Unit]
+Description=BlocKuntu watchdog companion
+Documentation=man:systemd.service(5)
+BindsTo=blockuntu.service
+Wants=blockuntu.service
+After=blockuntu.socket
+StartLimitIntervalSec=0
+RefuseManualStop=yes
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'while true; do systemctl --no-block start blockuntu.socket blockuntu.service blockuntu-watchdog.service >/dev/null 2>&1 || true; sleep 1; done'
+Restart=always
+RestartSec=0
+
+[Install]
+WantedBy=multi-user.target
+Also=blockuntu.service

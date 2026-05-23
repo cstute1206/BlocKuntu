@@ -1,0 +1,16 @@
+{
+  "name": "blockuntu-firefox-extension",
+  "version": "0.2.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "tsc -p tsconfig.json",
+    "check": "node scripts/check-manifest.mjs",
+    "verify": "npm run clean && npm run build && npm run check",
+    "package:xpi": "node scripts/package-xpi.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

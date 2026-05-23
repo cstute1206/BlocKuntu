@@ -1,0 +1,10 @@
+[Unit]
+Description=Repair BlocKuntu managed /etc/hosts block
+Documentation=man:systemd.service(5)
+BindsTo=blockuntu.service
+Wants=blockuntu.service
+After=blockuntu.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/blockuntud repair-hosts

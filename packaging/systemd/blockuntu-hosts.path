@@ -1,0 +1,15 @@
+[Unit]
+Description=Watch /etc/hosts for BlocKuntu managed block repairs
+Documentation=man:systemd.path(5)
+BindsTo=blockuntu.service
+Wants=blockuntu.service
+After=blockuntu.service
+StartLimitIntervalSec=0
+
+[Path]
+PathChanged=/etc/hosts
+PathModified=/etc/hosts
+Unit=blockuntu-hosts.service
+
+[Install]
+WantedBy=multi-user.target

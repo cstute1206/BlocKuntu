@@ -29,6 +29,7 @@ sudo install -Dm644 extension/BlocKuntu-PoC.xpi \
 ## Install Systemd Units
 
 ```sh
+sudo systemctl unmask blockuntu.service blockuntu-watchdog.service
 sudo install -Dm644 systemd/blockuntu.service /etc/systemd/system/blockuntu.service
 sudo install -Dm644 systemd/blockuntu-watchdog.service /etc/systemd/system/blockuntu-watchdog.service
 sudo systemctl daemon-reload
@@ -176,8 +177,16 @@ sudo /usr/local/bin/blockuntud --uninstall
 The uninstall routine writes temporary runtime systemd drop-ins under
 `/run/systemd/system/` to disable the PoC restart and manual-stop guards, reloads
 systemd, disables and stops `blockuntu.service` and
-`blockuntu-watchdog.service`, removes
-`/etc/firefox/policies/policies.json`, and clears `/run/blockuntu/`.
+`blockuntu-watchdog.service`, removes their installed unit files, masks both unit
+names so they cannot come back on reboot, removes
+`/etc/firefox/policies/policies.json`, and clears `/run/blockuntu/`. It treats
+already-unloaded units as a successful uninstall state.
+
+To reinstall after uninstalling, unmask the units before enabling them:
+
+```sh
+sudo systemctl unmask blockuntu.service blockuntu-watchdog.service
+```
 
 ## Service Relationship Notes
 

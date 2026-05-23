@@ -22,6 +22,7 @@ const EXTENSION_INACTIVE_ACTION_DELAY: Duration = Duration::from_secs(120);
 const EXTENSION_INACTIVE_ACTION_ENV: &str = "BLOCKUNTU_EXTENSION_INACTIVE_ACTION";
 const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const BLOCKUNTU_UNITS: &[&str] = &["blockuntu-watchdog.service", "blockuntu.service"];
+const SYSTEMD_PERSISTENT_DIR: &str = "/etc/systemd/system";
 const SYSTEMD_RUNTIME_DIR: &str = "/run/systemd/system";
 const SYSTEMD_UNINSTALL_OVERRIDE: &str = r#"[Unit]
 RefuseManualStop=no
@@ -369,21 +370,49 @@ fn run_uninstall() -> io::Result<()> {
     record_step(
         &mut failures,
         "disable blockuntu units",
-        run_systemctl(&["disable", "blockuntu.service", "blockuntu-watchdog.service"]),
+        run_systemctl_ok_if_units_missing(&[
+            "disable",
+            "blockuntu.service",
+            "blockuntu-watchdog.service",
+        ]),
     );
     record_step(
         &mut failures,
         "stop blockuntu units",
-        run_systemctl(&["stop", "blockuntu-watchdog.service", "blockuntu.service"]),
+        run_systemctl_ok_if_units_missing(&[
+            "stop",
+            "blockuntu-watchdog.service",
+            "blockuntu.service",
+        ]),
+    );
+    record_step(
+        &mut failures,
+        "remove installed blockuntu unit files",
+        remove_installed_systemd_units(),
+    );
+    record_step(
+        &mut failures,
+        "mask blockuntu units",
+        run_systemctl_ok_if_units_missing(&[
+            "mask",
+            "blockuntu-watchdog.service",
+            "blockuntu.service",
+        ]),
+    );
+    record_step(
+        &mut failures,
+        "remove temporary systemd uninstall overrides",
+        remove_systemd_uninstall_overrides(),
+    );
+    record_step(
+        &mut failures,
+        "reload systemd after unit removal",
+        run_systemctl(&["daemon-reload"]),
     );
     record_step(
         &mut failures,
         "reset blockuntu unit state",
-        run_systemctl(&[
-            "reset-failed",
-            "blockuntu-watchdog.service",
-            "blockuntu.service",
-        ]),
+        reset_failed_blockuntu_units(),
     );
     record_step(
         &mut failures,
@@ -440,6 +469,27 @@ fn disable_systemd_restart_guards() -> io::Result<()> {
     Ok(())
 }
 
+fn remove_installed_systemd_units() -> io::Result<()> {
+    for unit in BLOCKUNTU_UNITS {
+        let unit_path = Path::new(SYSTEMD_PERSISTENT_DIR).join(unit);
+        remove_file_or_dir_if_exists(&unit_path)?;
+
+        let dropin_dir = Path::new(SYSTEMD_PERSISTENT_DIR).join(format!("{unit}.d"));
+        remove_file_or_dir_if_exists(&dropin_dir)?;
+    }
+
+    Ok(())
+}
+
+fn remove_systemd_uninstall_overrides() -> io::Result<()> {
+    for unit in BLOCKUNTU_UNITS {
+        let dropin_dir = Path::new(SYSTEMD_RUNTIME_DIR).join(format!("{unit}.d"));
+        remove_file_or_dir_if_exists(&dropin_dir)?;
+    }
+
+    Ok(())
+}
+
 fn run_systemctl(args: &[&str]) -> io::Result<()> {
     let status = Command::new("systemctl").args(args).status()?;
 
@@ -453,11 +503,76 @@ fn run_systemctl(args: &[&str]) -> io::Result<()> {
     }
 }
 
+fn run_systemctl_ok_if_units_missing(args: &[&str]) -> io::Result<()> {
+    let output = Command::new("systemctl").args(args).output()?;
+
+    if output.status.success() || systemctl_output_mentions_missing_unit(&output) {
+        Ok(())
+    } else {
+        Err(systemctl_error(args, &output))
+    }
+}
+
+fn reset_failed_blockuntu_units() -> io::Result<()> {
+    for unit in BLOCKUNTU_UNITS {
+        run_systemctl_ok_if_units_missing(&["reset-failed", unit])?;
+    }
+
+    Ok(())
+}
+
+fn systemctl_output_mentions_missing_unit(output: &std::process::Output) -> bool {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+
+    combined.contains("not loaded")
+        || combined.contains("not found")
+        || combined.contains("does not exist")
+        || combined.contains("no such file")
+}
+
+fn systemctl_error(args: &[&str], output: &std::process::Output) -> io::Error {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    let message = if detail.is_empty() {
+        format!("systemctl {} exited with {}", args.join(" "), output.status)
+    } else {
+        format!(
+            "systemctl {} exited with {}: {detail}",
+            args.join(" "),
+            output.status
+        )
+    };
+
+    io::Error::new(io::ErrorKind::Other, message)
+}
+
 fn remove_file_if_exists(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
+    }
+}
+
+fn remove_file_or_dir_if_exists(path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
     }
 }
 

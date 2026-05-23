@@ -1,0 +1,14 @@
+[Unit]
+Description=BlocKuntu daemon socket
+Documentation=man:systemd.socket(5)
+
+[Socket]
+ListenStream=/run/blockuntu/blockuntud.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=blockuntu
+DirectoryMode=0755
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

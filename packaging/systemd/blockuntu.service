@@ -1,0 +1,29 @@
+[Unit]
+Description=BlocKuntu privileged daemon
+Documentation=man:systemd.service(5)
+Requires=blockuntu.socket
+BindsTo=blockuntu-watchdog.service
+Wants=blockuntu-watchdog.service
+After=network.target
+StartLimitIntervalSec=0
+RefuseManualStop=yes
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/blockuntud serve
+Restart=always
+RestartSec=0
+User=root
+Group=root
+RuntimeDirectory=blockuntu
+RuntimeDirectoryMode=0755
+StateDirectory=blockuntu
+StateDirectoryMode=0700
+ConfigurationDirectory=blockuntu
+ConfigurationDirectoryMode=0755
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target
+Also=blockuntu.socket
+Also=blockuntu-watchdog.service
