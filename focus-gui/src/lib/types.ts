@@ -1,7 +1,6 @@
 export type ViewId =
   | "overview"
   | "blocks"
-  | "config"
   | "schedule"
   | "allowances"
   | "statistics"
@@ -64,13 +63,8 @@ export interface ConfigSnapshot {
   };
 }
 
-export interface ConfigFileResponse {
-  path: string;
-  toml: string;
-}
-
-export interface WriteConfigFileResponse {
-  path: string;
+export interface ConfigMutationResponse {
+  status: string;
   config: ConfigSnapshot;
   updated_at: string;
 }

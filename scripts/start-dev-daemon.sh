@@ -7,6 +7,13 @@ RUNTIME_DIR="/tmp/blockuntu"
 
 mkdir -p "${RUNTIME_DIR}"
 
+LOCK_PATH="${RUNTIME_DIR}/dev-daemon.lock"
+exec 9>"${LOCK_PATH}"
+if ! flock -n 9; then
+  echo "[blockuntud-dev] another dev daemon starter is already running"
+  exit 0
+fi
+
 if [ ! -f "${RUNTIME_DIR}/config.toml" ]; then
   cp "${REPO_ROOT}/examples/blockuntu.toml" "${RUNTIME_DIR}/config.toml"
 fi

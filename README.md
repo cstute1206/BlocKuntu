@@ -45,11 +45,13 @@ The older proof of concept still lives under `PoC/`.
 edit system files. It provides:
 
 - TOML configuration parsing and validation.
-- SQLite runtime database migration.
+- SQLite policy and runtime database migration.
 - URL policy evaluation for Tier 1 hard blocks and Tier 2 controlled access.
 - Schedule checks, daily allowance accounting, unlock cooldowns, maximum
   session limits, and hourly unlock quotas.
-- Runtime records for unlocks, visits, events, heartbeats, and service state.
+- Persistent policy records for site lists, schedules, allowances, unlock
+  defaults, and runtime records for unlocks, visits, events, heartbeats, and
+  service state.
 
 Privileged behavior such as `/etc/hosts` repair, Firefox enterprise policy
 writing, process killing, socket binding, and systemd watchdogs belongs in
@@ -59,7 +61,8 @@ writing, process killing, socket binding, and systemd watchdogs belongs in
 
 `focusd` builds the `blockuntud` daemon. It:
 
-- Loads the TOML policy config and SQLite runtime database through `focus-core`.
+- Loads the SQLite policy/runtime database through `focus-core`; if the policy
+  tables are empty, imports the TOML config once as a seed.
 - Serves local JSON-RPC requests over a Unix domain socket.
 - Supports systemd socket activation for `/run/blockuntu/blockuntud.sock`.
 - Repairs Firefox enterprise policy at `/etc/firefox/policies/policies.json`.
@@ -80,14 +83,14 @@ Rust side talks to `focusd` over the Unix socket.
 It includes:
 
 - Dashboard with daemon, rule, schedule, allowance, and health summaries.
-- Blocks view for hard and controlled-access rule inspection.
-- Config view for daemon-mediated TOML editing with validation and active
-  Tier 1 hard-block protection.
-- Weekly schedule grid.
+- Lists view for daemon-mediated site-list editing, Tier 1/Tier 2 assignment,
+  schedule assignment, and active-list edit protection.
+- Schedule view for daemon-mediated weekly schedule editing and active-schedule
+  edit protection.
 - Allowance overview.
 - Statistics from daemon event logs.
-- Admin/debug view with systemd/socket/policy/native-host checks and raw
-  JSON-RPC execution.
+- Admin/debug view with systemd/socket/policy/native-host/Firefox-extension
+  checks and raw JSON-RPC execution.
 
 ## What `native-host` Does
 
@@ -163,10 +166,10 @@ explicitly to:
 /tmp/blockuntu/blockuntud.sock
 ```
 
-The Config tab loads and saves the daemon TOML through JSON-RPC. Saves are
-validated by `focus-core`, written atomically by `focusd`, and reloaded in the
-daemon process immediately. Active Tier 1 hard-block rules cannot be removed or
-modified from this unprivileged editor.
+The Lists and Schedule tabs save structured policy records through JSON-RPC.
+Saves are validated by `focus-core`, persisted in SQLite by `focusd`, and
+reloaded in the daemon process immediately. A site list or schedule that is
+active at the current local time cannot be edited from the GUI.
 
 For Firefox extension testing against the development daemon, install the
 per-user Native Messaging manifest:
@@ -362,9 +365,13 @@ per-user dev Native Messaging manifest:
 
 Then restart Firefox and reload the extension. The dev manifest points
 `blockuntu_native` at the local native host binary and forces it to use
-`/tmp/blockuntu/blockuntud.sock`.
+`/tmp/blockuntu/blockuntud.sock`. The generated wrapper also passes
+`--revive-command ./scripts/start-dev-daemon.sh`, so Firefox heartbeats can
+restart the dev daemon after a missing or stale `/tmp/blockuntu/blockuntud.sock`.
 
-Check config/database initialization without serving:
+Check policy/database initialization without serving. If the SQLite policy
+tables are empty, this imports `/tmp/blockuntu/config.toml` once; later GUI
+edits are stored in `/tmp/blockuntu/blockuntu.sqlite3`:
 
 ```bash
 cd focusd
@@ -374,9 +381,10 @@ cargo run -- \
   check
 ```
 
-## Minimal Config Example
+## Minimal Seed Config Example
 
-`focus-core` expects TOML like this:
+The live policy source is SQLite. TOML remains useful as the first-run seed
+format for an empty policy database:
 
 ```toml
 [[allowances]]
@@ -471,12 +479,18 @@ Example methods:
 
 ```text
 status
+config_snapshot
+upsert_site_list
+delete_site_list
+upsert_schedule
+delete_schedule
 evaluate_url
 request_unlock
 record_visit_start
 record_visit_heartbeat
 record_visit_end
 extension_heartbeat
+extension_status
 ```
 
 ## Native Host Development
@@ -490,6 +504,9 @@ cargo run -- --socket /tmp/blockuntu/blockuntud.sock
 ```
 
 Firefox launches this binary through a native messaging manifest, not manually.
+For the development manifest, use `./scripts/install-dev-native-host.sh`; it
+generates a wrapper that enables dev-daemon revival with
+`./scripts/start-dev-daemon.sh`.
 The production manifest is:
 
 ```text

@@ -157,6 +157,7 @@ fn system_health(socket_path: Option<String>) -> SystemHealth {
         checks.push(policy_file_check(Path::new(DEFAULT_FIREFOX_POLICY_PATH)));
     }
     checks.push(native_host_manifest_check());
+    checks.push(firefox_extension_runtime_check(&socket));
 
     SystemHealth {
         checked_at: Utc::now(),
@@ -322,6 +323,70 @@ fn native_host_manifest_check() -> HealthCheck {
             state: HealthState::Warn,
             detail: format!("{}: {err}", candidate.display()),
         },
+    }
+}
+
+fn firefox_extension_runtime_check(socket_path: &str) -> HealthCheck {
+    match call_daemon(socket_path, "extension_status", json!({})) {
+        Ok(status) => {
+            let state = status
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            HealthCheck {
+                key: "firefox_extension".to_string(),
+                label: "Firefox extension".to_string(),
+                state: firefox_extension_health_state(state),
+                detail: firefox_extension_health_detail(&status),
+            }
+        }
+        Err(err) => HealthCheck {
+            key: "firefox_extension".to_string(),
+            label: "Firefox extension".to_string(),
+            state: HealthState::Unknown,
+            detail: format!("daemon extension status unavailable: {err}"),
+        },
+    }
+}
+
+fn firefox_extension_health_state(state: &str) -> HealthState {
+    match state {
+        "active" => HealthState::Ok,
+        "stale" => HealthState::Error,
+        "missing" => HealthState::Warn,
+        _ => HealthState::Unknown,
+    }
+}
+
+fn firefox_extension_health_detail(status: &Value) -> String {
+    let state = status
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let detail = status
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or("daemon returned no detail");
+    let identity = firefox_extension_identity(status);
+
+    if identity.is_empty() {
+        format!("{state}: {detail}")
+    } else {
+        format!("{state}: {detail}; {identity}")
+    }
+}
+
+fn firefox_extension_identity(status: &Value) -> String {
+    let extension_id = status.get("extension_id").and_then(Value::as_str);
+    let extension_version = status.get("extension_version").and_then(Value::as_str);
+
+    match (extension_id, extension_version) {
+        (Some(extension_id), Some(extension_version)) => {
+            format!("{extension_id}, version {extension_version}")
+        }
+        (Some(extension_id), None) => extension_id.to_string(),
+        (None, Some(extension_version)) => format!("version {extension_version}"),
+        (None, None) => String::new(),
     }
 }
 

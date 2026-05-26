@@ -17,7 +17,9 @@ cargo build --manifest-path "${REPO_ROOT}/native-host/Cargo.toml"
 
 cat > "${WRAPPER_PATH}" <<EOF
 #!/usr/bin/env bash
-exec "${NATIVE_BIN}" --socket "${RUNTIME_DIR}/blockuntud.sock"
+exec "${NATIVE_BIN}" \\
+  --socket "${RUNTIME_DIR}/blockuntud.sock" \\
+  --revive-command "${REPO_ROOT}/scripts/start-dev-daemon.sh"
 EOF
 chmod 0755 "${WRAPPER_PATH}"
 

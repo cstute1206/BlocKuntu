@@ -246,10 +246,13 @@ Development uses explicitly bound sockets and user-local Firefox integration:
 The dev native-host wrapper runs:
 
 ```text
-blockuntu-native --socket /tmp/blockuntu/blockuntud.sock
+blockuntu-native \
+  --socket /tmp/blockuntu/blockuntud.sock \
+  --revive-command ./scripts/start-dev-daemon.sh
 ```
 
-This avoids root-only paths while testing extension behavior.
+This avoids root-only paths while testing extension behavior. The revival
+command is development-only; production survival is handled by systemd units.
 
 ## Production Connections
 

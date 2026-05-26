@@ -1,13 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ConfigSnapshot,
-  ConfigFileResponse,
+  ConfigMutationResponse,
   DaemonStatus,
   DecisionResult,
   EventsResponse,
+  Rule,
+  Schedule,
   SystemHealth,
-  UnlockResult,
-  WriteConfigFileResponse
+  UnlockResult
 } from "./types";
 
 export function daemonStatus(socketPath?: string): Promise<DaemonStatus> {
@@ -18,15 +19,39 @@ export function configSnapshot(socketPath?: string): Promise<ConfigSnapshot> {
   return invoke("config_snapshot", { socketPath });
 }
 
-export function configFile(socketPath?: string): Promise<ConfigFileResponse> {
-  return daemonRpc("config_file", {}, socketPath) as Promise<ConfigFileResponse>;
+export function upsertSiteList(rule: Rule, socketPath?: string): Promise<ConfigMutationResponse> {
+  return daemonRpc(
+    "upsert_site_list",
+    { rule, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<ConfigMutationResponse>;
 }
 
-export function writeConfigFile(
-  toml: string,
+export function deleteSiteList(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
+  return daemonRpc(
+    "delete_site_list",
+    { id, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<ConfigMutationResponse>;
+}
+
+export function upsertSchedule(
+  schedule: Schedule,
   socketPath?: string
-): Promise<WriteConfigFileResponse> {
-  return daemonRpc("write_config_file", { toml }, socketPath) as Promise<WriteConfigFileResponse>;
+): Promise<ConfigMutationResponse> {
+  return daemonRpc(
+    "upsert_schedule",
+    { schedule, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<ConfigMutationResponse>;
+}
+
+export function deleteSchedule(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
+  return daemonRpc(
+    "delete_schedule",
+    { id, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<ConfigMutationResponse>;
 }
 
 export function recentEvents(limit = 50, socketPath?: string): Promise<EventsResponse> {

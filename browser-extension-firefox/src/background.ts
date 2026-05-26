@@ -22,11 +22,19 @@ interface ActiveVisit {
   url: string;
 }
 
-interface BlockNavigationReason {
+interface BlockNavigationReason extends JsonObject {
   kind: string;
+  tier?: string;
   rule_id?: string;
   rule_name?: string;
   controlled_reason?: string;
+  blocked_by?: string;
+  summary?: string;
+  detail?: string;
+  free_at?: string;
+  allowance_reset_at?: string;
+  last_heartbeat_ok_at?: string;
+  heartbeat_timeout_seconds?: number;
   message?: string;
 }
 
@@ -204,10 +212,10 @@ function handleBeforeNavigate(details: BlockuntuWebExtension.NavigationDetails):
   void endVisitForTab(details.tabId);
 
   if (!refreshHealthState()) {
-    redirectToBlocked(details, {
-      kind: "backend_unhealthy",
-      message: "BlocKuntu daemon heartbeat is not healthy",
-    });
+    redirectToBlocked(
+      details,
+      backendBlockReason("backend_unhealthy", "BlocKuntu daemon heartbeat is not healthy")
+    );
     return;
   }
 
@@ -235,8 +243,10 @@ function handleBeforeNavigate(details: BlockuntuWebExtension.NavigationDetails):
       markBackendUnhealthy(`URL evaluation failed: ${errorMessage(error)}`);
       if (isCurrentNavigation(details.tabId, token)) {
         redirectToBlocked(details, {
-          kind: "backend_unavailable",
-          message: "BlocKuntu daemon did not evaluate the navigation",
+          ...backendBlockReason(
+            "backend_unavailable",
+            "BlocKuntu daemon did not evaluate the navigation"
+          ),
         });
       }
     });
@@ -262,23 +272,29 @@ function redirectToBlocked(
   const redirectUrl = new URL(BLOCKED_PAGE_URL);
   redirectUrl.searchParams.set("url", details.url);
   redirectUrl.searchParams.set("reason", reason.kind);
+  redirectUrl.searchParams.set("reason_json", JSON.stringify(reason));
 
-  if (reason.rule_id) {
-    redirectUrl.searchParams.set("rule_id", reason.rule_id);
-  }
-  if (reason.rule_name) {
-    redirectUrl.searchParams.set("rule_name", reason.rule_name);
-  }
-  if (reason.controlled_reason) {
-    redirectUrl.searchParams.set("controlled_reason", reason.controlled_reason);
-  }
-  if (reason.message) {
-    redirectUrl.searchParams.set("message", reason.message);
-  }
+  setOptionalSearchParam(redirectUrl, "tier", reason.tier);
+  setOptionalSearchParam(redirectUrl, "rule_id", reason.rule_id);
+  setOptionalSearchParam(redirectUrl, "rule_name", reason.rule_name);
+  setOptionalSearchParam(redirectUrl, "controlled_reason", reason.controlled_reason);
+  setOptionalSearchParam(redirectUrl, "blocked_by", reason.blocked_by);
+  setOptionalSearchParam(redirectUrl, "summary", reason.summary);
+  setOptionalSearchParam(redirectUrl, "detail", reason.detail);
+  setOptionalSearchParam(redirectUrl, "free_at", reason.free_at);
+  setOptionalSearchParam(redirectUrl, "allowance_reset_at", reason.allowance_reset_at);
+  setOptionalSearchParam(redirectUrl, "last_heartbeat_ok_at", reason.last_heartbeat_ok_at);
+  setOptionalSearchParam(redirectUrl, "message", reason.message);
 
   browser.tabs.update(details.tabId, { url: redirectUrl.toString() }).catch((error: unknown) => {
     console.error(`BlocKuntu failed to redirect tab ${details.tabId}: ${errorMessage(error)}`);
   });
+}
+
+function setOptionalSearchParam(url: URL, key: string, value: unknown): void {
+  if (typeof value === "string" && value.length > 0) {
+    url.searchParams.set(key, value);
+  }
 }
 
 function startVisitForNavigation(
@@ -309,10 +325,10 @@ function startVisitForNavigation(
     .catch((error) => {
       markBackendUnhealthy(`visit start failed: ${errorMessage(error)}`);
       if (isCurrentNavigation(details.tabId, token)) {
-        redirectToBlocked(details, {
-          kind: "backend_unavailable",
-          message: "BlocKuntu daemon did not record the visit",
-        });
+        redirectToBlocked(
+          details,
+          backendBlockReason("backend_unavailable", "BlocKuntu daemon did not record the visit")
+        );
       }
     });
 }
@@ -370,12 +386,35 @@ function blockReasonFromResult(result: unknown): BlockNavigationReason {
 
   const reason = result.reason;
   return {
+    ...reason,
     kind: stringField(reason, "kind") ?? "blocked",
+    tier: stringField(reason, "tier") ?? undefined,
     rule_id: stringField(reason, "rule_id") ?? undefined,
     rule_name: stringField(reason, "rule_name") ?? undefined,
     controlled_reason: stringField(reason, "controlled_reason") ?? undefined,
+    blocked_by: stringField(reason, "blocked_by") ?? undefined,
+    summary: stringField(reason, "summary") ?? undefined,
+    detail: stringField(reason, "detail") ?? undefined,
+    free_at: stringField(reason, "free_at") ?? undefined,
+    allowance_reset_at: stringField(reason, "allowance_reset_at") ?? undefined,
     message: stringField(reason, "message") ?? undefined,
   };
+}
+
+function backendBlockReason(kind: "backend_unhealthy" | "backend_unavailable", message: string): BlockNavigationReason {
+  const reason: BlockNavigationReason = {
+    kind,
+    message,
+    summary: "BlocKuntu cannot verify the daemon heartbeat.",
+    detail: "Browsing is blocked fail-closed until the Firefox extension, native host, and daemon heartbeat chain is healthy again.",
+    heartbeat_timeout_seconds: HEARTBEAT_TIMEOUT_MS / 1000,
+  };
+
+  if (lastHeartbeatOkAt > 0) {
+    reason.last_heartbeat_ok_at = new Date(lastHeartbeatOkAt).toISOString();
+  }
+
+  return reason;
 }
 
 function visitIdFromResult(result: unknown): number | null {

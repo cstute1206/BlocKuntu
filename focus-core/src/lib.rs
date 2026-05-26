@@ -18,7 +18,7 @@ pub use config::{
     UnlockPolicyConfig, Weekday,
 };
 pub use core::FocusCore;
-pub use db::{migrate_database, Database};
+pub use db::{migrate_database, Database, HeartbeatState};
 pub use error::{ConfigError, Error, UnlockError};
 pub use policy::{
     evaluate_app, evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start,

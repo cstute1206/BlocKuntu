@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BlocKuntu",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "System-enforced focus blocking for Linux through the local BlocKuntu daemon.",
   "browser_specific_settings": {
     "gecko": {
@@ -19,7 +19,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["blocked.html"],
+      "resources": ["blocked.html", "dist/blocked.js"],
       "matches": ["<all_urls>"]
     }
   ]

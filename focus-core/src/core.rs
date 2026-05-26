@@ -20,8 +20,14 @@ impl FocusCore {
         config_path: impl AsRef<std::path::Path>,
         db_path: impl AsRef<std::path::Path>,
     ) -> Result<Self, Error> {
-        let config = load_config(config_path)?;
         let database = Database::open(db_path)?;
+        let config = if database.has_policy_config()? {
+            database.load_policy_config()?
+        } else {
+            let config = load_config(config_path)?;
+            database.replace_policy_config(&config)?;
+            config
+        };
         Self::new(config, database)
     }
 

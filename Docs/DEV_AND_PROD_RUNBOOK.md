@@ -119,6 +119,17 @@ The wrapper forces the native host to connect to:
 /tmp/blockuntu/blockuntud.sock
 ```
 
+It also passes a development-only revival command:
+
+```text
+./scripts/start-dev-daemon.sh
+```
+
+If Firefox relaunches `blockuntu-native`, or if the existing native host sees a
+missing/stale dev socket, the native host starts that script and retries the
+daemon request. The dev daemon script holds `/tmp/blockuntu/dev-daemon.lock` so
+repeated heartbeats do not start competing daemons.
+
 Restart Firefox after installing or changing this manifest. Firefox reads Native
 Messaging manifests at process startup.
 

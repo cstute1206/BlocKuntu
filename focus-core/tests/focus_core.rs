@@ -344,6 +344,13 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
         "events",
         "heartbeats",
         "service_state",
+        "policy_defaults",
+        "policy_allowances",
+        "policy_schedules",
+        "policy_schedule_windows",
+        "policy_site_lists",
+        "policy_site_list_patterns",
+        "policy_site_list_schedules",
     ] {
         assert!(
             tables.iter().any(|table| table == required),
@@ -365,6 +372,73 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
             .as_deref(),
         Some("enforcing")
     );
+}
+
+#[test]
+fn policy_config_roundtrips_through_sqlite() {
+    let config = Config::from_toml_str(
+        r#"
+        [defaults.unlock_policy]
+        max_session_minutes = 8
+        cooldown_minutes = 20
+        max_unlocks_per_hour = 3
+
+        [[allowances]]
+        id = "daily"
+        name = "Daily allowance"
+        daily_minutes = 15
+
+        [[schedules]]
+        id = "work"
+        name = "Work"
+
+        [[schedules.windows]]
+        weekday = "mon"
+        start = "09:00"
+        end = "17:00"
+
+        [[rules]]
+        id = "hard-list"
+        name = "Hard List"
+        tier = "hard"
+        schedule_ids = ["work"]
+        patterns = [
+          { kind = "domain", value = "hard.example", match_subdomains = true }
+        ]
+
+        [[rules]]
+        id = "tier-two-list"
+        name = "Tier 2 List"
+        tier = "controlled_access"
+        allowance_id = "daily"
+        patterns = [
+          { kind = "domain", value = "tier-two.example", match_subdomains = false },
+          { kind = "url_prefix", value = "https://video.example/watch/" }
+        ]
+
+        [rules.unlock_policy]
+        max_session_minutes = 4
+        cooldown_minutes = 5
+        max_unlocks_per_hour = 2
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+
+    assert!(!database
+        .has_policy_config()
+        .expect("policy presence should query"));
+    database
+        .replace_policy_config(&config)
+        .expect("policy config should persist");
+    assert!(database
+        .has_policy_config()
+        .expect("policy presence should query"));
+
+    let loaded = database
+        .load_policy_config()
+        .expect("policy config should load");
+    assert_eq!(loaded, config);
 }
 
 #[test]

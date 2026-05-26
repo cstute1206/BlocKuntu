@@ -40,9 +40,15 @@
         margin: 0 0 12px;
       }
 
+      .status {
+        color: color-mix(in srgb, CanvasText 74%, Canvas 26%);
+        font-size: 0.98rem;
+        margin-bottom: 0;
+      }
+
       dl {
         display: grid;
-        gap: 8px;
+        gap: 10px 16px;
         grid-template-columns: max-content minmax(0, 1fr);
         margin: 28px 0 0;
       }
@@ -64,38 +70,28 @@
         font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
         font-size: 0.95em;
       }
+
+      .value {
+        font-weight: 650;
+      }
+
+      .muted {
+        color: color-mix(in srgb, CanvasText 70%, Canvas 30%);
+      }
     </style>
   </head>
   <body>
     <main>
       <h1>Blocked by BlocKuntu</h1>
       <p id="summary">This navigation was blocked by the local policy.</p>
-      <dl>
+      <p class="status" id="detail"></p>
+      <dl id="details">
         <dt>URL</dt>
         <dd><code id="blocked-url">unknown</code></dd>
         <dt>Reason</dt>
-        <dd><code id="blocked-reason">blocked</code></dd>
+        <dd><span class="value" id="blocked-reason">blocked</span></dd>
       </dl>
     </main>
-    <script>
-      const params = new URLSearchParams(location.search);
-      const reason = params.get("reason") || "blocked";
-      const message = params.get("message");
-      const ruleName = params.get("rule_name");
-      const controlledReason = params.get("controlled_reason");
-      const url = params.get("url") || "unknown";
-
-      document.getElementById("blocked-url").textContent = url;
-      document.getElementById("blocked-reason").textContent =
-        controlledReason || ruleName || reason;
-
-      if (reason === "backend_unhealthy" || reason === "backend_unavailable") {
-        document.getElementById("summary").textContent =
-          message || "BlocKuntu could not verify the daemon heartbeat, so browsing is blocked.";
-      } else if (ruleName) {
-        document.getElementById("summary").textContent =
-          `This navigation matched the rule "${ruleName}".`;
-      }
-    </script>
+    <script src="dist/blocked.js"></script>
   </body>
 </html>

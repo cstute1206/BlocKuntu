@@ -1,12 +1,24 @@
 use std::path::Path;
+use std::str::FromStr;
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::{Error, UnlockState, VisitState};
+use crate::{
+    AllowanceConfig, Config, ConfigError, DefaultsConfig, Error, RuleConfig, RulePatternConfig,
+    RulePatternKind, RuleTier, ScheduleConfig, ScheduleWindow, TimeOfDay, UnlockPolicyConfig,
+    UnlockState, VisitState, Weekday,
+};
 
 pub struct Database {
     conn: Connection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatState {
+    pub component: String,
+    pub last_seen_at: DateTime<Utc>,
+    pub details: Option<String>,
 }
 
 impl Database {
@@ -57,6 +69,431 @@ impl Database {
             params![component, format_time(now), details],
         )?;
         Ok(())
+    }
+
+    pub fn heartbeat(&self, component: &str) -> Result<Option<HeartbeatState>, Error> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT component, last_seen_at, details FROM heartbeats WHERE component = ?1",
+                params![component],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((component, last_seen_at, details)) = row else {
+            return Ok(None);
+        };
+
+        Ok(Some(HeartbeatState {
+            component,
+            last_seen_at: parse_time(&last_seen_at)?,
+            details,
+        }))
+    }
+
+    pub fn has_policy_config(&self) -> Result<bool, Error> {
+        let count: i64 = self.conn.query_row(
+            r#"
+            SELECT
+                (SELECT COUNT(*) FROM policy_site_lists) +
+                (SELECT COUNT(*) FROM policy_schedules) +
+                (SELECT COUNT(*) FROM policy_allowances)
+            "#,
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn load_policy_config(&self) -> Result<Config, Error> {
+        let defaults = self.load_policy_defaults()?;
+        let allowances = self.load_policy_allowances()?;
+        let schedules = self.load_policy_schedules()?;
+        let rules = self.load_policy_site_lists()?;
+
+        let config = Config {
+            rules,
+            schedules,
+            allowances,
+            defaults,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn replace_policy_config(&self, config: &Config) -> Result<(), Error> {
+        config.validate()?;
+
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute_batch(
+            r#"
+            DELETE FROM policy_site_list_schedules;
+            DELETE FROM policy_site_list_patterns;
+            DELETE FROM policy_site_lists;
+            DELETE FROM policy_schedule_windows;
+            DELETE FROM policy_schedules;
+            DELETE FROM policy_allowances;
+            DELETE FROM policy_defaults;
+            "#,
+        )?;
+
+        transaction.execute(
+            r#"
+            INSERT INTO policy_defaults (
+                key,
+                max_session_minutes,
+                cooldown_minutes,
+                max_unlocks_per_hour
+            )
+            VALUES (1, ?1, ?2, ?3)
+            "#,
+            params![
+                i64::from(config.defaults.unlock_policy.max_session_minutes),
+                i64::from(config.defaults.unlock_policy.cooldown_minutes),
+                i64::from(config.defaults.unlock_policy.max_unlocks_per_hour),
+            ],
+        )?;
+
+        for allowance in &config.allowances {
+            transaction.execute(
+                r#"
+                INSERT INTO policy_allowances (id, name, daily_minutes)
+                VALUES (?1, ?2, ?3)
+                "#,
+                params![
+                    &allowance.id,
+                    allowance.name.as_deref(),
+                    i64::from(allowance.daily_minutes)
+                ],
+            )?;
+        }
+
+        for schedule in &config.schedules {
+            transaction.execute(
+                "INSERT INTO policy_schedules (id, name) VALUES (?1, ?2)",
+                params![&schedule.id, schedule.name.as_deref()],
+            )?;
+
+            for (position, window) in schedule.windows.iter().enumerate() {
+                transaction.execute(
+                    r#"
+                    INSERT INTO policy_schedule_windows (
+                        schedule_id,
+                        weekday,
+                        start_time,
+                        end_time,
+                        position
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5)
+                    "#,
+                    params![
+                        &schedule.id,
+                        weekday_to_str(window.weekday),
+                        window.start.to_string(),
+                        window.end.to_string(),
+                        position as i64,
+                    ],
+                )?;
+            }
+        }
+
+        for rule in &config.rules {
+            let unlock_policy = rule.unlock_policy;
+            transaction.execute(
+                r#"
+                INSERT INTO policy_site_lists (
+                    id,
+                    name,
+                    tier,
+                    enabled,
+                    allowance_id,
+                    max_session_minutes,
+                    cooldown_minutes,
+                    max_unlocks_per_hour
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#,
+                params![
+                    &rule.id,
+                    &rule.name,
+                    rule_tier_to_str(rule.tier),
+                    if rule.enabled { 1_i64 } else { 0_i64 },
+                    rule.allowance_id.as_deref(),
+                    unlock_policy.map(|policy| i64::from(policy.max_session_minutes)),
+                    unlock_policy.map(|policy| i64::from(policy.cooldown_minutes)),
+                    unlock_policy.map(|policy| i64::from(policy.max_unlocks_per_hour)),
+                ],
+            )?;
+
+            for (position, pattern) in rule.patterns.iter().enumerate() {
+                transaction.execute(
+                    r#"
+                    INSERT INTO policy_site_list_patterns (
+                        list_id,
+                        kind,
+                        value,
+                        match_subdomains,
+                        position
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5)
+                    "#,
+                    params![
+                        &rule.id,
+                        pattern_kind_to_str(pattern.kind),
+                        &pattern.value,
+                        if pattern.match_subdomains { 1_i64 } else { 0_i64 },
+                        position as i64,
+                    ],
+                )?;
+            }
+
+            for (position, schedule_id) in rule.schedule_ids.iter().enumerate() {
+                transaction.execute(
+                    r#"
+                    INSERT INTO policy_site_list_schedules (list_id, schedule_id, position)
+                    VALUES (?1, ?2, ?3)
+                    "#,
+                    params![&rule.id, schedule_id, position as i64],
+                )?;
+            }
+        }
+
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn load_policy_defaults(&self) -> Result<DefaultsConfig, Error> {
+        let row = self
+            .conn
+            .query_row(
+                r#"
+                SELECT max_session_minutes, cooldown_minutes, max_unlocks_per_hour
+                FROM policy_defaults
+                WHERE key = 1
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((max_session_minutes, cooldown_minutes, max_unlocks_per_hour)) = row else {
+            return Ok(DefaultsConfig::default());
+        };
+
+        Ok(DefaultsConfig {
+            unlock_policy: UnlockPolicyConfig {
+                max_session_minutes: to_u32("defaults.max_session_minutes", max_session_minutes)?,
+                cooldown_minutes: to_u32("defaults.cooldown_minutes", cooldown_minutes)?,
+                max_unlocks_per_hour: to_u32(
+                    "defaults.max_unlocks_per_hour",
+                    max_unlocks_per_hour,
+                )?,
+            },
+        })
+    }
+
+    fn load_policy_allowances(&self) -> Result<Vec<AllowanceConfig>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT id, name, daily_minutes
+            FROM policy_allowances
+            ORDER BY id
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+
+        let mut allowances = Vec::new();
+        for row in rows {
+            let (id, name, daily_minutes) = row?;
+            allowances.push(AllowanceConfig {
+                id,
+                name,
+                daily_minutes: to_u32("allowance.daily_minutes", daily_minutes)?,
+            });
+        }
+        Ok(allowances)
+    }
+
+    fn load_policy_schedules(&self) -> Result<Vec<ScheduleConfig>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT id, name
+            FROM policy_schedules
+            ORDER BY id
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+
+        let mut schedules = Vec::new();
+        for row in rows {
+            let (id, name) = row?;
+            schedules.push(ScheduleConfig {
+                windows: self.load_policy_schedule_windows(&id)?,
+                id,
+                name,
+            });
+        }
+        Ok(schedules)
+    }
+
+    fn load_policy_schedule_windows(&self, schedule_id: &str) -> Result<Vec<ScheduleWindow>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT weekday, start_time, end_time
+            FROM policy_schedule_windows
+            WHERE schedule_id = ?1
+            ORDER BY position, id
+            "#,
+        )?;
+        let rows = statement.query_map([schedule_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+
+        let mut windows = Vec::new();
+        for row in rows {
+            let (weekday, start, end) = row?;
+            windows.push(ScheduleWindow {
+                weekday: weekday_from_str(&weekday)?,
+                start: TimeOfDay::from_str(&start)
+                    .map_err(|err| ConfigError::Validation(err))?,
+                end: TimeOfDay::from_str(&end).map_err(|err| ConfigError::Validation(err))?,
+            });
+        }
+        Ok(windows)
+    }
+
+    fn load_policy_site_lists(&self) -> Result<Vec<RuleConfig>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT
+                id,
+                name,
+                tier,
+                enabled,
+                allowance_id,
+                max_session_minutes,
+                cooldown_minutes,
+                max_unlocks_per_hour
+            FROM policy_site_lists
+            ORDER BY id
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+            ))
+        })?;
+
+        let mut rules = Vec::new();
+        for row in rows {
+            let (
+                id,
+                name,
+                tier,
+                enabled,
+                allowance_id,
+                max_session_minutes,
+                cooldown_minutes,
+                max_unlocks_per_hour,
+            ) = row?;
+            rules.push(RuleConfig {
+                patterns: self.load_policy_site_list_patterns(&id)?,
+                schedule_ids: self.load_policy_site_list_schedule_ids(&id)?,
+                id,
+                name,
+                tier: rule_tier_from_str(&tier)?,
+                enabled: enabled != 0,
+                allowance_id,
+                unlock_policy: optional_unlock_policy(
+                    max_session_minutes,
+                    cooldown_minutes,
+                    max_unlocks_per_hour,
+                )?,
+            });
+        }
+        Ok(rules)
+    }
+
+    fn load_policy_site_list_patterns(
+        &self,
+        list_id: &str,
+    ) -> Result<Vec<RulePatternConfig>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT kind, value, match_subdomains
+            FROM policy_site_list_patterns
+            WHERE list_id = ?1
+            ORDER BY position, id
+            "#,
+        )?;
+        let rows = statement.query_map([list_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+
+        let mut patterns = Vec::new();
+        for row in rows {
+            let (kind, value, match_subdomains) = row?;
+            patterns.push(RulePatternConfig {
+                kind: pattern_kind_from_str(&kind)?,
+                value,
+                match_subdomains: match_subdomains != 0,
+            });
+        }
+        Ok(patterns)
+    }
+
+    fn load_policy_site_list_schedule_ids(&self, list_id: &str) -> Result<Vec<String>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT schedule_id
+            FROM policy_site_list_schedules
+            WHERE list_id = ?1
+            ORDER BY position, schedule_id
+            "#,
+        )?;
+        let rows = statement.query_map([list_id], |row| row.get::<_, String>(0))?;
+
+        let mut schedule_ids = Vec::new();
+        for row in rows {
+            schedule_ids.push(row?);
+        }
+        Ok(schedule_ids)
     }
 
     pub fn set_service_state(
@@ -419,6 +856,71 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS policy_defaults (
+            key INTEGER PRIMARY KEY CHECK (key = 1),
+            max_session_minutes INTEGER NOT NULL,
+            cooldown_minutes INTEGER NOT NULL,
+            max_unlocks_per_hour INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS policy_allowances (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            daily_minutes INTEGER NOT NULL CHECK (daily_minutes > 0)
+        );
+
+        CREATE TABLE IF NOT EXISTS policy_schedules (
+            id TEXT PRIMARY KEY,
+            name TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS policy_schedule_windows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            schedule_id TEXT NOT NULL,
+            weekday TEXT NOT NULL CHECK (weekday IN ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')),
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(schedule_id) REFERENCES policy_schedules(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_policy_schedule_windows_schedule
+            ON policy_schedule_windows(schedule_id, position);
+
+        CREATE TABLE IF NOT EXISTS policy_site_lists (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            tier TEXT NOT NULL CHECK (tier IN ('hard', 'controlled_access')),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            allowance_id TEXT,
+            max_session_minutes INTEGER,
+            cooldown_minutes INTEGER,
+            max_unlocks_per_hour INTEGER,
+            FOREIGN KEY(allowance_id) REFERENCES policy_allowances(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS policy_site_list_patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            list_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('domain', 'exact_url', 'url_prefix', 'path_prefix')),
+            value TEXT NOT NULL,
+            match_subdomains INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(list_id) REFERENCES policy_site_lists(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_policy_site_list_patterns_list
+            ON policy_site_list_patterns(list_id, position);
+
+        CREATE TABLE IF NOT EXISTS policy_site_list_schedules (
+            list_id TEXT NOT NULL,
+            schedule_id TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(list_id, schedule_id),
+            FOREIGN KEY(list_id) REFERENCES policy_site_lists(id) ON DELETE CASCADE,
+            FOREIGN KEY(schedule_id) REFERENCES policy_schedules(id) ON DELETE CASCADE
+        );
         "#,
     )?;
     Ok(())
@@ -430,6 +932,103 @@ pub(crate) fn format_time(value: DateTime<Utc>) -> String {
 
 pub(crate) fn parse_time(value: &str) -> Result<DateTime<Utc>, Error> {
     Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
+}
+
+fn to_u32(label: &str, value: i64) -> Result<u32, Error> {
+    value.try_into().map_err(|_| {
+        ConfigError::Validation(format!("{label} value {value} is outside the supported range"))
+            .into()
+    })
+}
+
+fn optional_unlock_policy(
+    max_session_minutes: Option<i64>,
+    cooldown_minutes: Option<i64>,
+    max_unlocks_per_hour: Option<i64>,
+) -> Result<Option<UnlockPolicyConfig>, Error> {
+    match (
+        max_session_minutes,
+        cooldown_minutes,
+        max_unlocks_per_hour,
+    ) {
+        (None, None, None) => Ok(None),
+        (Some(max_session_minutes), Some(cooldown_minutes), Some(max_unlocks_per_hour)) => {
+            Ok(Some(UnlockPolicyConfig {
+                max_session_minutes: to_u32(
+                    "rule.unlock_policy.max_session_minutes",
+                    max_session_minutes,
+                )?,
+                cooldown_minutes: to_u32("rule.unlock_policy.cooldown_minutes", cooldown_minutes)?,
+                max_unlocks_per_hour: to_u32(
+                    "rule.unlock_policy.max_unlocks_per_hour",
+                    max_unlocks_per_hour,
+                )?,
+            }))
+        }
+        _ => Err(ConfigError::Validation(
+            "rule unlock policy columns must be all set or all null".to_string(),
+        )
+        .into()),
+    }
+}
+
+fn rule_tier_to_str(value: RuleTier) -> &'static str {
+    match value {
+        RuleTier::Hard => "hard",
+        RuleTier::ControlledAccess => "controlled_access",
+    }
+}
+
+fn rule_tier_from_str(value: &str) -> Result<RuleTier, Error> {
+    match value {
+        "hard" => Ok(RuleTier::Hard),
+        "controlled_access" => Ok(RuleTier::ControlledAccess),
+        _ => Err(ConfigError::Validation(format!("unknown rule tier '{value}'")).into()),
+    }
+}
+
+fn pattern_kind_to_str(value: RulePatternKind) -> &'static str {
+    match value {
+        RulePatternKind::Domain => "domain",
+        RulePatternKind::ExactUrl => "exact_url",
+        RulePatternKind::UrlPrefix => "url_prefix",
+        RulePatternKind::PathPrefix => "path_prefix",
+    }
+}
+
+fn pattern_kind_from_str(value: &str) -> Result<RulePatternKind, Error> {
+    match value {
+        "domain" => Ok(RulePatternKind::Domain),
+        "exact_url" => Ok(RulePatternKind::ExactUrl),
+        "url_prefix" => Ok(RulePatternKind::UrlPrefix),
+        "path_prefix" => Ok(RulePatternKind::PathPrefix),
+        _ => Err(ConfigError::Validation(format!("unknown rule pattern kind '{value}'")).into()),
+    }
+}
+
+fn weekday_to_str(value: Weekday) -> &'static str {
+    match value {
+        Weekday::Mon => "mon",
+        Weekday::Tue => "tue",
+        Weekday::Wed => "wed",
+        Weekday::Thu => "thu",
+        Weekday::Fri => "fri",
+        Weekday::Sat => "sat",
+        Weekday::Sun => "sun",
+    }
+}
+
+fn weekday_from_str(value: &str) -> Result<Weekday, Error> {
+    match value {
+        "mon" => Ok(Weekday::Mon),
+        "tue" => Ok(Weekday::Tue),
+        "wed" => Ok(Weekday::Wed),
+        "thu" => Ok(Weekday::Thu),
+        "fri" => Ok(Weekday::Fri),
+        "sat" => Ok(Weekday::Sat),
+        "sun" => Ok(Weekday::Sun),
+        _ => Err(ConfigError::Validation(format!("unknown schedule weekday '{value}'")).into()),
+    }
 }
 
 fn unlock_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnlockState> {

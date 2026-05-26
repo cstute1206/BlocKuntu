@@ -4,7 +4,7 @@ use std::time::Duration;
 use clap::Parser;
 use native_host::bridge::run_bridge;
 use native_host::cli::Args;
-use native_host::daemon_client::DaemonClient;
+use native_host::daemon_client::{DaemonClient, DaemonRevivalConfig};
 
 fn main() {
     if let Err(err) = run() {
@@ -15,7 +15,15 @@ fn main() {
 
 fn run() -> native_host::error::Result<()> {
     let args = Args::parse();
-    let daemon_client = DaemonClient::new(args.socket, Duration::from_millis(args.timeout_ms));
+    let mut daemon_client = DaemonClient::new(args.socket, Duration::from_millis(args.timeout_ms));
+    if let Some(command) = args.revive_command {
+        daemon_client = daemon_client.with_revival(DaemonRevivalConfig::new(
+            command,
+            Duration::from_millis(args.revive_wait_ms),
+            Duration::from_millis(args.revive_retry_interval_ms),
+            Duration::from_millis(args.revive_min_interval_ms),
+        ));
+    }
 
     let stdin = io::stdin();
     let stdout = io::stdout();

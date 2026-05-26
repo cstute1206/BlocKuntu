@@ -33,10 +33,17 @@ impl DaemonApp {
     pub fn load(args: &Args) -> Result<Self> {
         create_parent_dir(&args.database, 0o700)?;
 
-        let config = focus_core::load_config(&args.config)?;
         let database = Database::open(&args.database)?;
+        let config = if database.has_policy_config()? {
+            database.load_policy_config()?
+        } else {
+            let config = focus_core::load_config(&args.config)?;
+            database.replace_policy_config(&config)?;
+            config
+        };
         let core = Arc::new(Mutex::new(FocusCore::new(config, database)?));
-        let rpc_context = RpcContext::new(core.clone(), args.config.clone());
+        let rpc_context = RpcContext::new(core.clone())
+            .with_extension_heartbeat_timeout_seconds(args.extension_heartbeat_timeout_seconds);
         let firefox_policy = FirefoxPolicyManager::new(
             &args.firefox_policy,
             &args.extension_id,

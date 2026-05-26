@@ -7,12 +7,12 @@
     CalendarDays,
     CheckCircle2,
     Clock3,
-    FileJson,
     Gauge,
     LayoutDashboard,
     ListChecks,
     LockKeyhole,
     Play,
+    Plus,
     RefreshCw,
     Save,
     Search,
@@ -21,30 +21,34 @@
     Shield,
     Terminal,
     Timer,
+    Trash2,
     Unlock,
     Wrench,
     XCircle
   } from "@lucide/svelte";
   import {
-    configFile,
     configSnapshot,
     daemonRpc,
     daemonStatus,
+    deleteSchedule,
+    deleteSiteList,
     evaluateUrl,
     recentEvents,
     requestUnlock,
     systemHealth,
-    writeConfigFile
+    upsertSchedule,
+    upsertSiteList
   } from "./lib/api";
   import type {
-    Allowance,
     ConfigSnapshot,
     DaemonStatus,
     DecisionResult,
     HealthCheck,
     RecentEvent,
     Rule,
+    RulePattern,
     Schedule,
+    ScheduleWindow,
     SystemHealth,
     UnlockResult,
     ViewId
@@ -54,8 +58,7 @@
 
   const navItems: Array<{ id: ViewId; label: string; icon: Icon }> = [
     { id: "overview", label: "Dashboard", icon: LayoutDashboard },
-    { id: "blocks", label: "Blocks", icon: Shield },
-    { id: "config", label: "Config", icon: FileJson },
+    { id: "blocks", label: "Lists", icon: ListChecks },
     { id: "schedule", label: "Schedule", icon: CalendarDays },
     { id: "allowances", label: "Allowances", icon: Timer },
     { id: "statistics", label: "Statistics", icon: BarChart3 },
@@ -71,6 +74,13 @@
     { id: "sat", label: "Sat" },
     { id: "sun", label: "Sun" }
   ] as const;
+
+  const patternKinds: Array<{ id: RulePattern["kind"]; label: string }> = [
+    { id: "domain", label: "Domain" },
+    { id: "exact_url", label: "Exact URL" },
+    { id: "url_prefix", label: "URL prefix" },
+    { id: "path_prefix", label: "Path prefix" }
+  ];
 
   let activeView: ViewId = $state("overview");
   let socketPath = $state("");
@@ -93,15 +103,17 @@
   let unlocking = $state(false);
 
   let selectedRuleId = $state<string | null>(null);
+  let ruleDraft = $state<Rule | null>(null);
+  let ruleSaving = $state(false);
+  let ruleMessage: string | null = $state(null);
+  let selectedScheduleId = $state<string | null>(null);
+  let scheduleDraft = $state<Schedule | null>(null);
+  let scheduleSaving = $state(false);
+  let scheduleMessage: string | null = $state(null);
   let rawMethod = $state("status");
   let rawParams = $state("{}");
   let rawResult = $state("");
   let rawRunning = $state(false);
-  let configPath = $state("");
-  let configToml = $state("");
-  let configDirty = $state(false);
-  let configSaving = $state(false);
-  let configMessage: string | null = $state(null);
 
   let hardRules = $derived(config?.rules.filter((rule) => rule.tier === "hard") ?? []);
   let controlledRules = $derived(
@@ -109,6 +121,25 @@
   );
   let selectedRule = $derived(
     config?.rules.find((rule) => rule.id === selectedRuleId) ?? config?.rules[0] ?? null
+  );
+  let selectedRuleIsActive = $derived(selectedRule ? ruleIsActive(selectedRule) : false);
+  let ruleDraftIsExisting = $derived(
+    Boolean(ruleDraft && config?.rules.some((rule) => rule.id === ruleDraft?.id))
+  );
+  let ruleDraftLocked = $derived(Boolean(ruleDraft && ruleDraftIsExisting && selectedRuleIsActive));
+  let selectedSchedule = $derived(
+    config?.schedules.find((schedule) => schedule.id === selectedScheduleId) ??
+      config?.schedules[0] ??
+      null
+  );
+  let selectedScheduleIsActive = $derived(
+    selectedSchedule ? scheduleIsActive(selectedSchedule) : false
+  );
+  let scheduleDraftIsExisting = $derived(
+    Boolean(scheduleDraft && config?.schedules.some((schedule) => schedule.id === scheduleDraft?.id))
+  );
+  let scheduleDraftLocked = $derived(
+    Boolean(scheduleDraft && scheduleDraftIsExisting && selectedScheduleIsActive)
   );
   let eventBuckets = $derived.by(() => {
     const counts: Record<string, number> = {};
@@ -138,11 +169,9 @@
     loading = true;
     lastError = null;
 
-    const [statusResult, configResult, configFileResult, eventsResult, healthResult] =
-      await Promise.allSettled([
+    const [statusResult, configResult, eventsResult, healthResult] = await Promise.allSettled([
       daemonStatus(socketArg()),
       configSnapshot(socketArg()),
-      configFile(socketArg()),
       recentEvents(80, socketArg()),
       systemHealth(socketArg())
     ]);
@@ -156,15 +185,7 @@
 
     if (configResult.status === "fulfilled") {
       config = configResult.value;
-      if (!selectedRuleId && configResult.value.rules[0]) {
-        selectedRuleId = configResult.value.rules[0].id;
-      }
-    }
-
-    if (configFileResult.status === "fulfilled" && !configDirty) {
-      configPath = configFileResult.value.path;
-      configToml = configFileResult.value.toml;
-      configMessage = null;
+      syncConfigSelection(configResult.value);
     }
 
     if (eventsResult.status === "fulfilled") {
@@ -177,6 +198,26 @@
 
     lastRefresh = new Date().toLocaleTimeString();
     loading = false;
+  }
+
+  function syncConfigSelection(snapshot: ConfigSnapshot): void {
+    const selectedRuleStillExists = snapshot.rules.some((rule) => rule.id === selectedRuleId);
+    if (!selectedRuleStillExists) {
+      selectedRuleId = snapshot.rules[0]?.id ?? null;
+      ruleDraft = snapshot.rules[0] ? cloneRule(snapshot.rules[0]) : null;
+    } else if (!ruleDraft && selectedRule) {
+      ruleDraft = cloneRule(selectedRule);
+    }
+
+    const selectedScheduleStillExists = snapshot.schedules.some(
+      (schedule) => schedule.id === selectedScheduleId
+    );
+    if (!selectedScheduleStillExists) {
+      selectedScheduleId = snapshot.schedules[0]?.id ?? null;
+      scheduleDraft = snapshot.schedules[0] ? cloneSchedule(snapshot.schedules[0]) : null;
+    } else if (!scheduleDraft && selectedSchedule) {
+      scheduleDraft = cloneSchedule(selectedSchedule);
+    }
   }
 
   async function runUrlCheck(): Promise<void> {
@@ -231,36 +272,254 @@
     }
   }
 
-  async function reloadConfigToml(): Promise<void> {
-    lastError = null;
-    configMessage = null;
-    try {
-      const response = await configFile(socketArg());
-      configPath = response.path;
-      configToml = response.toml;
-      configDirty = false;
-      configMessage = "Reloaded from daemon config file.";
-    } catch (error) {
-      lastError = formatError(error);
-    }
+  function selectRule(rule: Rule): void {
+    selectedRuleId = rule.id;
+    ruleDraft = cloneRule(rule);
+    ruleMessage = null;
   }
 
-  async function saveConfigToml(): Promise<void> {
-    configSaving = true;
+  function startNewRule(): void {
+    const index = (config?.rules.length ?? 0) + 1;
+    selectedRuleId = null;
+    ruleDraft = {
+      id: `site-list-${index}`,
+      name: `Site list ${index}`,
+      tier: "controlled_access",
+      enabled: true,
+      patterns: [{ kind: "domain", value: "example.com", match_subdomains: true }],
+      schedule_ids: [],
+      allowance_id: null,
+      unlock_policy: null
+    };
+    ruleMessage = null;
+  }
+
+  async function saveRuleDraft(): Promise<void> {
+    if (!ruleDraft) return;
+    ruleSaving = true;
     lastError = null;
-    configMessage = null;
+    ruleMessage = null;
     try {
-      const response = await writeConfigFile(configToml, socketArg());
-      configPath = response.path;
+      const response = await upsertSiteList(normalizeRuleDraft(ruleDraft), socketArg());
       config = response.config;
-      configDirty = false;
-      configMessage = `Saved and reloaded ${response.path}.`;
+      selectedRuleId = ruleDraft.id.trim();
+      ruleDraft = cloneRule(
+        response.config.rules.find((rule) => rule.id === selectedRuleId) ?? response.config.rules[0]
+      );
+      ruleMessage = "Saved.";
       await refreshEventsOnly();
     } catch (error) {
       lastError = formatError(error);
     } finally {
-      configSaving = false;
+      ruleSaving = false;
     }
+  }
+
+  async function removeRuleDraft(): Promise<void> {
+    if (!ruleDraft || !ruleDraftIsExisting) return;
+    ruleSaving = true;
+    lastError = null;
+    ruleMessage = null;
+    try {
+      const response = await deleteSiteList(ruleDraft.id, socketArg());
+      config = response.config;
+      selectedRuleId = response.config.rules[0]?.id ?? null;
+      ruleDraft = response.config.rules[0] ? cloneRule(response.config.rules[0]) : null;
+      ruleMessage = "Deleted.";
+      await refreshEventsOnly();
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      ruleSaving = false;
+    }
+  }
+
+  function selectSchedule(schedule: Schedule): void {
+    selectedScheduleId = schedule.id;
+    scheduleDraft = cloneSchedule(schedule);
+    scheduleMessage = null;
+  }
+
+  function startNewSchedule(): void {
+    const index = (config?.schedules.length ?? 0) + 1;
+    selectedScheduleId = null;
+    scheduleDraft = {
+      id: `schedule-${index}`,
+      name: `Schedule ${index}`,
+      windows: [{ weekday: "mon", start: "09:00", end: "17:00" }]
+    };
+    scheduleMessage = null;
+  }
+
+  async function saveScheduleDraft(): Promise<void> {
+    if (!scheduleDraft) return;
+    scheduleSaving = true;
+    lastError = null;
+    scheduleMessage = null;
+    try {
+      const response = await upsertSchedule(normalizeScheduleDraft(scheduleDraft), socketArg());
+      config = response.config;
+      selectedScheduleId = scheduleDraft.id.trim();
+      scheduleDraft = cloneSchedule(
+        response.config.schedules.find((schedule) => schedule.id === selectedScheduleId) ??
+          response.config.schedules[0]
+      );
+      scheduleMessage = "Saved.";
+      await refreshEventsOnly();
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      scheduleSaving = false;
+    }
+  }
+
+  async function removeScheduleDraft(): Promise<void> {
+    if (!scheduleDraft || !scheduleDraftIsExisting) return;
+    scheduleSaving = true;
+    lastError = null;
+    scheduleMessage = null;
+    try {
+      const response = await deleteSchedule(scheduleDraft.id, socketArg());
+      config = response.config;
+      selectedScheduleId = response.config.schedules[0]?.id ?? null;
+      scheduleDraft = response.config.schedules[0] ? cloneSchedule(response.config.schedules[0]) : null;
+      scheduleMessage = "Deleted.";
+      await refreshEventsOnly();
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      scheduleSaving = false;
+    }
+  }
+
+  function cloneRule(rule: Rule): Rule {
+    return {
+      ...rule,
+      patterns: rule.patterns.map((pattern) => ({ ...pattern })),
+      schedule_ids: [...rule.schedule_ids],
+      allowance_id: rule.allowance_id ?? null,
+      unlock_policy: rule.unlock_policy ? { ...rule.unlock_policy } : null
+    };
+  }
+
+  function cloneSchedule(schedule: Schedule): Schedule {
+    return {
+      ...schedule,
+      name: schedule.name ?? "",
+      windows: schedule.windows.map((window) => ({ ...window }))
+    };
+  }
+
+  function normalizeRuleDraft(rule: Rule): Rule {
+    return {
+      ...rule,
+      id: rule.id.trim(),
+      name: rule.name.trim(),
+      allowance_id:
+        rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id : null,
+      unlock_policy: rule.tier === "controlled_access" ? rule.unlock_policy : null,
+      patterns: rule.patterns.map((pattern) => ({
+        ...pattern,
+        value: pattern.value.trim(),
+        match_subdomains: pattern.kind === "domain" ? pattern.match_subdomains : false
+      })),
+      schedule_ids: [...rule.schedule_ids]
+    };
+  }
+
+  function normalizeScheduleDraft(schedule: Schedule): Schedule {
+    return {
+      ...schedule,
+      id: schedule.id.trim(),
+      name: schedule.name?.trim() || null,
+      windows: schedule.windows.map((window) => ({ ...window }))
+    };
+  }
+
+  function addPattern(): void {
+    if (!ruleDraft) return;
+    ruleDraft.patterns = [
+      ...ruleDraft.patterns,
+      { kind: "domain", value: "", match_subdomains: true }
+    ];
+  }
+
+  function removePattern(index: number): void {
+    if (!ruleDraft || ruleDraft.patterns.length <= 1) return;
+    ruleDraft.patterns = ruleDraft.patterns.filter((_, patternIndex) => patternIndex !== index);
+  }
+
+  function setRuleTier(tier: Rule["tier"]): void {
+    if (!ruleDraft) return;
+    ruleDraft.tier = tier;
+    if (tier === "hard") {
+      ruleDraft.allowance_id = null;
+      ruleDraft.unlock_policy = null;
+    }
+  }
+
+  function setRuleAllowance(value: string): void {
+    if (!ruleDraft) return;
+    ruleDraft.allowance_id = value || null;
+  }
+
+  function toggleDraftSchedule(scheduleId: string): void {
+    if (!ruleDraft) return;
+    if (ruleDraft.schedule_ids.includes(scheduleId)) {
+      ruleDraft.schedule_ids = ruleDraft.schedule_ids.filter((id) => id !== scheduleId);
+    } else {
+      ruleDraft.schedule_ids = [...ruleDraft.schedule_ids, scheduleId];
+    }
+  }
+
+  function addScheduleWindow(): void {
+    if (!scheduleDraft) return;
+    scheduleDraft.windows = [
+      ...scheduleDraft.windows,
+      { weekday: "mon", start: "09:00", end: "17:00" }
+    ];
+  }
+
+  function removeScheduleWindow(index: number): void {
+    if (!scheduleDraft) return;
+    scheduleDraft.windows = scheduleDraft.windows.filter((_, windowIndex) => windowIndex !== index);
+  }
+
+  function ruleIsActive(rule: Rule): boolean {
+    if (!rule.enabled) return false;
+    if (rule.schedule_ids.length === 0) return true;
+
+    return rule.schedule_ids.some((scheduleId) => {
+      const schedule = config?.schedules.find((candidate) => candidate.id === scheduleId);
+      return schedule ? scheduleIsActive(schedule) : true;
+    });
+  }
+
+  function scheduleIsActive(schedule: Schedule): boolean {
+    return schedule.windows.some((window) => windowIsActive(window));
+  }
+
+  function windowIsActive(window: ScheduleWindow): boolean {
+    const now = new Date();
+    const today = weekdays[(now.getDay() + 6) % 7].id;
+    const yesterday = weekdays[(now.getDay() + 5) % 7].id;
+    const currentMinute = now.getHours() * 60 + now.getMinutes();
+    const start = minutesAfterMidnight(window.start);
+    const end = minutesAfterMidnight(window.end);
+
+    if (start < end) {
+      return window.weekday === today && currentMinute >= start && currentMinute < end;
+    }
+
+    return (
+      (window.weekday === today && currentMinute >= start) ||
+      (window.weekday === yesterday && currentMinute < end)
+    );
+  }
+
+  function minutesAfterMidnight(value: string): number {
+    const [hours, minutes] = value.split(":").map(Number);
+    return hours * 60 + minutes;
   }
 
   function formatError(error: unknown): string {
@@ -268,10 +527,6 @@
       return error.message;
     }
     return String(error);
-  }
-
-  function ruleAllowance(rule: Rule): Allowance | null {
-    return config?.allowances.find((allowance) => allowance.id === rule.allowance_id) ?? null;
   }
 
   function checkIcon(check: HealthCheck): Icon {
@@ -470,64 +725,138 @@
         <article class="panel list-panel">
           <div class="panel-title">
             <ListChecks size={18} aria-hidden="true" />
-            <h2>Rules</h2>
+            <h2>Site Lists</h2>
           </div>
+          <button class="secondary wide-button" onclick={startNewRule}>
+            <Plus size={17} aria-hidden="true" />
+            <span>New list</span>
+          </button>
           <div class="rule-list">
             {#each config?.rules ?? [] as rule (rule.id)}
               <button
-                class:active={selectedRule?.id === rule.id}
-                onclick={() => (selectedRuleId = rule.id)}
+                class:active={ruleDraft?.id === rule.id}
+                onclick={() => selectRule(rule)}
               >
                 <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
                 <span>{rule.name}</span>
-                <em>{rule.tier === "hard" ? "Hard" : "Controlled"}</em>
+                <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
               </button>
             {:else}
-              <p class="empty-state">No rules reported by the daemon.</p>
+              <p class="empty-state">No lists reported by the daemon.</p>
             {/each}
           </div>
         </article>
 
         <article class="panel detail-panel">
           <div class="panel-title">
-            <FileJson size={18} aria-hidden="true" />
-            <h2>{selectedRule?.name ?? "Rule"}</h2>
+            <Shield size={18} aria-hidden="true" />
+            <h2>{ruleDraft?.name || "Site list"}</h2>
           </div>
-          {#if selectedRule}
+          {#if ruleDraft}
+            {#if ruleDraftLocked}
+              <section class="inline-warning">
+                <AlertTriangle size={17} aria-hidden="true" />
+                <span>This list is active right now.</span>
+              </section>
+            {/if}
             <div class="form-grid">
               <label>
-                <span>Rule ID</span>
-                <input value={selectedRule.id} readonly />
+                <span>List ID</span>
+                <input bind:value={ruleDraft.id} readonly={ruleDraftIsExisting} disabled={ruleDraftLocked} />
               </label>
               <label>
                 <span>Tier</span>
-                <input value={selectedRule.tier === "hard" ? "Hard block" : "Controlled access"} readonly />
+                <select
+                  value={ruleDraft.tier}
+                  disabled={ruleDraftLocked}
+                  onchange={(event) =>
+                    setRuleTier(event.currentTarget.value as Rule["tier"])}
+                >
+                  <option value="controlled_access">Tier 2</option>
+                  <option value="hard">Tier 1</option>
+                </select>
               </label>
               <label>
-                <span>Enabled</span>
-                <input value={selectedRule.enabled ? "Yes" : "No"} readonly />
+                <span>Name</span>
+                <input bind:value={ruleDraft.name} disabled={ruleDraftLocked} />
               </label>
               <label>
                 <span>Allowance</span>
-                <input value={ruleAllowance(selectedRule)?.name ?? selectedRule.allowance_id ?? "None"} readonly />
+                <select
+                  value={ruleDraft.allowance_id ?? ""}
+                  disabled={ruleDraftLocked || ruleDraft.tier === "hard"}
+                  onchange={(event) => setRuleAllowance(event.currentTarget.value)}
+                >
+                  <option value="">None</option>
+                  {#each config?.allowances ?? [] as allowance (allowance.id)}
+                    <option value={allowance.id}>{allowance.name ?? allowance.id}</option>
+                  {/each}
+                </select>
               </label>
+            </div>
+
+            <label class="check-row">
+              <input type="checkbox" bind:checked={ruleDraft.enabled} disabled={ruleDraftLocked} />
+              <span>Enabled</span>
+            </label>
+
+            <div class="section-label">Schedules</div>
+            <div class="chip-grid">
+              {#each config?.schedules ?? [] as schedule (schedule.id)}
+                <label class="chip-check">
+                  <input
+                    type="checkbox"
+                    checked={ruleDraft.schedule_ids.includes(schedule.id)}
+                    disabled={ruleDraftLocked}
+                    onchange={() => toggleDraftSchedule(schedule.id)}
+                  />
+                  <span>{schedule.name ?? schedule.id}</span>
+                </label>
+              {:else}
+                <p class="empty-state">No schedules available.</p>
+              {/each}
             </div>
 
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Pattern</th>
                     <th>Type</th>
+                    <th>Pattern</th>
                     <th>Subdomains</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {#each selectedRule.patterns as pattern}
+                  {#each ruleDraft.patterns as pattern, index (pattern)}
                     <tr>
-                      <td>{pattern.value}</td>
-                      <td>{pattern.kind}</td>
-                      <td>{pattern.match_subdomains ? "yes" : "no"}</td>
+                      <td>
+                        <select bind:value={pattern.kind} disabled={ruleDraftLocked}>
+                          {#each patternKinds as kind (kind.id)}
+                            <option value={kind.id}>{kind.label}</option>
+                          {/each}
+                        </select>
+                      </td>
+                      <td>
+                        <input bind:value={pattern.value} disabled={ruleDraftLocked} />
+                      </td>
+                      <td>
+                        <input
+                          type="checkbox"
+                          bind:checked={pattern.match_subdomains}
+                          disabled={ruleDraftLocked || pattern.kind !== "domain"}
+                        />
+                      </td>
+                      <td>
+                        <button
+                          class="icon-button"
+                          title="Remove pattern"
+                          onclick={() => removePattern(index)}
+                          disabled={ruleDraftLocked || ruleDraft.patterns.length <= 1}
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                        </button>
+                      </td>
                     </tr>
                   {/each}
                 </tbody>
@@ -535,78 +864,179 @@
             </div>
 
             <div class="button-row">
-              <button class="secondary" disabled title="Daemon write API not implemented">
+              <button class="secondary" onclick={addPattern} disabled={ruleDraftLocked}>
+                <Plus size={17} aria-hidden="true" />
+                <span>Pattern</span>
+              </button>
+              <button
+                class="secondary"
+                onclick={removeRuleDraft}
+                disabled={ruleSaving || ruleDraftLocked || !ruleDraftIsExisting}
+              >
+                <Trash2 size={17} aria-hidden="true" />
+                <span>Delete</span>
+              </button>
+              <button
+                class="primary"
+                onclick={saveRuleDraft}
+                disabled={ruleSaving || ruleDraftLocked}
+              >
                 <Save size={17} aria-hidden="true" />
                 <span>Save</span>
               </button>
             </div>
+            {#if ruleMessage}
+              <p class="result-text">{ruleMessage}</p>
+            {/if}
           {/if}
         </article>
       </section>
-    {:else if activeView === "config"}
-      <section class="panel config-editor">
-        <div class="panel-title">
-          <FileJson size={18} aria-hidden="true" />
-          <h2>TOML Configuration</h2>
-        </div>
-        <div class="config-toolbar">
-          <label>
-            <span>Path</span>
-            <input value={configPath || "Unavailable"} readonly />
-          </label>
-          <div class="button-row">
-            <button class="secondary" onclick={reloadConfigToml}>
-              <RefreshCw size={17} aria-hidden="true" />
-              <span>Reload</span>
-            </button>
-            <button
-              class="primary"
-              onclick={saveConfigToml}
-              disabled={configSaving || !configDirty || !configToml.trim()}
-            >
-              <Save size={17} aria-hidden="true" />
-              <span>Save TOML</span>
-            </button>
-          </div>
-        </div>
-        <textarea
-          class="toml-editor"
-          bind:value={configToml}
-          spellcheck="false"
-          oninput={() => {
-            configDirty = true;
-            configMessage = null;
-          }}
-        ></textarea>
-        <div class="config-footer">
-          <span>{configDirty ? "Unsaved changes" : "No unsaved changes"}</span>
-          {#if configMessage}
-            <strong>{configMessage}</strong>
-          {/if}
-        </div>
-      </section>
     {:else if activeView === "schedule"}
-      <section class="panel">
-        <div class="panel-title">
-          <CalendarDays size={18} aria-hidden="true" />
-          <h2>Weekly Grid</h2>
-        </div>
-        <div class="schedule-grid">
-          <div class="schedule-head">Schedule</div>
-          {#each weekdays as day}
-            <div class="schedule-head">{day.label}</div>
-          {/each}
-          {#each config?.schedules ?? [] as schedule (schedule.id)}
-            <div class="schedule-name">{schedule.name ?? schedule.id}</div>
-            {#each weekdays as day}
-              <div class:filled={windowsFor(schedule, day.id)} class="schedule-cell">
-                {windowsFor(schedule, day.id) || "—"}
-              </div>
+      <section class="split-view">
+        <article class="panel list-panel">
+          <div class="panel-title">
+            <CalendarDays size={18} aria-hidden="true" />
+            <h2>Schedules</h2>
+          </div>
+          <button class="secondary wide-button" onclick={startNewSchedule}>
+            <Plus size={17} aria-hidden="true" />
+            <span>New schedule</span>
+          </button>
+          <div class="rule-list">
+            {#each config?.schedules ?? [] as schedule (schedule.id)}
+              <button
+                class:active={scheduleDraft?.id === schedule.id}
+                onclick={() => selectSchedule(schedule)}
+              >
+                <span class:hard={scheduleIsActive(schedule)} class="tier-dot"></span>
+                <span>{schedule.name ?? schedule.id}</span>
+                <em>{scheduleIsActive(schedule) ? "Active" : "Idle"}</em>
+              </button>
+            {:else}
+              <p class="empty-state">No schedules reported by the daemon.</p>
             {/each}
-          {:else}
-            <p class="empty-state">No schedules reported by the daemon.</p>
-          {/each}
-        </div>
+          </div>
+        </article>
+
+        <article class="panel detail-panel">
+          <div class="panel-title">
+            <CalendarDays size={18} aria-hidden="true" />
+            <h2>{scheduleDraft?.name || "Schedule"}</h2>
+          </div>
+          {#if scheduleDraft}
+            {#if scheduleDraftLocked}
+              <section class="inline-warning">
+                <AlertTriangle size={17} aria-hidden="true" />
+                <span>This schedule is active right now.</span>
+              </section>
+            {/if}
+            <div class="form-grid">
+              <label>
+                <span>Schedule ID</span>
+                <input
+                  bind:value={scheduleDraft.id}
+                  readonly={scheduleDraftIsExisting}
+                  disabled={scheduleDraftLocked}
+                />
+              </label>
+              <label>
+                <span>Name</span>
+                <input bind:value={scheduleDraft.name} disabled={scheduleDraftLocked} />
+              </label>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Weekday</th>
+                    <th>Start</th>
+                    <th>End</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each scheduleDraft.windows as window, index (window)}
+                    <tr>
+                      <td>
+                        <select bind:value={window.weekday} disabled={scheduleDraftLocked}>
+                          {#each weekdays as day (day.id)}
+                            <option value={day.id}>{day.label}</option>
+                          {/each}
+                        </select>
+                      </td>
+                      <td>
+                        <input type="time" bind:value={window.start} disabled={scheduleDraftLocked} />
+                      </td>
+                      <td>
+                        <input type="time" bind:value={window.end} disabled={scheduleDraftLocked} />
+                      </td>
+                      <td>
+                        <button
+                          class="icon-button"
+                          title="Remove window"
+                          onclick={() => removeScheduleWindow(index)}
+                          disabled={scheduleDraftLocked}
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                        </button>
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+
+            <div class="button-row">
+              <button class="secondary" onclick={addScheduleWindow} disabled={scheduleDraftLocked}>
+                <Plus size={17} aria-hidden="true" />
+                <span>Window</span>
+              </button>
+              <button
+                class="secondary"
+                onclick={removeScheduleDraft}
+                disabled={scheduleSaving || scheduleDraftLocked || !scheduleDraftIsExisting}
+              >
+                <Trash2 size={17} aria-hidden="true" />
+                <span>Delete</span>
+              </button>
+              <button
+                class="primary"
+                onclick={saveScheduleDraft}
+                disabled={scheduleSaving || scheduleDraftLocked}
+              >
+                <Save size={17} aria-hidden="true" />
+                <span>Save</span>
+              </button>
+            </div>
+            {#if scheduleMessage}
+              <p class="result-text">{scheduleMessage}</p>
+            {/if}
+          {/if}
+        </article>
+
+        <article class="panel wide-panel">
+          <div class="panel-title">
+            <CalendarDays size={18} aria-hidden="true" />
+            <h2>Weekly Grid</h2>
+          </div>
+          <div class="schedule-grid">
+            <div class="schedule-head">Schedule</div>
+            {#each weekdays as day}
+              <div class="schedule-head">{day.label}</div>
+            {/each}
+            {#each config?.schedules ?? [] as schedule (schedule.id)}
+              <div class="schedule-name">{schedule.name ?? schedule.id}</div>
+              {#each weekdays as day}
+                <div class:filled={windowsFor(schedule, day.id)} class="schedule-cell">
+                  {windowsFor(schedule, day.id) || "-"}
+                </div>
+              {/each}
+            {:else}
+              <p class="empty-state">No schedules reported by the daemon.</p>
+            {/each}
+          </div>
+        </article>
       </section>
     {:else if activeView === "allowances"}
       <section class="content-grid">
@@ -871,6 +1301,7 @@
   }
 
   input,
+  select,
   textarea {
     background: #ffffff;
     border: 1px solid #cdd7d1;
@@ -880,6 +1311,15 @@
     min-width: 0;
     padding: 0 10px;
     width: 100%;
+  }
+
+  input[type="checkbox"] {
+    min-height: auto;
+    width: 16px;
+  }
+
+  select {
+    appearance: auto;
   }
 
   textarea {
@@ -1043,35 +1483,6 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .config-toolbar {
-    align-items: end;
-    display: grid;
-    gap: 12px;
-    grid-template-columns: minmax(0, 1fr) max-content;
-    margin-bottom: 12px;
-  }
-
-  .toml-editor {
-    font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-    min-height: 520px;
-    resize: vertical;
-    white-space: pre;
-  }
-
-  .config-footer {
-    align-items: center;
-    color: #66756e;
-    display: flex;
-    gap: 14px;
-    justify-content: space-between;
-    margin-top: 10px;
-  }
-
-  .config-footer strong {
-    color: #145c3d;
-    font-weight: 700;
-  }
-
   .reason-field,
   .rpc-form label:nth-child(2) {
     grid-column: 1 / -1;
@@ -1086,6 +1497,61 @@
     display: grid;
     gap: 14px;
     grid-template-columns: minmax(280px, 0.34fr) minmax(0, 1fr);
+  }
+
+  .wide-panel {
+    grid-column: 1 / -1;
+  }
+
+  .wide-button {
+    margin-bottom: 12px;
+    width: 100%;
+  }
+
+  .inline-warning {
+    align-items: center;
+    background: #fff4d8;
+    border: 1px solid #e5bc5c;
+    border-radius: 8px;
+    color: #5b4410;
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+    min-height: 38px;
+    padding: 0 10px;
+  }
+
+  .section-label {
+    color: #63716b;
+    font-size: 0.78rem;
+    font-weight: 800;
+    margin: 14px 0 8px;
+    text-transform: uppercase;
+  }
+
+  .check-row,
+  .chip-check {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+  }
+
+  .check-row {
+    margin-top: 12px;
+  }
+
+  .chip-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .chip-check {
+    background: #f5f7f5;
+    border: 1px solid #dfe6e1;
+    border-radius: 8px;
+    min-height: 36px;
+    padding: 0 10px;
   }
 
   .rule-list {
