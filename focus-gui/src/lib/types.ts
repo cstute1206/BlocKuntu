@@ -1,6 +1,7 @@
 export type ViewId =
   | "overview"
   | "blocks"
+  | "apps"
   | "schedule"
   | "allowances"
   | "statistics"
@@ -8,7 +9,9 @@ export type ViewId =
 
 export interface DaemonStatus {
   status: string;
+  enforcement_state?: "active" | "stopped";
   rules: number;
+  app_rules: number;
   schedules: number;
   allowances: number;
 }
@@ -25,6 +28,28 @@ export interface Rule {
   tier: "hard" | "controlled_access";
   enabled: boolean;
   patterns: RulePattern[];
+  schedule_ids: string[];
+  allowance_id?: string | null;
+  unlock_policy?: UnlockPolicy | null;
+}
+
+export interface AppMatcher {
+  kind:
+    | "executable_path"
+    | "executable_basename"
+    | "command_name"
+    | "desktop_id"
+    | "window_title_exact"
+    | "window_title_contains";
+  value: string;
+}
+
+export interface AppRule {
+  id: string;
+  name: string;
+  tier: "hard" | "controlled_access";
+  enabled: boolean;
+  matchers: AppMatcher[];
   schedule_ids: string[];
   allowance_id?: string | null;
   unlock_policy?: UnlockPolicy | null;
@@ -56,6 +81,7 @@ export interface Allowance {
 
 export interface ConfigSnapshot {
   rules: Rule[];
+  app_rules: AppRule[];
   schedules: Schedule[];
   allowances: Allowance[];
   defaults: {
@@ -92,6 +118,38 @@ export interface SystemHealth {
   checked_at: string;
   socket_path: string;
   checks: HealthCheck[];
+}
+
+export interface FirefoxPolicyStatus {
+  path: string;
+  extension_id: string;
+  extension_xpi: string;
+  extension_xpi_exists: boolean;
+  policy_exists: boolean;
+  valid_json: boolean;
+  compliant: boolean;
+  private_browsing_enabled: boolean;
+  private_browsing_available: boolean;
+  install_url?: string | null;
+  detail: string;
+}
+
+export interface HostsFileStatus {
+  path: string;
+  expected_domain_count: number;
+  managed_block_present: boolean;
+  managed_block_compliant: boolean;
+  immutable_required: boolean;
+  immutable_state: "enabled" | "disabled" | "not_required" | "unknown";
+  immutable_detail: string;
+  detail: string;
+}
+
+export interface EnforcementStatus {
+  status: string;
+  enforcement_state: "active" | "stopped";
+  firefox_policy: FirefoxPolicyStatus;
+  hosts_file: HostsFileStatus;
 }
 
 export interface DecisionResult {

@@ -21,6 +21,8 @@ pub struct Config {
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
     #[serde(default)]
+    pub app_rules: Vec<AppRuleConfig>,
+    #[serde(default)]
     pub schedules: Vec<ScheduleConfig>,
     #[serde(default)]
     pub allowances: Vec<AllowanceConfig>,
@@ -38,6 +40,10 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         ensure_unique_ids("rule", self.rules.iter().map(|rule| rule.id.as_str()))?;
         ensure_unique_ids(
+            "app rule",
+            self.app_rules.iter().map(|rule| rule.id.as_str()),
+        )?;
+        ensure_unique_ids(
             "schedule",
             self.schedules.iter().map(|schedule| schedule.id.as_str()),
         )?;
@@ -53,6 +59,7 @@ impl Config {
             .iter()
             .map(|schedule| schedule.id.as_str())
             .collect();
+        let site_rule_ids: HashSet<&str> = self.rules.iter().map(|rule| rule.id.as_str()).collect();
         let allowance_ids: HashSet<&str> = self
             .allowances
             .iter()
@@ -138,6 +145,65 @@ impl Config {
             }
         }
 
+        for app_rule in &self.app_rules {
+            require_identifier("app rule", &app_rule.id)?;
+            if site_rule_ids.contains(app_rule.id.as_str()) {
+                return Err(ConfigError::Validation(format!(
+                    "app rule '{}' conflicts with a site rule id",
+                    app_rule.id
+                )));
+            }
+            if app_rule.name.trim().is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "app rule '{}' must have a non-empty name",
+                    app_rule.id
+                )));
+            }
+            if app_rule.matchers.is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "app rule '{}' must contain at least one matcher",
+                    app_rule.id
+                )));
+            }
+
+            for matcher in &app_rule.matchers {
+                validate_app_matcher(&app_rule.id, matcher)?;
+            }
+
+            for schedule_id in &app_rule.schedule_ids {
+                if !schedule_ids.contains(schedule_id.as_str()) {
+                    return Err(ConfigError::Validation(format!(
+                        "app rule '{}' references missing schedule '{}'",
+                        app_rule.id, schedule_id
+                    )));
+                }
+            }
+
+            if app_rule.allowance_id.is_some() {
+                return Err(ConfigError::Validation(format!(
+                    "app rule '{}' cannot define allowances until app runtime accounting is implemented",
+                    app_rule.id
+                )));
+            }
+
+            match app_rule.tier {
+                RuleTier::Hard => {
+                    if app_rule.unlock_policy.is_some() {
+                        return Err(ConfigError::Validation(format!(
+                            "hard app rule '{}' cannot define unlock policies",
+                            app_rule.id
+                        )));
+                    }
+                }
+                RuleTier::ControlledAccess => {
+                    validate_unlock_policy(
+                        &format!("app rule '{}'.unlock_policy", app_rule.id),
+                        &app_rule.effective_unlock_policy(&self.defaults),
+                    )?;
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -146,6 +212,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             rules: Vec::new(),
+            app_rules: Vec::new(),
             schedules: Vec::new(),
             allowances: Vec::new(),
             defaults: DefaultsConfig::default(),
@@ -188,6 +255,46 @@ impl RuleConfig {
     pub fn effective_unlock_policy(&self, defaults: &DefaultsConfig) -> UnlockPolicyConfig {
         self.unlock_policy.unwrap_or(defaults.unlock_policy)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppRuleConfig {
+    pub id: String,
+    pub name: String,
+    pub tier: RuleTier,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub matchers: Vec<AppMatcherConfig>,
+    #[serde(default)]
+    pub schedule_ids: Vec<String>,
+    #[serde(default)]
+    pub allowance_id: Option<String>,
+    #[serde(default)]
+    pub unlock_policy: Option<UnlockPolicyConfig>,
+}
+
+impl AppRuleConfig {
+    pub fn effective_unlock_policy(&self, defaults: &DefaultsConfig) -> UnlockPolicyConfig {
+        self.unlock_policy.unwrap_or(defaults.unlock_policy)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppMatcherConfig {
+    pub kind: AppMatcherKind,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppMatcherKind {
+    ExecutablePath,
+    ExecutableBasename,
+    CommandName,
+    DesktopId,
+    WindowTitleExact,
+    WindowTitleContains,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -441,6 +548,43 @@ fn validate_pattern(rule_id: &str, pattern: &RulePatternConfig) -> Result<(), Co
                 )));
             }
         }
+    }
+
+    Ok(())
+}
+
+fn validate_app_matcher(rule_id: &str, matcher: &AppMatcherConfig) -> Result<(), ConfigError> {
+    let value = matcher.value.trim();
+    if value.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "app rule '{rule_id}' contains an empty matcher"
+        )));
+    }
+    if value != matcher.value {
+        return Err(ConfigError::Validation(format!(
+            "app rule '{rule_id}' contains a matcher with leading or trailing whitespace"
+        )));
+    }
+
+    match matcher.kind {
+        AppMatcherKind::ExecutablePath => {
+            if !value.starts_with('/') {
+                return Err(ConfigError::Validation(format!(
+                    "executable_path matcher '{value}' in app rule '{rule_id}' must be an absolute path"
+                )));
+            }
+        }
+        AppMatcherKind::ExecutableBasename
+        | AppMatcherKind::CommandName
+        | AppMatcherKind::DesktopId => {
+            if value.contains('/') {
+                return Err(ConfigError::Validation(format!(
+                    "{:?} matcher '{value}' in app rule '{rule_id}' must not contain '/'",
+                    matcher.kind
+                )));
+            }
+        }
+        AppMatcherKind::WindowTitleExact | AppMatcherKind::WindowTitleContains => {}
     }
 
     Ok(())

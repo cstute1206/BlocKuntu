@@ -3,6 +3,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use url::Url;
 
@@ -19,6 +20,22 @@ pub struct FirefoxPolicyManager {
 pub enum RepairStatus {
     AlreadyCompliant,
     Repaired,
+    SkippedStopped,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FirefoxPolicyStatus {
+    pub path: String,
+    pub extension_id: String,
+    pub extension_xpi: String,
+    pub extension_xpi_exists: bool,
+    pub policy_exists: bool,
+    pub valid_json: bool,
+    pub compliant: bool,
+    pub private_browsing_enabled: bool,
+    pub private_browsing_available: bool,
+    pub install_url: Option<String>,
+    pub detail: String,
 }
 
 impl FirefoxPolicyManager {
@@ -48,6 +65,7 @@ impl FirefoxPolicyManager {
                 "BlockAboutSupport": true,
                 "DisableDeveloperTools": true,
                 "DisableSafeMode": true,
+                "PrivateBrowsingModeAvailability": 0,
                 "ExtensionSettings": {
                     self.extension_id.clone(): {
                         "installation_mode": "force_installed",
@@ -82,6 +100,114 @@ impl FirefoxPolicyManager {
                 Ok(RepairStatus::Repaired)
             }
             Err(err) => Err(err.into()),
+        }
+    }
+
+    pub fn remove_policy(&self) -> Result<RepairStatus> {
+        match fs::remove_file(&self.policy_path) {
+            Ok(()) => Ok(RepairStatus::Repaired),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Ok(RepairStatus::AlreadyCompliant)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub fn status(&self) -> FirefoxPolicyStatus {
+        let expected = self.expected_policy();
+        let extension_xpi_exists = self.extension_xpi.exists();
+        let path = self.policy_path.display().to_string();
+        let extension_xpi = self.extension_xpi.display().to_string();
+
+        let contents = match fs::read(&self.policy_path) {
+            Ok(contents) => contents,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return FirefoxPolicyStatus {
+                    path,
+                    extension_id: self.extension_id.clone(),
+                    extension_xpi,
+                    extension_xpi_exists,
+                    policy_exists: false,
+                    valid_json: false,
+                    compliant: false,
+                    private_browsing_enabled: false,
+                    private_browsing_available: false,
+                    install_url: None,
+                    detail: "policy file is missing".to_string(),
+                }
+            }
+            Err(err) => {
+                return FirefoxPolicyStatus {
+                    path,
+                    extension_id: self.extension_id.clone(),
+                    extension_xpi,
+                    extension_xpi_exists,
+                    policy_exists: true,
+                    valid_json: false,
+                    compliant: false,
+                    private_browsing_enabled: false,
+                    private_browsing_available: false,
+                    install_url: None,
+                    detail: format!("policy file cannot be read: {err}"),
+                }
+            }
+        };
+
+        let parsed = match serde_json::from_slice::<Value>(&contents) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                return FirefoxPolicyStatus {
+                    path,
+                    extension_id: self.extension_id.clone(),
+                    extension_xpi,
+                    extension_xpi_exists,
+                    policy_exists: true,
+                    valid_json: false,
+                    compliant: false,
+                    private_browsing_enabled: false,
+                    private_browsing_available: false,
+                    install_url: None,
+                    detail: format!("policy file is not valid JSON: {err}"),
+                }
+            }
+        };
+
+        let extension_settings = parsed
+            .get("policies")
+            .and_then(|policies| policies.get("ExtensionSettings"))
+            .and_then(|settings| settings.get(&self.extension_id));
+        let private_browsing_enabled = extension_settings
+            .and_then(|settings| settings.get("private_browsing"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let install_url = extension_settings
+            .and_then(|settings| settings.get("install_url"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let private_browsing_available = parsed
+            .get("policies")
+            .and_then(|policies| policies.get("PrivateBrowsingModeAvailability"))
+            .and_then(Value::as_i64)
+            == Some(0);
+        let compliant = parsed == expected;
+        let detail = if compliant {
+            "policy matches expected hardened settings".to_string()
+        } else {
+            "policy differs from expected hardened settings".to_string()
+        };
+
+        FirefoxPolicyStatus {
+            path,
+            extension_id: self.extension_id.clone(),
+            extension_xpi,
+            extension_xpi_exists,
+            policy_exists: true,
+            valid_json: true,
+            compliant,
+            private_browsing_enabled,
+            private_browsing_available,
+            install_url,
+            detail,
         }
     }
 
@@ -167,6 +293,12 @@ mod tests {
         let policy = std::fs::read_to_string(policy_path).expect("policy should exist");
         assert!(policy.contains("\"force_installed\""));
         assert!(policy.contains("\"private_browsing\""));
+        assert!(policy.contains("\"PrivateBrowsingModeAvailability\""));
         assert!(policy.contains("\"DisableDeveloperTools\""));
+
+        let status = manager.status();
+        assert!(status.compliant);
+        assert!(status.private_browsing_enabled);
+        assert!(status.private_browsing_available);
     }
 }

@@ -96,5 +96,8 @@ pub struct VisitState {
 pub struct ProcessIdentity {
     pub pid: Option<u32>,
     pub executable_path: Option<String>,
+    pub executable_basename: Option<String>,
     pub command_name: Option<String>,
+    pub desktop_id: Option<String>,
+    pub window_titles: Vec<String>,
 }

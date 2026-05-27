@@ -79,3 +79,27 @@ patterns = [
 max_session_minutes = 10
 cooldown_minutes = 30
 max_unlocks_per_hour = 2
+
+[[app_rules]]
+id = "kmines-hard"
+name = "KMines hard block"
+tier = "hard"
+schedule_ids = ["work-hours"]
+matchers = [
+  { kind = "command_name", value = "kmines" },
+  { kind = "executable_basename", value = "kmines" },
+  { kind = "desktop_id", value = "org.kde.kmines.desktop" },
+  { kind = "window_title_contains", value = "KMines" }
+]
+
+[[app_rules]]
+id = "vlc-hard"
+name = "VLC hard block"
+tier = "hard"
+matchers = [
+  { kind = "command_name", value = "vlc" },
+  { kind = "executable_basename", value = "vlc" },
+  { kind = "desktop_id", value = "org.videolan.VLC.desktop" },
+  { kind = "desktop_id", value = "vlc.desktop" },
+  { kind = "window_title_contains", value = "VLC" }
+]

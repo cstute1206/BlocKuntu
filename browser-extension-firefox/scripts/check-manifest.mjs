@@ -15,7 +15,7 @@ function assert(condition, message) {
 
 assert(manifest.manifest_version === 3, "manifest_version must be 3");
 assert(
-  manifest.browser_specific_settings?.gecko?.id === "blockuntu@example.local",
+  manifest.browser_specific_settings?.gecko?.id === "blockuntu-poc@example.local",
   "Firefox extension id must match enterprise policy"
 );
 assert(

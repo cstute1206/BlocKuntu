@@ -1,5 +1,5 @@
 {
-  "name": "blockuntu-firefox-extension",
+  "name": "blockuntu-chrome-extension",
   "version": "0.2.1",
   "private": true,
   "type": "commonjs",
@@ -8,9 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "node scripts/check-manifest.mjs",
     "verify": "npm run clean && npm run build && npm run check",
-    "package:xpi": "node scripts/package-xpi.mjs",
-    "package:amo": "npm run verify && node scripts/package-xpi.mjs",
-    "package:source": "node scripts/package-source.mjs"
+    "package:zip": "npm run verify && node scripts/package-zip.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

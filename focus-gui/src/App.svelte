@@ -8,10 +8,13 @@
     CheckCircle2,
     Clock3,
     Gauge,
+    Gamepad2,
     LayoutDashboard,
     ListChecks,
     LockKeyhole,
     Play,
+    Power,
+    PowerOff,
     Plus,
     RefreshCw,
     Save,
@@ -30,19 +33,27 @@
     configSnapshot,
     daemonRpc,
     daemonStatus,
+    deleteAppRule,
     deleteSchedule,
     deleteSiteList,
+    enforcementStatus,
     evaluateUrl,
     recentEvents,
     requestUnlock,
+    startEnforcement,
+    stopEnforcement,
     systemHealth,
+    upsertAppRule,
     upsertSchedule,
     upsertSiteList
   } from "./lib/api";
   import type {
+    AppMatcher,
+    AppRule,
     ConfigSnapshot,
     DaemonStatus,
     DecisionResult,
+    EnforcementStatus,
     HealthCheck,
     RecentEvent,
     Rule,
@@ -59,6 +70,7 @@
   const navItems: Array<{ id: ViewId; label: string; icon: Icon }> = [
     { id: "overview", label: "Dashboard", icon: LayoutDashboard },
     { id: "blocks", label: "Lists", icon: ListChecks },
+    { id: "apps", label: "Apps", icon: Gamepad2 },
     { id: "schedule", label: "Schedule", icon: CalendarDays },
     { id: "allowances", label: "Allowances", icon: Timer },
     { id: "statistics", label: "Statistics", icon: BarChart3 },
@@ -82,13 +94,25 @@
     { id: "path_prefix", label: "Path prefix" }
   ];
 
+  const appMatcherKinds: Array<{ id: AppMatcher["kind"]; label: string }> = [
+    { id: "command_name", label: "Command" },
+    { id: "executable_basename", label: "Binary" },
+    { id: "executable_path", label: "Path" },
+    { id: "desktop_id", label: "Desktop ID" },
+    { id: "window_title_contains", label: "Title contains" },
+    { id: "window_title_exact", label: "Title exact" }
+  ];
+
   let activeView: ViewId = $state("overview");
   let socketPath = $state("");
   let status = $state<DaemonStatus | null>(null);
+  let enforcement = $state<EnforcementStatus | null>(null);
   let health = $state<SystemHealth | null>(null);
   let config = $state<ConfigSnapshot | null>(null);
   let events = $state<RecentEvent[]>([]);
   let loading = $state(false);
+  let enforcementChanging = $state(false);
+  let enforcementMessage: string | null = $state(null);
   let lastError: string | null = $state(null);
   let lastRefresh: string | null = $state(null);
 
@@ -106,6 +130,10 @@
   let ruleDraft = $state<Rule | null>(null);
   let ruleSaving = $state(false);
   let ruleMessage: string | null = $state(null);
+  let selectedAppRuleId = $state<string | null>(null);
+  let appRuleDraft = $state<AppRule | null>(null);
+  let appRuleSaving = $state(false);
+  let appRuleMessage: string | null = $state(null);
   let selectedScheduleId = $state<string | null>(null);
   let scheduleDraft = $state<Schedule | null>(null);
   let scheduleSaving = $state(false);
@@ -119,6 +147,12 @@
   let controlledRules = $derived(
     config?.rules.filter((rule) => rule.tier === "controlled_access") ?? []
   );
+  let hardAppRules = $derived(config?.app_rules.filter((rule) => rule.tier === "hard") ?? []);
+  let controlledAppRules = $derived(
+    config?.app_rules.filter((rule) => rule.tier === "controlled_access") ?? []
+  );
+  let hardBlockCount = $derived(hardRules.length + hardAppRules.length);
+  let controlledBlockCount = $derived(controlledRules.length + controlledAppRules.length);
   let selectedRule = $derived(
     config?.rules.find((rule) => rule.id === selectedRuleId) ?? config?.rules[0] ?? null
   );
@@ -127,6 +161,20 @@
     Boolean(ruleDraft && config?.rules.some((rule) => rule.id === ruleDraft?.id))
   );
   let ruleDraftLocked = $derived(Boolean(ruleDraft && ruleDraftIsExisting && selectedRuleIsActive));
+  let selectedAppRule = $derived(
+    config?.app_rules.find((rule) => rule.id === selectedAppRuleId) ??
+      config?.app_rules[0] ??
+      null
+  );
+  let selectedAppRuleIsActive = $derived(
+    selectedAppRule ? appRuleIsActive(selectedAppRule) : false
+  );
+  let appRuleDraftIsExisting = $derived(
+    Boolean(appRuleDraft && config?.app_rules.some((rule) => rule.id === appRuleDraft?.id))
+  );
+  let appRuleDraftLocked = $derived(
+    Boolean(appRuleDraft && appRuleDraftIsExisting && selectedAppRuleIsActive)
+  );
   let selectedSchedule = $derived(
     config?.schedules.find((schedule) => schedule.id === selectedScheduleId) ??
       config?.schedules[0] ??
@@ -152,6 +200,10 @@
   });
   let maxEventCount = $derived(Math.max(1, ...eventBuckets.map((bucket) => bucket.count)));
   let daemonOnline = $derived(status?.status === "ok");
+  let currentEnforcementState = $derived(
+    enforcement?.enforcement_state ?? status?.enforcement_state ?? "unknown"
+  );
+  let enforcementActive = $derived(currentEnforcementState === "active");
   let failingChecks = $derived(
     health?.checks.filter((check) => check.state === "error" || check.state === "warn") ?? []
   );
@@ -169,8 +221,10 @@
     loading = true;
     lastError = null;
 
-    const [statusResult, configResult, eventsResult, healthResult] = await Promise.allSettled([
+    const [statusResult, enforcementResult, configResult, eventsResult, healthResult] =
+      await Promise.allSettled([
       daemonStatus(socketArg()),
+      enforcementStatus(socketArg()),
       configSnapshot(socketArg()),
       recentEvents(80, socketArg()),
       systemHealth(socketArg())
@@ -181,6 +235,12 @@
     } else {
       status = null;
       lastError = formatError(statusResult.reason);
+    }
+
+    if (enforcementResult.status === "fulfilled") {
+      enforcement = enforcementResult.value;
+    } else {
+      enforcement = null;
     }
 
     if (configResult.status === "fulfilled") {
@@ -207,6 +267,16 @@
       ruleDraft = snapshot.rules[0] ? cloneRule(snapshot.rules[0]) : null;
     } else if (!ruleDraft && selectedRule) {
       ruleDraft = cloneRule(selectedRule);
+    }
+
+    const selectedAppRuleStillExists = snapshot.app_rules.some(
+      (rule) => rule.id === selectedAppRuleId
+    );
+    if (!selectedAppRuleStillExists) {
+      selectedAppRuleId = snapshot.app_rules[0]?.id ?? null;
+      appRuleDraft = snapshot.app_rules[0] ? cloneAppRule(snapshot.app_rules[0]) : null;
+    } else if (!appRuleDraft && selectedAppRule) {
+      appRuleDraft = cloneAppRule(selectedAppRule);
     }
 
     const selectedScheduleStillExists = snapshot.schedules.some(
@@ -272,6 +342,36 @@
     }
   }
 
+  async function runStartEnforcement(): Promise<void> {
+    enforcementChanging = true;
+    enforcementMessage = null;
+    lastError = null;
+    try {
+      enforcement = await startEnforcement(socketArg());
+      enforcementMessage = "Started.";
+      await refreshAll();
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      enforcementChanging = false;
+    }
+  }
+
+  async function runStopEnforcement(): Promise<void> {
+    enforcementChanging = true;
+    enforcementMessage = null;
+    lastError = null;
+    try {
+      enforcement = await stopEnforcement(socketArg());
+      enforcementMessage = "Stopped.";
+      await refreshAll();
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      enforcementChanging = false;
+    }
+  }
+
   function selectRule(rule: Rule): void {
     selectedRuleId = rule.id;
     ruleDraft = cloneRule(rule);
@@ -331,6 +431,69 @@
       lastError = formatError(error);
     } finally {
       ruleSaving = false;
+    }
+  }
+
+  function selectAppRule(rule: AppRule): void {
+    selectedAppRuleId = rule.id;
+    appRuleDraft = cloneAppRule(rule);
+    appRuleMessage = null;
+  }
+
+  function startNewAppRule(): void {
+    const index = (config?.app_rules.length ?? 0) + 1;
+    selectedAppRuleId = null;
+    appRuleDraft = {
+      id: `app-rule-${index}`,
+      name: `App rule ${index}`,
+      tier: "hard",
+      enabled: true,
+      matchers: [{ kind: "command_name", value: "kmines" }],
+      schedule_ids: [],
+      allowance_id: null,
+      unlock_policy: null
+    };
+    appRuleMessage = null;
+  }
+
+  async function saveAppRuleDraft(): Promise<void> {
+    if (!appRuleDraft) return;
+    appRuleSaving = true;
+    lastError = null;
+    appRuleMessage = null;
+    try {
+      const response = await upsertAppRule(normalizeAppRuleDraft(appRuleDraft), socketArg());
+      config = response.config;
+      selectedAppRuleId = appRuleDraft.id.trim();
+      appRuleDraft = cloneAppRule(
+        response.config.app_rules.find((rule) => rule.id === selectedAppRuleId) ??
+          response.config.app_rules[0]
+      );
+      appRuleMessage = "Saved.";
+      await refreshEventsOnly();
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      appRuleSaving = false;
+    }
+  }
+
+  async function removeAppRuleDraft(): Promise<void> {
+    if (!appRuleDraft || !appRuleDraftIsExisting) return;
+    appRuleSaving = true;
+    lastError = null;
+    appRuleMessage = null;
+    try {
+      const response = await deleteAppRule(appRuleDraft.id, socketArg());
+      config = response.config;
+      selectedAppRuleId = response.config.app_rules[0]?.id ?? null;
+      appRuleDraft = response.config.app_rules[0] ? cloneAppRule(response.config.app_rules[0]) : null;
+      appRuleMessage = "Deleted.";
+      await refreshEventsOnly();
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      appRuleSaving = false;
     }
   }
 
@@ -402,6 +565,16 @@
     };
   }
 
+  function cloneAppRule(rule: AppRule): AppRule {
+    return {
+      ...rule,
+      matchers: rule.matchers.map((matcher) => ({ ...matcher })),
+      schedule_ids: [...rule.schedule_ids],
+      allowance_id: rule.allowance_id ?? null,
+      unlock_policy: rule.unlock_policy ? { ...rule.unlock_policy } : null
+    };
+  }
+
   function cloneSchedule(schedule: Schedule): Schedule {
     return {
       ...schedule,
@@ -415,13 +588,28 @@
       ...rule,
       id: rule.id.trim(),
       name: rule.name.trim(),
-      allowance_id:
-        rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id : null,
+      allowance_id: null,
       unlock_policy: rule.tier === "controlled_access" ? rule.unlock_policy : null,
       patterns: rule.patterns.map((pattern) => ({
         ...pattern,
         value: pattern.value.trim(),
         match_subdomains: pattern.kind === "domain" ? pattern.match_subdomains : false
+      })),
+      schedule_ids: [...rule.schedule_ids]
+    };
+  }
+
+  function normalizeAppRuleDraft(rule: AppRule): AppRule {
+    return {
+      ...rule,
+      id: rule.id.trim(),
+      name: rule.name.trim(),
+      allowance_id:
+        rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id : null,
+      unlock_policy: rule.tier === "controlled_access" ? rule.unlock_policy : null,
+      matchers: rule.matchers.map((matcher) => ({
+        ...matcher,
+        value: matcher.value.trim()
       })),
       schedule_ids: [...rule.schedule_ids]
     };
@@ -449,6 +637,18 @@
     ruleDraft.patterns = ruleDraft.patterns.filter((_, patternIndex) => patternIndex !== index);
   }
 
+  function addAppMatcher(): void {
+    if (!appRuleDraft) return;
+    appRuleDraft.matchers = [...appRuleDraft.matchers, { kind: "command_name", value: "" }];
+  }
+
+  function removeAppMatcher(index: number): void {
+    if (!appRuleDraft || appRuleDraft.matchers.length <= 1) return;
+    appRuleDraft.matchers = appRuleDraft.matchers.filter(
+      (_, matcherIndex) => matcherIndex !== index
+    );
+  }
+
   function setRuleTier(tier: Rule["tier"]): void {
     if (!ruleDraft) return;
     ruleDraft.tier = tier;
@@ -463,12 +663,30 @@
     ruleDraft.allowance_id = value || null;
   }
 
+  function setAppRuleTier(tier: AppRule["tier"]): void {
+    if (!appRuleDraft) return;
+    appRuleDraft.tier = tier;
+    if (tier === "hard") {
+      appRuleDraft.allowance_id = null;
+      appRuleDraft.unlock_policy = null;
+    }
+  }
+
   function toggleDraftSchedule(scheduleId: string): void {
     if (!ruleDraft) return;
     if (ruleDraft.schedule_ids.includes(scheduleId)) {
       ruleDraft.schedule_ids = ruleDraft.schedule_ids.filter((id) => id !== scheduleId);
     } else {
       ruleDraft.schedule_ids = [...ruleDraft.schedule_ids, scheduleId];
+    }
+  }
+
+  function toggleAppRuleSchedule(scheduleId: string): void {
+    if (!appRuleDraft) return;
+    if (appRuleDraft.schedule_ids.includes(scheduleId)) {
+      appRuleDraft.schedule_ids = appRuleDraft.schedule_ids.filter((id) => id !== scheduleId);
+    } else {
+      appRuleDraft.schedule_ids = [...appRuleDraft.schedule_ids, scheduleId];
     }
   }
 
@@ -486,6 +704,16 @@
   }
 
   function ruleIsActive(rule: Rule): boolean {
+    if (!rule.enabled) return false;
+    if (rule.schedule_ids.length === 0) return true;
+
+    return rule.schedule_ids.some((scheduleId) => {
+      const schedule = config?.schedules.find((candidate) => candidate.id === scheduleId);
+      return schedule ? scheduleIsActive(schedule) : true;
+    });
+  }
+
+  function appRuleIsActive(rule: AppRule): boolean {
     if (!rule.enabled) return false;
     if (rule.schedule_ids.length === 0) return true;
 
@@ -620,7 +848,11 @@
           </div>
           <div class="metric-line">
             <span class="metric-value">{status?.rules ?? "?"}</span>
-            <span>rules</span>
+            <span>site lists</span>
+          </div>
+          <div class="metric-line">
+            <span class="metric-value">{status?.app_rules ?? "?"}</span>
+            <span>app rules</span>
           </div>
           <div class="metric-line">
             <span class="metric-value">{status?.schedules ?? "?"}</span>
@@ -638,11 +870,11 @@
             <h2>Block Tiers</h2>
           </div>
           <div class="metric-line">
-            <span class="metric-value danger">{hardRules.length}</span>
+            <span class="metric-value danger">{hardBlockCount}</span>
             <span>hard blocks</span>
           </div>
           <div class="metric-line">
-            <span class="metric-value accent">{controlledRules.length}</span>
+            <span class="metric-value accent">{controlledBlockCount}</span>
             <span>controlled</span>
           </div>
         </article>
@@ -891,6 +1123,160 @@
           {/if}
         </article>
       </section>
+    {:else if activeView === "apps"}
+      <section class="split-view">
+        <article class="panel list-panel">
+          <div class="panel-title">
+            <Gamepad2 size={18} aria-hidden="true" />
+            <h2>App Rules</h2>
+          </div>
+          <button class="secondary wide-button" onclick={startNewAppRule}>
+            <Plus size={17} aria-hidden="true" />
+            <span>New app</span>
+          </button>
+          <div class="rule-list">
+            {#each config?.app_rules ?? [] as rule (rule.id)}
+              <button
+                class:active={appRuleDraft?.id === rule.id}
+                onclick={() => selectAppRule(rule)}
+              >
+                <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
+                <span>{rule.name}</span>
+                <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
+              </button>
+            {:else}
+              <p class="empty-state">No app rules reported by the daemon.</p>
+            {/each}
+          </div>
+        </article>
+
+        <article class="panel detail-panel">
+          <div class="panel-title">
+            <Gamepad2 size={18} aria-hidden="true" />
+            <h2>{appRuleDraft?.name || "App rule"}</h2>
+          </div>
+          {#if appRuleDraft}
+            {#if appRuleDraftLocked}
+              <section class="inline-warning">
+                <AlertTriangle size={17} aria-hidden="true" />
+                <span>This app rule is active right now.</span>
+              </section>
+            {/if}
+            <div class="form-grid">
+              <label>
+                <span>Rule ID</span>
+                <input
+                  bind:value={appRuleDraft.id}
+                  readonly={appRuleDraftIsExisting}
+                  disabled={appRuleDraftLocked}
+                />
+              </label>
+              <label>
+                <span>Tier</span>
+                <select
+                  value={appRuleDraft.tier}
+                  disabled={appRuleDraftLocked}
+                  onchange={(event) =>
+                    setAppRuleTier(event.currentTarget.value as AppRule["tier"])}
+                >
+                  <option value="hard">Tier 1</option>
+                  <option value="controlled_access">Tier 2</option>
+                </select>
+              </label>
+              <label>
+                <span>Name</span>
+                <input bind:value={appRuleDraft.name} disabled={appRuleDraftLocked} />
+              </label>
+            </div>
+
+            <label class="check-row">
+              <input type="checkbox" bind:checked={appRuleDraft.enabled} disabled={appRuleDraftLocked} />
+              <span>Enabled</span>
+            </label>
+
+            <div class="section-label">Schedules</div>
+            <div class="chip-grid">
+              {#each config?.schedules ?? [] as schedule (schedule.id)}
+                <label class="chip-check">
+                  <input
+                    type="checkbox"
+                    checked={appRuleDraft.schedule_ids.includes(schedule.id)}
+                    disabled={appRuleDraftLocked}
+                    onchange={() => toggleAppRuleSchedule(schedule.id)}
+                  />
+                  <span>{schedule.name ?? schedule.id}</span>
+                </label>
+              {:else}
+                <p class="empty-state">No schedules available.</p>
+              {/each}
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Matcher</th>
+                    <th>Value</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each appRuleDraft.matchers as matcher, index (matcher)}
+                    <tr>
+                      <td>
+                        <select bind:value={matcher.kind} disabled={appRuleDraftLocked}>
+                          {#each appMatcherKinds as kind (kind.id)}
+                            <option value={kind.id}>{kind.label}</option>
+                          {/each}
+                        </select>
+                      </td>
+                      <td>
+                        <input bind:value={matcher.value} disabled={appRuleDraftLocked} />
+                      </td>
+                      <td>
+                        <button
+                          class="icon-button"
+                          title="Remove matcher"
+                          onclick={() => removeAppMatcher(index)}
+                          disabled={appRuleDraftLocked || appRuleDraft.matchers.length <= 1}
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                        </button>
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+
+            <div class="button-row">
+              <button class="secondary" onclick={addAppMatcher} disabled={appRuleDraftLocked}>
+                <Plus size={17} aria-hidden="true" />
+                <span>Matcher</span>
+              </button>
+              <button
+                class="secondary"
+                onclick={removeAppRuleDraft}
+                disabled={appRuleSaving || appRuleDraftLocked || !appRuleDraftIsExisting}
+              >
+                <Trash2 size={17} aria-hidden="true" />
+                <span>Delete</span>
+              </button>
+              <button
+                class="primary"
+                onclick={saveAppRuleDraft}
+                disabled={appRuleSaving || appRuleDraftLocked}
+              >
+                <Save size={17} aria-hidden="true" />
+                <span>Save</span>
+              </button>
+            </div>
+            {#if appRuleMessage}
+              <p class="result-text">{appRuleMessage}</p>
+            {/if}
+          {/if}
+        </article>
+      </section>
     {:else if activeView === "schedule"}
       <section class="split-view">
         <article class="panel list-panel">
@@ -1115,6 +1501,48 @@
               <p class="empty-state">No health checks available.</p>
             {/each}
           </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-title">
+            <Shield size={18} aria-hidden="true" />
+            <h2>Enforcement</h2>
+          </div>
+          <div class="status-list">
+            <div class="status-row">
+              <span>Mode</span>
+              <strong data-state={currentEnforcementState}>{currentEnforcementState}</strong>
+            </div>
+            <div class="status-row">
+              <span>Firefox policy</span>
+              <small>{enforcement?.firefox_policy.path ?? "unknown"}</small>
+            </div>
+            <div class="status-row">
+              <span>Hosts file</span>
+              <small>{enforcement?.hosts_file.path ?? "unknown"}</small>
+            </div>
+          </div>
+          <div class="button-row enforcement-actions">
+            <button
+              class="primary"
+              onclick={runStartEnforcement}
+              disabled={enforcementChanging || enforcementActive}
+            >
+              <Power size={17} aria-hidden="true" />
+              <span>Start</span>
+            </button>
+            <button
+              class="secondary danger-action"
+              onclick={runStopEnforcement}
+              disabled={enforcementChanging || !enforcementActive}
+            >
+              <PowerOff size={17} aria-hidden="true" />
+              <span>Stop</span>
+            </button>
+          </div>
+          {#if enforcementMessage}
+            <p class="result-text">{enforcementMessage}</p>
+          {/if}
         </article>
 
         <article class="panel">
@@ -1705,6 +2133,54 @@
   .event-row time {
     color: #68766f;
     font-size: 0.88rem;
+  }
+
+  .status-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .status-row {
+    align-items: center;
+    border-bottom: 1px solid #e2e8e4;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: 132px minmax(0, 1fr);
+    min-height: 34px;
+    padding-bottom: 8px;
+  }
+
+  .status-row span {
+    color: #63716b;
+    font-size: 0.78rem;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .status-row strong {
+    justify-self: start;
+  }
+
+  .status-row strong[data-state="active"] {
+    color: #1f8f68;
+  }
+
+  .status-row strong[data-state="stopped"] {
+    color: #b87912;
+  }
+
+  .status-row small {
+    color: #68766f;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .enforcement-actions {
+    margin-top: 14px;
+  }
+
+  .danger-action {
+    color: #7b2727;
   }
 
   .health-row {

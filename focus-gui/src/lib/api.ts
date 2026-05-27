@@ -4,7 +4,9 @@ import type {
   ConfigMutationResponse,
   DaemonStatus,
   DecisionResult,
+  EnforcementStatus,
   EventsResponse,
+  AppRule,
   Rule,
   Schedule,
   SystemHealth,
@@ -13,6 +15,18 @@ import type {
 
 export function daemonStatus(socketPath?: string): Promise<DaemonStatus> {
   return invoke("daemon_status", { socketPath });
+}
+
+export function enforcementStatus(socketPath?: string): Promise<EnforcementStatus> {
+  return invoke("enforcement_status", { socketPath });
+}
+
+export function startEnforcement(socketPath?: string): Promise<EnforcementStatus> {
+  return daemonRpc("start_enforcement", {}, socketPath) as Promise<EnforcementStatus>;
+}
+
+export function stopEnforcement(socketPath?: string): Promise<EnforcementStatus> {
+  return daemonRpc("stop_enforcement", {}, socketPath) as Promise<EnforcementStatus>;
 }
 
 export function configSnapshot(socketPath?: string): Promise<ConfigSnapshot> {
@@ -30,6 +44,25 @@ export function upsertSiteList(rule: Rule, socketPath?: string): Promise<ConfigM
 export function deleteSiteList(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "delete_site_list",
+    { id, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<ConfigMutationResponse>;
+}
+
+export function upsertAppRule(
+  rule: AppRule,
+  socketPath?: string
+): Promise<ConfigMutationResponse> {
+  return daemonRpc(
+    "upsert_app_rule",
+    { rule, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<ConfigMutationResponse>;
+}
+
+export function deleteAppRule(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
+  return daemonRpc(
+    "delete_app_rule",
     { id, now: new Date().toISOString() },
     socketPath
   ) as Promise<ConfigMutationResponse>;

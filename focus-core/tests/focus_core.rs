@@ -1,8 +1,8 @@
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use focus_core::{
-    evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
-    BlockReason, Config, ControlledBlockReason, Database, Decision, Error, EvaluationContext,
-    UnlockError,
+    evaluate_app, evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start,
+    request_unlock, BlockReason, Config, ControlledBlockReason, Database, Decision, Error,
+    EvaluationContext, ProcessIdentity, UnlockError,
 };
 
 fn at_utc(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<FixedOffset> {
@@ -84,6 +84,100 @@ fn url_matching_supports_subdomains_exact_urls_path_prefixes_and_fallback_allow(
         evaluate_url("https://docs.example.net/public/report", &ctx),
         Decision::Allow
     );
+}
+
+#[test]
+fn app_rules_match_process_identity_and_respect_schedules() {
+    let config = Config::from_toml_str(
+        r#"
+        [[schedules]]
+        id = "work-hours"
+        name = "Work hours"
+
+        [[schedules.windows]]
+        weekday = "mon"
+        start = "09:00"
+        end = "17:00"
+
+        [[app_rules]]
+        id = "kmines-hard"
+        name = "KMines"
+        tier = "hard"
+        schedule_ids = ["work-hours"]
+        matchers = [
+          { kind = "command_name", value = "kmines" },
+          { kind = "executable_basename", value = "kmines" },
+          { kind = "desktop_id", value = "org.kde.kmines.desktop" },
+          { kind = "window_title_contains", value = "KMines" }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let process = ProcessIdentity {
+        pid: Some(1234),
+        executable_path: Some("/usr/bin/kmines".to_string()),
+        executable_basename: Some("kmines".to_string()),
+        command_name: Some("kmines".to_string()),
+        desktop_id: Some("org.kde.kmines.desktop".to_string()),
+        window_titles: vec!["KMines - 4 mines".to_string()],
+    };
+
+    let active_ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    assert_eq!(
+        evaluate_app(&process, &active_ctx),
+        Decision::Block(BlockReason::HardBlock {
+            rule_id: "kmines-hard".to_string(),
+            rule_name: "KMines".to_string(),
+        })
+    );
+
+    let inactive_ctx = context(&config, &database, at_utc(2026, 5, 18, 18, 0));
+    assert_eq!(evaluate_app(&process, &inactive_ctx), Decision::Allow);
+}
+
+#[test]
+fn controlled_app_rules_can_be_unlocked_by_rule_or_matcher_value() {
+    let config = Config::from_toml_str(
+        r#"
+        [[app_rules]]
+        id = "game-controlled"
+        name = "Game controlled"
+        tier = "controlled_access"
+        matchers = [
+          { kind = "command_name", value = "game-bin" }
+        ]
+
+        [app_rules.unlock_policy]
+        max_session_minutes = 5
+        cooldown_minutes = 30
+        max_unlocks_per_hour = 2
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let process = ProcessIdentity {
+        pid: Some(1234),
+        executable_path: None,
+        executable_basename: None,
+        command_name: Some("game-bin".to_string()),
+        desktop_id: None,
+        window_titles: Vec::new(),
+    };
+    let before_unlock = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+
+    assert!(evaluate_app(&process, &before_unlock).is_block());
+    let unlock = request_unlock(
+        "game-bin",
+        5,
+        "Need app briefly".to_string(),
+        &before_unlock,
+    )
+    .expect("app unlock should be granted");
+    assert_eq!(unlock.rule_id, "game-controlled");
+
+    let during_unlock = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
+    assert_eq!(evaluate_app(&process, &during_unlock), Decision::Allow);
 }
 
 #[test]
@@ -351,6 +445,9 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
         "policy_site_lists",
         "policy_site_list_patterns",
         "policy_site_list_schedules",
+        "policy_app_rules",
+        "policy_app_rule_matchers",
+        "policy_app_rule_schedules",
     ] {
         assert!(
             tables.iter().any(|table| table == required),
@@ -420,6 +517,30 @@ fn policy_config_roundtrips_through_sqlite() {
         max_session_minutes = 4
         cooldown_minutes = 5
         max_unlocks_per_hour = 2
+
+        [[app_rules]]
+        id = "game-controlled"
+        name = "Game controlled"
+        tier = "controlled_access"
+        matchers = [
+          { kind = "command_name", value = "game-bin" },
+          { kind = "window_title_contains", value = "Game" }
+        ]
+
+        [app_rules.unlock_policy]
+        max_session_minutes = 3
+        cooldown_minutes = 8
+        max_unlocks_per_hour = 1
+
+        [[app_rules]]
+        id = "kmines-hard"
+        name = "KMines"
+        tier = "hard"
+        schedule_ids = ["work"]
+        matchers = [
+          { kind = "executable_basename", value = "kmines" },
+          { kind = "desktop_id", value = "org.kde.kmines.desktop" }
+        ]
         "#,
     )
     .expect("config should parse");
@@ -472,6 +593,34 @@ fn corrupt_and_unsafe_configurations_fail_safely() {
         "#,
     );
     assert!(hard_with_unlock.is_err());
+
+    let app_without_matchers = Config::from_toml_str(
+        r#"
+        [[app_rules]]
+        id = "app"
+        name = "App"
+        tier = "hard"
+        "#,
+    );
+    assert!(app_without_matchers.is_err());
+
+    let app_with_allowance = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "daily"
+        daily_minutes = 15
+
+        [[app_rules]]
+        id = "app"
+        name = "App"
+        tier = "controlled_access"
+        allowance_id = "daily"
+        matchers = [
+          { kind = "command_name", value = "app" }
+        ]
+        "#,
+    );
+    assert!(app_with_allowance.is_err());
 }
 
 #[test]

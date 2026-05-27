@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "BlocKuntu",
+  "version": "0.2.1",
+  "description": "System-enforced focus blocking for Linux through the local BlocKuntu daemon.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAslUmEL36ndiWjscq8z2gvtF4kBqsUMxXAs3e+4rfsZxObOQnWDmYaiRUB2+rzkH9BWeZPHxt8pXZ6b6dJXm/pGfeXzterGGNkVw7HvyXO/vCqb3J+EmaEDUu19EtZ6yxoYIjjQqBqDsP0TZ1chk4PdE5xteqoFt8RYzDnDY1eFQzOOtczWjbQBO2IFMEkgnXbWHlBgYdGSy9a6UiRNV8WRWlS/NPBMXJDlHgKPDaLvF+PKWmUN3zuTUQk5GwUeOF+TyvInnn6Te+qU7uTcxf0nEjDhUsAKeUAmrkFlvfaBhxnD/VnTbCJt6Hg7DiP9kQi0kriB2Yf9fLajb6gDYp2wIDAQAB",
+  "permissions": ["alarms", "nativeMessaging", "tabs", "webNavigation"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "dist/background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["blocked.html", "dist/blocked.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

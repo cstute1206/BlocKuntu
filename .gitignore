@@ -13,6 +13,8 @@ focus-gui/src-tauri/gen/schemas/
 
 # Firefox extension package artifacts
 browser-extension-firefox/*.xpi
+browser-extension-firefox/*.zip
+browser-extension-chrome/*.zip
 
 # Local databases and runtime state
 *.sqlite

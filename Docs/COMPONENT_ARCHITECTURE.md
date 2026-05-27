@@ -2,8 +2,8 @@
 
 BlocKuntu is split into a policy library, a privileged daemon, unprivileged
 desktop/browser clients, and Linux packaging glue. The daemon is the single
-source of truth. The GUI, Firefox extension, and Native Messaging bridge do not
-make durable policy decisions.
+source of truth. The GUI, browser extensions, and Native Messaging bridge do
+not make durable policy decisions.
 
 ## High-Level Flow
 
@@ -11,6 +11,15 @@ make durable policy decisions.
 Firefox tab navigation
   -> browser-extension-firefox
   -> Firefox Native Messaging
+  -> native-host / blockuntu-native
+  -> Unix domain socket
+  -> focusd / blockuntud
+  -> focus-core policy engine
+  -> SQLite runtime state + TOML config
+
+Chrome tab navigation
+  -> browser-extension-chrome
+  -> Chrome Native Messaging
   -> native-host / blockuntu-native
   -> Unix domain socket
   -> focusd / blockuntud
@@ -36,11 +45,12 @@ focusd / blockuntud
 | --- | --- | --- |
 | `focus-core` | Config parsing, validation, SQLite migrations, URL/app policy evaluation, unlocks, visits, events, heartbeats | Library only |
 | `focusd` | Root daemon, JSON-RPC API, system enforcement, config writes, policy repair, hosts repair, process scanning | Privileged |
-| `native-host` | Firefox Native Messaging framing and Unix socket forwarding | Unprivileged |
+| `native-host` | Browser Native Messaging framing and Unix socket forwarding | Unprivileged |
 | `browser-extension-firefox` | Browser navigation interception, heartbeat, fail-closed redirect to `blocked.html` | Unprivileged browser extension |
+| `browser-extension-chrome` | Chrome/Chromium MV3 navigation interception, heartbeat, fail-closed redirect to `blocked.html` | Unprivileged browser extension |
 | `focus-gui` | Tauri/Svelte presentation, admin/debug views, daemon-mediated TOML editing | Unprivileged desktop app |
 | `packaging/systemd` | Socket activation, watchdog companion, hosts path watcher | systemd/root |
-| `packaging/native-messaging` | System Firefox native-host manifest | Firefox/system install |
+| `packaging/native-messaging` | System Firefox and Chrome native-host manifests | Browser/system install |
 
 ## Trust Boundary
 
@@ -136,9 +146,15 @@ Messaging route used for URL checks:
 
 ```text
 browser-extension-firefox
-  -> {"type":"extension_heartbeat"}
+  -> {"method":"extension_heartbeat","params":{"component":"firefox_extension"}}
   -> native-host
-  -> {"method":"extension_heartbeat"}
+  -> focusd
+  -> SQLite heartbeats/events
+  -> acknowledgement back to extension
+
+browser-extension-chrome
+  -> {"method":"extension_heartbeat","params":{"component":"chrome_extension"}}
+  -> native-host
   -> focusd
   -> SQLite heartbeats/events
   -> acknowledgement back to extension
@@ -166,6 +182,7 @@ The daemon accepts one JSON request per Unix socket connection. Current methods:
 | `record_visit_heartbeat` | Extension | Keep visit tracking alive |
 | `record_visit_end` | Extension | End visit tracking |
 | `extension_heartbeat` | Extension | Prove extension/native-host path is alive |
+| `extension_status` | GUI | Report Firefox or Chrome extension heartbeat freshness |
 
 The native host also accepts legacy extension messages for compatibility and
 translates them into daemon JSON-RPC.
@@ -177,10 +194,10 @@ translates them into daemon JSON-RPC.
 `focusd` computes and repairs the Firefox policy JSON. The current expected
 policy:
 
-- Force-installs the extension ID `blockuntu@example.local`.
+- Force-installs the signed extension ID `blockuntu-poc@example.local`.
 - Uses the configured XPI path, defaulting to
-  `/usr/local/share/blockuntu/BlocKuntu.xpi`.
-- Enables private browsing for the extension.
+  `/home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi`.
+- Keeps private browsing available and enables the extension there.
 - Blocks `about:config`, `about:profiles`, and `about:support`.
 - Disables developer tools and safe mode workarounds.
 - Keeps `about:addons` available.
@@ -211,6 +228,10 @@ patterns:
 Only domain rules can be represented in `/etc/hosts`. Path-level URL patterns
 and exact URL rules are browser-level enforcement only.
 
+For the production `/etc/hosts` path, `focusd` clears the immutable flag before
+repairing the managed block and reapplies `chattr +i` afterwards. Development
+hosts sandboxes skip immutability unless `--hosts-immutable` is passed.
+
 Development uses:
 
 ```text
@@ -223,23 +244,64 @@ Production uses:
 /etc/hosts
 ```
 
+### Chrome Native Messaging
+
+The Chrome/Chromium extension uses the same `blockuntu_native` host name as
+Firefox, but Chrome requires `allowed_origins` in the manifest. The fixed
+development extension ID is:
+
+```text
+mlfcmoellaplhamddimfpahklojgligk
+```
+
+Development manifest paths:
+
+```text
+~/.config/google-chrome/NativeMessagingHosts/blockuntu_native.json
+~/.config/chromium/NativeMessagingHosts/blockuntu_native.json
+```
+
+Production manifest paths:
+
+```text
+/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json
+/etc/chromium/native-messaging-hosts/blockuntu_native.json
+```
+
+Chrome force-install policy is still a production packaging decision; the
+current code implements extension behavior, native messaging integration, and
+GUI health reporting.
+
 ### Process Scanner
 
 The daemon scans `/proc` for configured forbidden applications. Matching can use:
 
 - `/proc/[pid]/exe` for executable path checks.
+- the executable basename from `/proc/[pid]/exe`.
 - `/proc/[pid]/comm` for command-name checks.
+- desktop ids discovered from launch environment/cmdline hints.
+- window titles discovered through `wmctrl -lp` when an X11-compatible window
+  list is available.
 
 When a forbidden process is found, the daemon kills it and writes an
-`app_killed` event to SQLite.
+`app_killed` event to SQLite. Window-title matching is a fallback signal; it is
+not expected to work generically on Wayland compositors.
+
+The daemon injects a mandatory hard app rule for unsupported browsers so users
+cannot bypass browser-extension enforcement by switching engines. Firefox and
+Google Chrome are the supported browser paths. Chromium, Brave, Edge, Opera,
+Vivaldi, LibreWolf, Waterfox, Epiphany, Falkon, qutebrowser, Midori, Min, Nyxt,
+and Tor Browser are treated as Tier 1 application blocks.
 
 ## Development Connections
 
-Development uses explicitly bound sockets and user-local Firefox integration:
+Development uses explicitly bound sockets and user-local browser integration:
 
 ```text
 /tmp/blockuntu/blockuntud.sock
 ~/.mozilla/native-messaging-hosts/blockuntu_native.json
+~/.config/google-chrome/NativeMessagingHosts/blockuntu_native.json
+~/.config/chromium/NativeMessagingHosts/blockuntu_native.json
 ~/.local/share/blockuntu/blockuntu-native-dev
 ```
 
@@ -270,7 +332,7 @@ SocketUser=root
 SocketGroup=blockuntu
 ```
 
-The production native host manifest points Firefox at:
+The production native host manifests point Firefox and Chrome at:
 
 ```text
 /usr/local/bin/blockuntu-native
@@ -305,7 +367,7 @@ with `BindsTo=` and `Restart=always`.
 ### Normal Browser Navigation
 
 ```text
-Firefox navigation
+Firefox/Chrome navigation
   -> extension checks heartbeat freshness
   -> extension asks daemon to evaluate URL
   -> focus-core returns Decision

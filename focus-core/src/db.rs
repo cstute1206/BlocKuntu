@@ -5,9 +5,10 @@ use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
-    AllowanceConfig, Config, ConfigError, DefaultsConfig, Error, RuleConfig, RulePatternConfig,
-    RulePatternKind, RuleTier, ScheduleConfig, ScheduleWindow, TimeOfDay, UnlockPolicyConfig,
-    UnlockState, VisitState, Weekday,
+    AllowanceConfig, AppMatcherConfig, AppMatcherKind, AppRuleConfig, Config, ConfigError,
+    DefaultsConfig, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
+    ScheduleConfig, ScheduleWindow, TimeOfDay, UnlockPolicyConfig, UnlockState, VisitState,
+    Weekday,
 };
 
 pub struct Database {
@@ -103,6 +104,7 @@ impl Database {
             r#"
             SELECT
                 (SELECT COUNT(*) FROM policy_site_lists) +
+                (SELECT COUNT(*) FROM policy_app_rules) +
                 (SELECT COUNT(*) FROM policy_schedules) +
                 (SELECT COUNT(*) FROM policy_allowances)
             "#,
@@ -117,9 +119,11 @@ impl Database {
         let allowances = self.load_policy_allowances()?;
         let schedules = self.load_policy_schedules()?;
         let rules = self.load_policy_site_lists()?;
+        let app_rules = self.load_policy_app_rules()?;
 
         let config = Config {
             rules,
+            app_rules,
             schedules,
             allowances,
             defaults,
@@ -137,6 +141,9 @@ impl Database {
             DELETE FROM policy_site_list_schedules;
             DELETE FROM policy_site_list_patterns;
             DELETE FROM policy_site_lists;
+            DELETE FROM policy_app_rule_schedules;
+            DELETE FROM policy_app_rule_matchers;
+            DELETE FROM policy_app_rules;
             DELETE FROM policy_schedule_windows;
             DELETE FROM policy_schedules;
             DELETE FROM policy_allowances;
@@ -248,7 +255,11 @@ impl Database {
                         &rule.id,
                         pattern_kind_to_str(pattern.kind),
                         &pattern.value,
-                        if pattern.match_subdomains { 1_i64 } else { 0_i64 },
+                        if pattern.match_subdomains {
+                            1_i64
+                        } else {
+                            0_i64
+                        },
                         position as i64,
                     ],
                 )?;
@@ -258,6 +269,65 @@ impl Database {
                 transaction.execute(
                     r#"
                     INSERT INTO policy_site_list_schedules (list_id, schedule_id, position)
+                    VALUES (?1, ?2, ?3)
+                    "#,
+                    params![&rule.id, schedule_id, position as i64],
+                )?;
+            }
+        }
+
+        for rule in &config.app_rules {
+            let unlock_policy = rule.unlock_policy;
+            transaction.execute(
+                r#"
+                INSERT INTO policy_app_rules (
+                    id,
+                    name,
+                    tier,
+                    enabled,
+                    allowance_id,
+                    max_session_minutes,
+                    cooldown_minutes,
+                    max_unlocks_per_hour
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#,
+                params![
+                    &rule.id,
+                    &rule.name,
+                    rule_tier_to_str(rule.tier),
+                    if rule.enabled { 1_i64 } else { 0_i64 },
+                    rule.allowance_id.as_deref(),
+                    unlock_policy.map(|policy| i64::from(policy.max_session_minutes)),
+                    unlock_policy.map(|policy| i64::from(policy.cooldown_minutes)),
+                    unlock_policy.map(|policy| i64::from(policy.max_unlocks_per_hour)),
+                ],
+            )?;
+
+            for (position, matcher) in rule.matchers.iter().enumerate() {
+                transaction.execute(
+                    r#"
+                    INSERT INTO policy_app_rule_matchers (
+                        rule_id,
+                        kind,
+                        value,
+                        position
+                    )
+                    VALUES (?1, ?2, ?3, ?4)
+                    "#,
+                    params![
+                        &rule.id,
+                        app_matcher_kind_to_str(matcher.kind),
+                        &matcher.value,
+                        position as i64,
+                    ],
+                )?;
+            }
+
+            for (position, schedule_id) in rule.schedule_ids.iter().enumerate() {
+                transaction.execute(
+                    r#"
+                    INSERT INTO policy_app_rule_schedules (rule_id, schedule_id, position)
                     VALUES (?1, ?2, ?3)
                     "#,
                     params![&rule.id, schedule_id, position as i64],
@@ -357,7 +427,10 @@ impl Database {
         Ok(schedules)
     }
 
-    fn load_policy_schedule_windows(&self, schedule_id: &str) -> Result<Vec<ScheduleWindow>, Error> {
+    fn load_policy_schedule_windows(
+        &self,
+        schedule_id: &str,
+    ) -> Result<Vec<ScheduleWindow>, Error> {
         let mut statement = self.conn.prepare(
             r#"
             SELECT weekday, start_time, end_time
@@ -379,8 +452,7 @@ impl Database {
             let (weekday, start, end) = row?;
             windows.push(ScheduleWindow {
                 weekday: weekday_from_str(&weekday)?,
-                start: TimeOfDay::from_str(&start)
-                    .map_err(|err| ConfigError::Validation(err))?,
+                start: TimeOfDay::from_str(&start).map_err(|err| ConfigError::Validation(err))?,
                 end: TimeOfDay::from_str(&end).map_err(|err| ConfigError::Validation(err))?,
             });
         }
@@ -488,6 +560,107 @@ impl Database {
             "#,
         )?;
         let rows = statement.query_map([list_id], |row| row.get::<_, String>(0))?;
+
+        let mut schedule_ids = Vec::new();
+        for row in rows {
+            schedule_ids.push(row?);
+        }
+        Ok(schedule_ids)
+    }
+
+    fn load_policy_app_rules(&self) -> Result<Vec<AppRuleConfig>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT
+                id,
+                name,
+                tier,
+                enabled,
+                allowance_id,
+                max_session_minutes,
+                cooldown_minutes,
+                max_unlocks_per_hour
+            FROM policy_app_rules
+            ORDER BY id
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+            ))
+        })?;
+
+        let mut app_rules = Vec::new();
+        for row in rows {
+            let (
+                id,
+                name,
+                tier,
+                enabled,
+                allowance_id,
+                max_session_minutes,
+                cooldown_minutes,
+                max_unlocks_per_hour,
+            ) = row?;
+            app_rules.push(AppRuleConfig {
+                matchers: self.load_policy_app_rule_matchers(&id)?,
+                schedule_ids: self.load_policy_app_rule_schedule_ids(&id)?,
+                id,
+                name,
+                tier: rule_tier_from_str(&tier)?,
+                enabled: enabled != 0,
+                allowance_id,
+                unlock_policy: optional_unlock_policy(
+                    max_session_minutes,
+                    cooldown_minutes,
+                    max_unlocks_per_hour,
+                )?,
+            });
+        }
+        Ok(app_rules)
+    }
+
+    fn load_policy_app_rule_matchers(&self, rule_id: &str) -> Result<Vec<AppMatcherConfig>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT kind, value
+            FROM policy_app_rule_matchers
+            WHERE rule_id = ?1
+            ORDER BY position, id
+            "#,
+        )?;
+        let rows = statement.query_map([rule_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut matchers = Vec::new();
+        for row in rows {
+            let (kind, value) = row?;
+            matchers.push(AppMatcherConfig {
+                kind: app_matcher_kind_from_str(&kind)?,
+                value,
+            });
+        }
+        Ok(matchers)
+    }
+
+    fn load_policy_app_rule_schedule_ids(&self, rule_id: &str) -> Result<Vec<String>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT schedule_id
+            FROM policy_app_rule_schedules
+            WHERE rule_id = ?1
+            ORDER BY position, schedule_id
+            "#,
+        )?;
+        let rows = statement.query_map([rule_id], |row| row.get::<_, String>(0))?;
 
         let mut schedule_ids = Vec::new();
         for row in rows {
@@ -921,6 +1094,46 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
             FOREIGN KEY(list_id) REFERENCES policy_site_lists(id) ON DELETE CASCADE,
             FOREIGN KEY(schedule_id) REFERENCES policy_schedules(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS policy_app_rules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            tier TEXT NOT NULL CHECK (tier IN ('hard', 'controlled_access')),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            allowance_id TEXT,
+            max_session_minutes INTEGER,
+            cooldown_minutes INTEGER,
+            max_unlocks_per_hour INTEGER,
+            FOREIGN KEY(allowance_id) REFERENCES policy_allowances(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS policy_app_rule_matchers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN (
+                'executable_path',
+                'executable_basename',
+                'command_name',
+                'desktop_id',
+                'window_title_exact',
+                'window_title_contains'
+            )),
+            value TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(rule_id) REFERENCES policy_app_rules(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_policy_app_rule_matchers_rule
+            ON policy_app_rule_matchers(rule_id, position);
+
+        CREATE TABLE IF NOT EXISTS policy_app_rule_schedules (
+            rule_id TEXT NOT NULL,
+            schedule_id TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(rule_id, schedule_id),
+            FOREIGN KEY(rule_id) REFERENCES policy_app_rules(id) ON DELETE CASCADE,
+            FOREIGN KEY(schedule_id) REFERENCES policy_schedules(id) ON DELETE CASCADE
+        );
         "#,
     )?;
     Ok(())
@@ -936,8 +1149,10 @@ pub(crate) fn parse_time(value: &str) -> Result<DateTime<Utc>, Error> {
 
 fn to_u32(label: &str, value: i64) -> Result<u32, Error> {
     value.try_into().map_err(|_| {
-        ConfigError::Validation(format!("{label} value {value} is outside the supported range"))
-            .into()
+        ConfigError::Validation(format!(
+            "{label} value {value} is outside the supported range"
+        ))
+        .into()
     })
 }
 
@@ -946,11 +1161,7 @@ fn optional_unlock_policy(
     cooldown_minutes: Option<i64>,
     max_unlocks_per_hour: Option<i64>,
 ) -> Result<Option<UnlockPolicyConfig>, Error> {
-    match (
-        max_session_minutes,
-        cooldown_minutes,
-        max_unlocks_per_hour,
-    ) {
+    match (max_session_minutes, cooldown_minutes, max_unlocks_per_hour) {
         (None, None, None) => Ok(None),
         (Some(max_session_minutes), Some(cooldown_minutes), Some(max_unlocks_per_hour)) => {
             Ok(Some(UnlockPolicyConfig {
@@ -1003,6 +1214,29 @@ fn pattern_kind_from_str(value: &str) -> Result<RulePatternKind, Error> {
         "url_prefix" => Ok(RulePatternKind::UrlPrefix),
         "path_prefix" => Ok(RulePatternKind::PathPrefix),
         _ => Err(ConfigError::Validation(format!("unknown rule pattern kind '{value}'")).into()),
+    }
+}
+
+fn app_matcher_kind_to_str(value: AppMatcherKind) -> &'static str {
+    match value {
+        AppMatcherKind::ExecutablePath => "executable_path",
+        AppMatcherKind::ExecutableBasename => "executable_basename",
+        AppMatcherKind::CommandName => "command_name",
+        AppMatcherKind::DesktopId => "desktop_id",
+        AppMatcherKind::WindowTitleExact => "window_title_exact",
+        AppMatcherKind::WindowTitleContains => "window_title_contains",
+    }
+}
+
+fn app_matcher_kind_from_str(value: &str) -> Result<AppMatcherKind, Error> {
+    match value {
+        "executable_path" => Ok(AppMatcherKind::ExecutablePath),
+        "executable_basename" => Ok(AppMatcherKind::ExecutableBasename),
+        "command_name" => Ok(AppMatcherKind::CommandName),
+        "desktop_id" => Ok(AppMatcherKind::DesktopId),
+        "window_title_exact" => Ok(AppMatcherKind::WindowTitleExact),
+        "window_title_contains" => Ok(AppMatcherKind::WindowTitleContains),
+        _ => Err(ConfigError::Validation(format!("unknown app matcher kind '{value}'")).into()),
     }
 }
 

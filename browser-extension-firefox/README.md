@@ -40,12 +40,32 @@ From the repository root, the same verification path is:
 The native host manifest must also be installed and point to
 `/usr/local/bin/blockuntu-native`.
 
-## Create an XPI
+## Create Upload Packages
 
 ```bash
-npm run build
-npm run package:xpi
+npm run package:amo
 ```
 
-This writes `BlocKuntu.xpi` in this directory. The helper uses the system `zip`
-command.
+This verifies the extension, rebuilds `dist/`, and writes both `BlocKuntu.xpi`
+and `Archive.zip` in this directory. These archives contain only the installable
+runtime files:
+
+```text
+manifest.json
+blocked.html
+dist/background.js
+dist/blocked.js
+```
+
+Do not upload a ZIP made from the whole `browser-extension-firefox` directory.
+That includes `node_modules`, TypeScript sources, and build metadata that are
+not part of the installable add-on and cause AMO validation noise.
+
+If AMO asks for source code for review, create the separate source archive:
+
+```bash
+npm run package:source
+```
+
+Upload `Source.zip` only in the source-code field, not as the installable
+extension package.

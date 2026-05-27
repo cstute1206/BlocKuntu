@@ -14,10 +14,11 @@ The older proof of concept still lives under `PoC/`.
 ├── focus-core/                 # Shared Rust policy/config/database library
 ├── focusd/                     # Privileged daemon binary crate
 ├── focus-gui/                  # Tauri v2 + Svelte desktop frontend
-├── native-host/                # Firefox Native Messaging bridge
+├── native-host/                # Browser Native Messaging bridge
 ├── browser-extension-firefox/   # Firefox WebExtension TypeScript source
+├── browser-extension-chrome/    # Chrome/Chromium MV3 extension TypeScript source
 ├── packaging/systemd/           # Production systemd units
-├── packaging/native-messaging/  # Firefox native-host manifest
+├── packaging/native-messaging/  # Firefox and Chrome native-host manifests
 ├── scripts/
 │   ├── verify-focus-core.sh     # Clean build + test harness
 │   ├── verify-focusd.sh         # Clean daemon build + test harness
@@ -25,7 +26,8 @@ The older proof of concept still lives under `PoC/`.
 │   ├── verify-native-host.sh    # Clean native-host build + test harness
 │   ├── start-dev-daemon.sh      # Non-root development daemon on /tmp/blockuntu
 │   ├── install-dev-native-host.sh
-│   └── verify-firefox-extension.sh
+│   ├── verify-firefox-extension.sh
+│   └── verify-chrome-extension.sh
 ├── PoC/                         # Earlier Firefox/native-host/root-daemon PoC
 └── Docs/                        # Notes and design material
 ```
@@ -33,11 +35,12 @@ The older proof of concept still lives under `PoC/`.
 ## Detailed Documentation
 
 - [Dev and Production Runbook](Docs/DEV_AND_PROD_RUNBOOK.md): how to start the
-  dev daemon, install the dev Native Messaging host, load the Firefox extension,
-  run the GUI, and what remains before a production install is ready.
+  dev daemon, install the dev Native Messaging host, load the browser
+  extensions, run the GUI, and what remains before a production install is
+  ready.
 - [Component Architecture](Docs/COMPONENT_ARCHITECTURE.md): how `focus-core`,
-  `focusd`, `native-host`, the Firefox extension, the GUI, and systemd packaging
-  connect to each other.
+  `focusd`, `native-host`, the browser extensions, the GUI, and systemd
+  packaging connect to each other.
 
 ## What `focus-core` Does
 
@@ -66,10 +69,15 @@ writing, process killing, socket binding, and systemd watchdogs belongs in
 - Serves local JSON-RPC requests over a Unix domain socket.
 - Supports systemd socket activation for `/run/blockuntu/blockuntud.sock`.
 - Repairs Firefox enterprise policy at `/etc/firefox/policies/policies.json`.
-- Repairs the BlocKuntu managed block inside `/etc/hosts`.
+- Repairs the BlocKuntu managed block inside `/etc/hosts` and reapplies
+  `chattr +i` for the production hosts path.
+- Exposes explicit start/stop enforcement RPCs so the GUI can disable the
+  blocker without manual file deletion.
 - Provides process-scanning primitives based on `/proc/[pid]/exe` and
-  `/proc/[pid]/comm`.
-- Persists URL block events and Firefox extension heartbeats in SQLite.
+  `/proc/[pid]/comm`, including a mandatory Tier 1 hard block for unsupported
+  browsers such as Chromium, Brave, Edge, Opera, Vivaldi, LibreWolf, Waterfox,
+  Epiphany, Falkon, qutebrowser, Midori, Min, Nyxt, and Tor Browser.
+- Persists URL block events and browser extension heartbeats in SQLite.
 
 The daemon is root-oriented. Its tests use temporary files and do not modify
 system files.
@@ -89,16 +97,18 @@ It includes:
   edit protection.
 - Allowance overview.
 - Statistics from daemon event logs.
-- Admin/debug view with systemd/socket/policy/native-host/Firefox-extension
-  checks and raw JSON-RPC execution.
+- Admin/debug view with enforcement start/stop controls,
+  systemd/socket/policy/hosts/native-host/browser-extension/unsupported-browser
+  checks, and raw JSON-RPC execution.
 
 ## What `native-host` Does
 
-`native-host` builds the `blockuntu-native` executable used by Firefox Native
-Messaging. It is unprivileged and has no policy authority. It:
+`native-host` builds the `blockuntu-native` executable used by Firefox and
+Chrome Native Messaging. It is unprivileged and has no policy authority. It:
 
-- Maintains the persistent stdin/stdout Native Messaging session with Firefox.
-- Reads and writes Firefox Native Messaging length-prefixed JSON frames.
+- Maintains the persistent stdin/stdout Native Messaging session with the
+  browser.
+- Reads and writes Native Messaging length-prefixed JSON frames.
 - Connects to the daemon Unix socket as a member of the `blockuntu` group.
 - Translates current PoC messages like `{"url": "..."}` into daemon JSON-RPC.
 - Translates extension heartbeats into the daemon `extension_heartbeat` method.
@@ -106,18 +116,18 @@ Messaging. It is unprivileged and has no policy authority. It:
 - Fails closed from a privilege perspective: if the daemon is unavailable, it
   returns an error-shaped browser response and never makes local decisions.
 
-## What `browser-extension-firefox` Does
+## What The Browser Extensions Do
 
-The Firefox extension is written in TypeScript and compiles to
-`dist/background.js`. It:
+The Firefox extension and Chrome/Chromium extension are written in TypeScript
+and compile to `dist/background.js`. They:
 
-- Maintains daemon health through Native Messaging heartbeat acknowledgements.
-- Starts in fail-closed mode until a heartbeat acknowledgement arrives.
-- Blocks all top-level HTTP/HTTPS navigation when heartbeat state is stale or
+- Maintain daemon health through Native Messaging heartbeat acknowledgements.
+- Start in fail-closed mode until a heartbeat acknowledgement arrives.
+- Block all top-level HTTP/HTTPS navigation when heartbeat state is stale or
   unavailable.
-- Sends URL evaluations to `focusd` through `native-host`.
-- Records visit start, visit heartbeat, and visit end events for allowed pages.
-- Redirects blocked pages to `blocked.html`.
+- Send URL evaluations to `focusd` through `native-host`.
+- Record visit start, visit heartbeat, and visit end events for allowed pages.
+- Redirect blocked pages to `blocked.html`.
 
 ## Prerequisites
 
@@ -171,14 +181,14 @@ Saves are validated by `focus-core`, persisted in SQLite by `focusd`, and
 reloaded in the daemon process immediately. A site list or schedule that is
 active at the current local time cannot be edited from the GUI.
 
-For Firefox extension testing against the development daemon, install the
-per-user Native Messaging manifest:
+For Firefox and Chrome extension testing against the development daemon,
+install the per-user Native Messaging manifests:
 
 ```bash
 ./scripts/install-dev-native-host.sh
 ```
 
-Restart Firefox after installing or updating that manifest.
+Restart Firefox and Chrome after installing or updating those manifests.
 
 ## Build
 
@@ -215,6 +225,14 @@ Build the Firefox extension:
 
 ```bash
 cd browser-extension-firefox
+npm install
+npm run build
+```
+
+Build the Chrome extension:
+
+```bash
+cd browser-extension-chrome
 npm install
 npm run build
 ```
@@ -275,6 +293,13 @@ cd browser-extension-firefox
 npm run verify
 ```
 
+Type-check and validate the Chrome extension:
+
+```bash
+cd browser-extension-chrome
+npm run verify
+```
+
 Run formatting checks:
 
 ```bash
@@ -312,6 +337,12 @@ For the Firefox extension:
 
 ```bash
 ./scripts/verify-firefox-extension.sh
+```
+
+For the Chrome extension:
+
+```bash
+./scripts/verify-chrome-extension.sh
 ```
 
 This script:
@@ -356,15 +387,15 @@ cargo run -- \
 The production service should use systemd socket activation instead of
 `--dev-bind-socket`.
 
-If you are testing the Firefox extension against the dev daemon, install the
-per-user dev Native Messaging manifest:
+If you are testing Firefox or Chrome against the dev daemon, install the
+per-user dev Native Messaging manifests:
 
 ```bash
 ./scripts/install-dev-native-host.sh
 ```
 
-Then restart Firefox and reload the extension. The dev manifest points
-`blockuntu_native` at the local native host binary and forces it to use
+Then restart Firefox/Chrome and reload the extension. The dev manifests point
+`blockuntu_native` at the local native host binary and force it to use
 `/tmp/blockuntu/blockuntud.sock`. The generated wrapper also passes
 `--revive-command ./scripts/start-dev-daemon.sh`, so Firefox heartbeats can
 restart the dev daemon after a missing or stale `/tmp/blockuntu/blockuntud.sock`.
@@ -503,22 +534,31 @@ cd native-host
 cargo run -- --socket /tmp/blockuntu/blockuntud.sock
 ```
 
-Firefox launches this binary through a native messaging manifest, not manually.
-For the development manifest, use `./scripts/install-dev-native-host.sh`; it
-generates a wrapper that enables dev-daemon revival with
-`./scripts/start-dev-daemon.sh`.
-The production manifest is:
+Firefox and Chrome launch this binary through native messaging manifests, not
+manually. For the development manifests, use
+`./scripts/install-dev-native-host.sh`; it generates a wrapper that enables
+dev-daemon revival with `./scripts/start-dev-daemon.sh`.
+
+The production manifests are:
 
 ```text
 packaging/native-messaging/blockuntu_native.json
+packaging/native-messaging/blockuntu_native.chrome.json
 ```
 
-For a per-user Firefox install during development:
+For per-user browser installs during development:
 
 ```bash
-mkdir -p ~/.mozilla/native-messaging-hosts
+mkdir -p \
+  ~/.mozilla/native-messaging-hosts \
+  ~/.config/google-chrome/NativeMessagingHosts \
+  ~/.config/chromium/NativeMessagingHosts
 cp packaging/native-messaging/blockuntu_native.json \
   ~/.mozilla/native-messaging-hosts/blockuntu_native.json
+cp packaging/native-messaging/blockuntu_native.chrome.json \
+  ~/.config/google-chrome/NativeMessagingHosts/blockuntu_native.json
+cp packaging/native-messaging/blockuntu_native.chrome.json \
+  ~/.config/chromium/NativeMessagingHosts/blockuntu_native.json
 ```
 
 For system-wide installation:
@@ -528,6 +568,10 @@ sudo install -Dm755 native-host/target/release/blockuntu-native \
   /usr/local/bin/blockuntu-native
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.json \
   /usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json
+sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
+  /etc/opt/chrome/native-messaging-hosts/blockuntu_native.json
+sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
+  /etc/chromium/native-messaging-hosts/blockuntu_native.json
 ```
 
 ## Tauri GUI Development
@@ -561,6 +605,30 @@ npm run build
 npm run package:xpi
 ```
 
+## Chrome Extension Development
+
+```bash
+cd browser-extension-chrome
+npm install
+npm run build
+```
+
+Load `browser-extension-chrome/` from `chrome://extensions` with Developer mode
+enabled and "Load unpacked". The manifest embeds a fixed development key so the
+extension ID remains:
+
+```text
+mlfcmoellaplhamddimfpahklojgligk
+```
+
+Create a local ZIP archive when needed:
+
+```bash
+cd browser-extension-chrome
+npm run build
+npm run package:zip
+```
+
 ## Current Verification Status
 
 The latest verification run passed:
@@ -568,11 +636,13 @@ The latest verification run passed:
 ```text
 cargo fmt --check
 cargo test --all-targets
-focus-core: 8 integration tests passed
+focus-core: 11 integration tests passed
 focusd: daemon/module tests passed
 focus-gui: Svelte check, Vite build, and Tauri cargo check passed
 native-host: framing/protocol/socket bridge tests passed
 browser-extension-firefox: TypeScript build and manifest checks passed
+browser-extension-chrome: TypeScript build and manifest checks passed
+browser-extension-chrome: ZIP packaging helper passed
 ```
 
 ## Next Implementation Step

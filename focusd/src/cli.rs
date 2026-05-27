@@ -6,8 +6,9 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/blockuntu/config.toml";
 pub const DEFAULT_DATABASE_PATH: &str = "/var/lib/blockuntu/blockuntu.sqlite3";
 pub const DEFAULT_SOCKET_PATH: &str = "/run/blockuntu/blockuntud.sock";
 pub const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.json";
-pub const DEFAULT_EXTENSION_ID: &str = "blockuntu@example.local";
-pub const DEFAULT_EXTENSION_XPI_PATH: &str = "/usr/local/share/blockuntu/BlocKuntu.xpi";
+pub const DEFAULT_EXTENSION_ID: &str = "blockuntu-poc@example.local";
+pub const DEFAULT_EXTENSION_XPI_PATH: &str =
+    "/home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi";
 pub const DEFAULT_HOSTS_PATH: &str = "/etc/hosts";
 
 #[derive(Debug, Clone, Parser)]
@@ -28,6 +29,10 @@ pub struct Args {
     pub extension_xpi: PathBuf,
     #[arg(long, default_value = DEFAULT_HOSTS_PATH)]
     pub hosts: PathBuf,
+    #[arg(long, conflicts_with = "no_hosts_immutable")]
+    pub hosts_immutable: bool,
+    #[arg(long, conflicts_with = "hosts_immutable")]
+    pub no_hosts_immutable: bool,
     #[arg(long)]
     pub dev_bind_socket: bool,
     #[arg(long, default_value_t = 15)]

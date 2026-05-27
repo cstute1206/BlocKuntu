@@ -3,21 +3,30 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelike, Utc};
 use focus_core::{
     evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
-    BlockReason, Config, ControlledBlockReason, Decision, EvaluationContext, FocusCore,
-    HeartbeatState, RuleConfig, ScheduleConfig, UnlockState, VisitState, Weekday,
+    AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision, EvaluationContext,
+    FocusCore, HeartbeatState, RuleConfig, ScheduleConfig, UnlockState, VisitState, Weekday,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{DaemonError, Result};
+use crate::firefox_policy::FirefoxPolicyManager;
+use crate::hosts::HostsManager;
 
 const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
+const CHROME_EXTENSION_HEARTBEAT_COMPONENT: &str = "chrome_extension";
 const DEFAULT_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS: u64 = 15;
+const CHROME_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS: u64 = 75;
+const ENFORCEMENT_STATE_KEY: &str = "enforcement_state";
+const ENFORCEMENT_ACTIVE: &str = "active";
+const ENFORCEMENT_STOPPED: &str = "stopped";
 
 #[derive(Clone)]
 pub struct RpcContext {
     core: Arc<Mutex<FocusCore>>,
     extension_heartbeat_timeout_seconds: u64,
+    firefox_policy: Option<FirefoxPolicyManager>,
+    hosts: Option<HostsManager>,
 }
 
 impl RpcContext {
@@ -25,12 +34,36 @@ impl RpcContext {
         Self {
             core,
             extension_heartbeat_timeout_seconds: DEFAULT_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS,
+            firefox_policy: None,
+            hosts: None,
         }
     }
 
     pub fn with_extension_heartbeat_timeout_seconds(mut self, seconds: u64) -> Self {
         self.extension_heartbeat_timeout_seconds = seconds;
         self
+    }
+
+    pub fn with_enforcement_managers(
+        mut self,
+        firefox_policy: FirefoxPolicyManager,
+        hosts: HostsManager,
+    ) -> Self {
+        self.firefox_policy = Some(firefox_policy);
+        self.hosts = Some(hosts);
+        self
+    }
+
+    fn firefox_policy(&self) -> Result<&FirefoxPolicyManager> {
+        self.firefox_policy.as_ref().ok_or_else(|| {
+            DaemonError::InvalidRequest("Firefox policy manager is not configured".to_string())
+        })
+    }
+
+    fn hosts(&self) -> Result<&HostsManager> {
+        self.hosts.as_ref().ok_or_else(|| {
+            DaemonError::InvalidRequest("hosts manager is not configured".to_string())
+        })
     }
 }
 
@@ -89,6 +122,10 @@ struct VisitIdParams {
 #[derive(Debug, Deserialize)]
 struct ExtensionHeartbeatParams {
     #[serde(default)]
+    component: Option<String>,
+    #[serde(default)]
+    browser: Option<String>,
+    #[serde(default)]
     extension_id: Option<String>,
     #[serde(default)]
     extension_version: Option<String>,
@@ -98,6 +135,8 @@ struct ExtensionHeartbeatParams {
 
 #[derive(Debug, Deserialize)]
 struct ExtensionStatusParams {
+    #[serde(default)]
+    component: Option<String>,
     #[serde(default)]
     now: Option<String>,
 }
@@ -117,6 +156,20 @@ struct UpsertSiteListParams {
 
 #[derive(Debug, Deserialize)]
 struct DeleteSiteListParams {
+    id: String,
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpsertAppRuleParams {
+    rule: AppRuleConfig,
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteAppRuleParams {
     id: String,
     #[serde(default)]
     now: Option<String>,
@@ -174,6 +227,9 @@ fn handle_json_value(context: &RpcContext, value: Value) -> Value {
 fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Value> {
     match method {
         "status" => status(context),
+        "enforcement_status" => enforcement_status(context),
+        "start_enforcement" => start_enforcement(context),
+        "stop_enforcement" => stop_enforcement(context),
         "config_snapshot" => config_snapshot(context),
         "upsert_site_list" => {
             let params = parse_params::<UpsertSiteListParams>(params)?;
@@ -182,6 +238,14 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
         "delete_site_list" => {
             let params = parse_params::<DeleteSiteListParams>(params)?;
             delete_site_list_method(context, params)
+        }
+        "upsert_app_rule" => {
+            let params = parse_params::<UpsertAppRuleParams>(params)?;
+            upsert_app_rule_method(context, params)
+        }
+        "delete_app_rule" => {
+            let params = parse_params::<DeleteAppRuleParams>(params)?;
+            delete_app_rule_method(context, params)
         }
         "upsert_schedule" => {
             let params = parse_params::<UpsertScheduleParams>(params)?;
@@ -229,12 +293,94 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
 
 fn status(context: &RpcContext) -> Result<Value> {
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let enforcement_state = enforcement_state_from_core(&core)?;
     Ok(json!({
         "status": "ok",
+        "enforcement_state": enforcement_state,
         "rules": core.config().rules.len(),
+        "app_rules": core.config().app_rules.len(),
         "schedules": core.config().schedules.len(),
         "allowances": core.config().allowances.len()
     }))
+}
+
+fn enforcement_status(context: &RpcContext) -> Result<Value> {
+    let firefox_policy = context.firefox_policy()?;
+    let hosts = context.hosts()?;
+    let (enforcement_state, config) = {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        (enforcement_state_from_core(&core)?, core.config().clone())
+    };
+
+    Ok(json!({
+        "status": "ok",
+        "enforcement_state": enforcement_state,
+        "firefox_policy": firefox_policy.status(),
+        "hosts_file": hosts.status(&config)
+    }))
+}
+
+fn start_enforcement(context: &RpcContext) -> Result<Value> {
+    let firefox_policy = context.firefox_policy()?;
+    let hosts = context.hosts()?;
+    let now = Utc::now();
+
+    {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        core.database()
+            .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_ACTIVE, now)?;
+    }
+
+    let firefox_policy_repair = firefox_policy.verify_and_repair()?;
+    let hosts_repair = {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        hosts.verify_and_repair(core.config())?
+    };
+
+    let status = enforcement_status(context)?;
+    {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        core.database().record_event(
+            "enforcement_started",
+            Some("system"),
+            Some(&format!(
+                "firefox_policy={firefox_policy_repair:?};hosts={hosts_repair:?}"
+            )),
+            now,
+        )?;
+    }
+
+    Ok(status)
+}
+
+fn stop_enforcement(context: &RpcContext) -> Result<Value> {
+    let firefox_policy = context.firefox_policy()?;
+    let hosts = context.hosts()?;
+    let now = Utc::now();
+
+    {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        core.database()
+            .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_STOPPED, now)?;
+    }
+
+    let firefox_policy_repair = firefox_policy.remove_policy()?;
+    let hosts_repair = hosts.remove_managed_block()?;
+    let status = enforcement_status(context)?;
+
+    {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        core.database().record_event(
+            "enforcement_stopped",
+            Some("system"),
+            Some(&format!(
+                "firefox_policy={firefox_policy_repair:?};hosts={hosts_repair:?}"
+            )),
+            now,
+        )?;
+    }
+
+    Ok(status)
 }
 
 fn config_snapshot(context: &RpcContext) -> Result<Value> {
@@ -307,6 +453,85 @@ fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -
     core.replace_config(next)?;
     core.database().record_event(
         "site_list_deleted",
+        Some(&removed.id),
+        Some("GUI structured edit"),
+        updated_at,
+    )?;
+
+    Ok(json!({
+        "status": "ok",
+        "config": core.config(),
+        "updated_at": updated_at
+    }))
+}
+
+fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let updated_at = Utc::now();
+    let rule_id = params.rule.id.clone();
+    let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let mut next = core.config().clone();
+
+    match next
+        .app_rules
+        .iter()
+        .position(|candidate| candidate.id == params.rule.id)
+    {
+        Some(index) => {
+            let current_rule = &next.app_rules[index];
+            if current_rule != &params.rule
+                && app_rule_is_active_at(current_rule, core.config(), now)
+            {
+                return Err(active_app_rule_edit_error(&current_rule.id));
+            }
+            next.app_rules[index] = params.rule;
+        }
+        None => next.app_rules.push(params.rule),
+    }
+
+    focus_core::validate_config(&next)?;
+    core.database().replace_policy_config(&next)?;
+    core.replace_config(next)?;
+    core.database().record_event(
+        "app_rule_saved",
+        Some(&rule_id),
+        Some("GUI structured edit"),
+        updated_at,
+    )?;
+
+    Ok(json!({
+        "status": "ok",
+        "config": core.config(),
+        "updated_at": updated_at
+    }))
+}
+
+fn delete_app_rule_method(context: &RpcContext, params: DeleteAppRuleParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let updated_at = Utc::now();
+    let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let mut next = core.config().clone();
+    let Some(index) = next
+        .app_rules
+        .iter()
+        .position(|candidate| candidate.id == params.id)
+    else {
+        return Err(DaemonError::InvalidRequest(format!(
+            "app rule '{}' does not exist",
+            params.id
+        )));
+    };
+    let current_rule = &next.app_rules[index];
+    if app_rule_is_active_at(current_rule, core.config(), now) {
+        return Err(active_app_rule_edit_error(&current_rule.id));
+    }
+    let removed = next.app_rules.remove(index);
+
+    focus_core::validate_config(&next)?;
+    core.database().replace_policy_config(&next)?;
+    core.replace_config(next)?;
+    core.database().record_event(
+        "app_rule_deleted",
         Some(&removed.id),
         Some("GUI structured edit"),
         updated_at,
@@ -436,6 +661,12 @@ fn recent_events(context: &RpcContext, params: RecentEventsParams) -> Result<Val
 fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Result<Value> {
     let now = parse_optional_now(params.now)?;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    if !enforcement_active_from_core(&core)? {
+        return Ok(json!({
+            "decision": "allow",
+            "enforcement_state": ENFORCEMENT_STOPPED
+        }));
+    }
     let eval_context = EvaluationContext::new(core.config(), core.database(), now);
     let decision = evaluate_url(&params.url, &eval_context);
 
@@ -491,13 +722,19 @@ fn extension_heartbeat_method(
     params: ExtensionHeartbeatParams,
 ) -> Result<Value> {
     let now = parse_optional_now(params.now)?;
+    let component = extension_component(
+        params.component.as_deref(),
+        params.browser.as_deref(),
+        params.extension_id.as_deref(),
+    );
     let details = json!({
+        "browser": params.browser,
         "extension_id": params.extension_id,
         "extension_version": params.extension_version
     });
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     core.database().upsert_heartbeat(
-        FIREFOX_EXTENSION_HEARTBEAT_COMPONENT,
+        component,
         Some(&details.to_string()),
         now.with_timezone(&Utc),
     )?;
@@ -506,39 +743,50 @@ fn extension_heartbeat_method(
 
 fn extension_status_method(context: &RpcContext, params: ExtensionStatusParams) -> Result<Value> {
     let now = parse_optional_now(params.now)?.with_timezone(&Utc);
+    let component = extension_component(params.component.as_deref(), None, None);
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    firefox_extension_status_from_core(&core, context.extension_heartbeat_timeout_seconds, now)
+    browser_extension_status_from_core(
+        &core,
+        component,
+        extension_heartbeat_timeout_seconds(context, component),
+        now,
+    )
 }
 
-fn firefox_extension_status_from_core(
+fn browser_extension_status_from_core(
     core: &FocusCore,
+    component: &str,
     heartbeat_timeout_seconds: u64,
     now: DateTime<Utc>,
 ) -> Result<Value> {
-    let heartbeat = core
-        .database()
-        .heartbeat(FIREFOX_EXTENSION_HEARTBEAT_COMPONENT)?;
-    Ok(firefox_extension_status_json(
+    let heartbeat = core.database().heartbeat(component)?;
+    Ok(browser_extension_status_json(
         heartbeat.as_ref(),
+        component,
         heartbeat_timeout_seconds,
         now,
     ))
 }
 
-fn firefox_extension_status_json(
+fn browser_extension_status_json(
     heartbeat: Option<&HeartbeatState>,
+    component: &str,
     heartbeat_timeout_seconds: u64,
     now: DateTime<Utc>,
 ) -> Value {
     let Some(heartbeat) = heartbeat else {
+        let browser = browser_name_for_component(component);
         return json!({
             "state": "missing",
-            "component": FIREFOX_EXTENSION_HEARTBEAT_COMPONENT,
+            "component": component,
+            "browser": browser,
             "installed_enabled": "unconfirmed",
             "last_seen_at": Value::Null,
             "age_seconds": Value::Null,
             "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
-            "detail": "no heartbeat has been recorded; Firefox may be closed, or the extension is not installed/enabled"
+            "detail": format!(
+                "no heartbeat has been recorded; {browser} may be closed, or the extension is not installed/enabled"
+            )
         });
     };
 
@@ -565,6 +813,10 @@ fn firefox_extension_status_json(
         .as_ref()
         .and_then(|details| details.get("extension_version"))
         .and_then(Value::as_str);
+    let browser = details
+        .as_ref()
+        .and_then(|details| details.get("browser"))
+        .and_then(Value::as_str);
     let detail = match state {
         "active" => format!(
             "recent heartbeat received {} second(s) ago; extension installation and enabled state are confirmed",
@@ -583,10 +835,57 @@ fn firefox_extension_status_json(
         "last_seen_at": heartbeat.last_seen_at,
         "age_seconds": age_seconds,
         "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
+        "browser": browser,
         "extension_id": extension_id,
         "extension_version": extension_version,
         "detail": detail
     })
+}
+
+fn extension_component<'a>(
+    component: Option<&'a str>,
+    browser: Option<&str>,
+    extension_id: Option<&str>,
+) -> &'a str {
+    if let Some(
+        component @ (FIREFOX_EXTENSION_HEARTBEAT_COMPONENT | CHROME_EXTENSION_HEARTBEAT_COMPONENT),
+    ) = component
+    {
+        return component;
+    }
+
+    if browser
+        .map(|browser| browser.eq_ignore_ascii_case("chrome"))
+        .unwrap_or(false)
+    {
+        return CHROME_EXTENSION_HEARTBEAT_COMPONENT;
+    }
+
+    if extension_id
+        .map(|extension_id| extension_id == "mlfcmoellaplhamddimfpahklojgligk")
+        .unwrap_or(false)
+    {
+        return CHROME_EXTENSION_HEARTBEAT_COMPONENT;
+    }
+
+    FIREFOX_EXTENSION_HEARTBEAT_COMPONENT
+}
+
+fn extension_heartbeat_timeout_seconds(context: &RpcContext, component: &str) -> u64 {
+    if component == CHROME_EXTENSION_HEARTBEAT_COMPONENT {
+        context
+            .extension_heartbeat_timeout_seconds
+            .max(CHROME_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS)
+    } else {
+        context.extension_heartbeat_timeout_seconds
+    }
+}
+
+fn browser_name_for_component(component: &str) -> &'static str {
+    match component {
+        CHROME_EXTENSION_HEARTBEAT_COMPONENT => "Chrome",
+        _ => "Firefox",
+    }
 }
 
 fn heartbeat_details(details: Option<&str>) -> Option<Value> {
@@ -603,6 +902,8 @@ fn handle_legacy_request(context: &RpcContext, value: Value) -> Value {
 
     if request.message_type.as_deref() == Some("extension_heartbeat") {
         let params = ExtensionHeartbeatParams {
+            component: None,
+            browser: None,
             extension_id: request.extension_id,
             extension_version: request.extension_version,
             now: None,
@@ -917,9 +1218,28 @@ fn default_recent_events_limit() -> u32 {
     50
 }
 
+fn enforcement_state_from_core(core: &FocusCore) -> Result<String> {
+    Ok(
+        match core.database().service_state(ENFORCEMENT_STATE_KEY)? {
+            Some(state) if state == ENFORCEMENT_STOPPED => ENFORCEMENT_STOPPED.to_string(),
+            _ => ENFORCEMENT_ACTIVE.to_string(),
+        },
+    )
+}
+
+fn enforcement_active_from_core(core: &FocusCore) -> Result<bool> {
+    Ok(enforcement_state_from_core(core)? == ENFORCEMENT_ACTIVE)
+}
+
 fn active_site_list_edit_error(rule_id: &str) -> DaemonError {
     DaemonError::InvalidRequest(format!(
         "site list '{rule_id}' is currently active and cannot be edited"
+    ))
+}
+
+fn active_app_rule_edit_error(rule_id: &str) -> DaemonError {
+    DaemonError::InvalidRequest(format!(
+        "app rule '{rule_id}' is currently active and cannot be edited"
     ))
 }
 
@@ -934,11 +1254,31 @@ fn rule_is_active_at(rule: &RuleConfig, config: &Config, now: DateTime<FixedOffs
         return false;
     }
 
-    if rule.schedule_ids.is_empty() {
+    schedule_ids_are_active_at(&rule.schedule_ids, config, now)
+}
+
+fn app_rule_is_active_at(
+    rule: &AppRuleConfig,
+    config: &Config,
+    now: DateTime<FixedOffset>,
+) -> bool {
+    if !rule.enabled {
+        return false;
+    }
+
+    schedule_ids_are_active_at(&rule.schedule_ids, config, now)
+}
+
+fn schedule_ids_are_active_at(
+    schedule_ids: &[String],
+    config: &Config,
+    now: DateTime<FixedOffset>,
+) -> bool {
+    if schedule_ids.is_empty() {
         return true;
     }
 
-    rule.schedule_ids.iter().any(|schedule_id| {
+    schedule_ids.iter().any(|schedule_id| {
         config
             .schedules
             .iter()
@@ -1065,6 +1405,35 @@ mod tests {
         assert_eq!(response["id"], 7);
         assert_eq!(response["result"]["decision"], "block");
         assert_eq!(response["result"]["reason"]["kind"], "hard_block");
+    }
+
+    #[test]
+    fn stopped_enforcement_allows_url_evaluation() {
+        let context = rpc_context();
+        {
+            let core = context.core.lock().expect("core lock should work");
+            core.database()
+                .set_service_state("enforcement_state", "stopped", Utc::now())
+                .expect("service state should write");
+        }
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://blocked.example/",
+                "now": "2026-05-22T10:00:00Z"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["id"], 8);
+        assert_eq!(response["result"]["decision"], "allow");
+        assert_eq!(response["result"]["enforcement_state"], "stopped");
     }
 
     #[test]
@@ -1208,6 +1577,42 @@ mod tests {
         .expect("response should parse");
         assert_eq!(eval_response["result"]["decision"], "block");
         assert_eq!(eval_response["result"]["reason"]["rule_id"], "new-hard");
+    }
+
+    #[test]
+    fn upserts_app_rule_after_validation_and_reloads_core() {
+        let context = editable_rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 19,
+            "method": "upsert_app_rule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "kmines-hard",
+                    "name": "KMines",
+                    "tier": "hard",
+                    "enabled": true,
+                    "matchers": [
+                        { "kind": "command_name", "value": "kmines" },
+                        { "kind": "desktop_id", "value": "org.kde.kmines.desktop" }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert!(response["result"]["config"]["app_rules"]
+            .as_array()
+            .expect("app rules should be an array")
+            .iter()
+            .any(|rule| rule["id"] == "kmines-hard"));
     }
 
     #[test]
@@ -1372,5 +1777,64 @@ mod tests {
         assert_eq!(response["result"]["state"], "stale");
         assert_eq!(response["result"]["installed_enabled"], "unconfirmed");
         assert_eq!(response["result"]["age_seconds"], 20);
+    }
+
+    #[test]
+    fn reports_chrome_extension_heartbeat_separately() {
+        let context = rpc_context();
+        let heartbeat = json!({
+            "jsonrpc": "2.0",
+            "id": 18,
+            "method": "extension_heartbeat",
+            "params": {
+                "browser": "chrome",
+                "component": "chrome_extension",
+                "extension_id": "mlfcmoellaplhamddimfpahklojgligk",
+                "extension_version": "0.2.1",
+                "now": "2026-05-22T10:00:00Z"
+            }
+        });
+        let _ = handle_payload(&context, &serde_json::to_vec(&heartbeat).unwrap());
+
+        let chrome_status = json!({
+            "jsonrpc": "2.0",
+            "id": 19,
+            "method": "extension_status",
+            "params": {
+                "component": "chrome_extension",
+                "now": "2026-05-22T10:01:00Z"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&chrome_status).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["result"]["component"], "chrome_extension");
+        assert_eq!(response["result"]["state"], "active");
+        assert_eq!(response["result"]["browser"], "chrome");
+        assert_eq!(
+            response["result"]["extension_id"],
+            "mlfcmoellaplhamddimfpahklojgligk"
+        );
+
+        let firefox_status = json!({
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "extension_status",
+            "params": {
+                "component": "firefox_extension",
+                "now": "2026-05-22T10:01:00Z"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&firefox_status).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["result"]["state"], "missing");
+        assert_eq!(response["result"]["component"], "firefox_extension");
     }
 }

@@ -2,9 +2,9 @@ use chrono::{Datelike, Duration, Timelike};
 use url::Url;
 
 use crate::{
-    BlockReason, Config, ControlledBlockReason, Database, Decision, Error, EvaluationContext,
-    ProcessIdentity, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier, ScheduleConfig,
-    UnlockError, UnlockState, VisitState, Weekday,
+    AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Config, ControlledBlockReason,
+    Database, Decision, Error, EvaluationContext, ProcessIdentity, RuleConfig, RulePatternConfig,
+    RulePatternKind, RuleTier, ScheduleConfig, UnlockError, UnlockState, VisitState, Weekday,
 };
 
 pub struct PolicyEngine<'a> {
@@ -49,9 +49,31 @@ impl<'a> PolicyEngine<'a> {
 
     pub fn evaluate_app(
         &self,
-        _process: &ProcessIdentity,
-        _context: &EvaluationContext<'_>,
+        process: &ProcessIdentity,
+        context: &EvaluationContext<'_>,
     ) -> Decision {
+        for rule in self.matching_app_rules(process, RuleTier::Hard) {
+            if self.app_rule_is_active(rule, context) {
+                return Decision::Block(BlockReason::HardBlock {
+                    rule_id: rule.id.clone(),
+                    rule_name: rule.name.clone(),
+                });
+            }
+        }
+
+        for rule in self.matching_app_rules(process, RuleTier::ControlledAccess) {
+            if !self.app_rule_is_active(rule, context) {
+                continue;
+            }
+
+            return self.evaluate_controlled_rule_fields(
+                &rule.id,
+                &rule.name,
+                rule.allowance_id.as_deref(),
+                context,
+            );
+        }
+
         Decision::Allow
     }
 
@@ -76,7 +98,7 @@ impl<'a> PolicyEngine<'a> {
         }
 
         let rule = self.resolve_unlock_rule(target)?;
-        let policy = rule.effective_unlock_policy(&self.config.defaults);
+        let policy = rule.unlock_policy;
 
         if minutes > policy.max_session_minutes {
             return Err(UnlockError::ExceedsMaxSession {
@@ -172,17 +194,32 @@ impl<'a> PolicyEngine<'a> {
         rule: &RuleConfig,
         context: &EvaluationContext<'_>,
     ) -> Decision {
+        self.evaluate_controlled_rule_fields(
+            &rule.id,
+            &rule.name,
+            rule.allowance_id.as_deref(),
+            context,
+        )
+    }
+
+    fn evaluate_controlled_rule_fields(
+        &self,
+        rule_id: &str,
+        rule_name: &str,
+        allowance_id: Option<&str>,
+        context: &EvaluationContext<'_>,
+    ) -> Decision {
         let now = context.now_utc();
-        match self.database.active_unlock_for_rule(&rule.id, now) {
+        match self.database.active_unlock_for_rule(rule_id, now) {
             Ok(Some(_)) => return Decision::Allow,
             Ok(None) => {}
             Err(err) => return runtime_error(err),
         }
 
-        let Some(allowance_id) = rule.allowance_id.as_deref() else {
+        let Some(allowance_id) = allowance_id else {
             return Decision::Block(BlockReason::ControlledAccess {
-                rule_id: rule.id.clone(),
-                rule_name: rule.name.clone(),
+                rule_id: rule_id.to_string(),
+                rule_name: rule_name.to_string(),
                 reason: ControlledBlockReason::NoAllowance,
             });
         };
@@ -194,23 +231,23 @@ impl<'a> PolicyEngine<'a> {
             .find(|allowance| allowance.id == allowance_id)
         else {
             return Decision::Block(BlockReason::ControlledAccess {
-                rule_id: rule.id.clone(),
-                rule_name: rule.name.clone(),
+                rule_id: rule_id.to_string(),
+                rule_name: rule_name.to_string(),
                 reason: ControlledBlockReason::NoAllowance,
             });
         };
 
         match self
             .database
-            .used_seconds_for_rule_on_day(&rule.id, context.now_utc())
+            .used_seconds_for_rule_on_day(rule_id, context.now_utc())
         {
             Ok(used_seconds) => {
                 if used_seconds < i64::from(allowance.daily_minutes) * 60 {
                     Decision::Allow
                 } else {
                     Decision::Block(BlockReason::ControlledAccess {
-                        rule_id: rule.id.clone(),
-                        rule_name: rule.name.clone(),
+                        rule_id: rule_id.to_string(),
+                        rule_name: rule_name.to_string(),
                         reason: ControlledBlockReason::AllowanceExhausted,
                     })
                 }
@@ -219,20 +256,23 @@ impl<'a> PolicyEngine<'a> {
         }
     }
 
-    fn resolve_unlock_rule(&self, target: &str) -> Result<&RuleConfig, Error> {
+    fn resolve_unlock_rule(&self, target: &str) -> Result<ResolvedUnlockRule, Error> {
         if let Some(rule) = self
             .config
             .rules
             .iter()
             .find(|rule| rule.enabled && rule.id == target)
         {
-            return match rule.tier {
-                RuleTier::Hard => Err(UnlockError::TargetIsHardBlocked {
-                    rule_id: rule.id.clone(),
-                }
-                .into()),
-                RuleTier::ControlledAccess => Ok(rule),
-            };
+            return unlock_rule_from_site(rule, &self.config.defaults);
+        }
+
+        if let Some(rule) = self
+            .config
+            .app_rules
+            .iter()
+            .find(|rule| rule.enabled && rule.id == target)
+        {
+            return unlock_rule_from_app(rule, &self.config.defaults);
         }
 
         let parsed = NormalizedUrl::parse(target).ok();
@@ -253,13 +293,13 @@ impl<'a> PolicyEngine<'a> {
             };
 
             if matches {
-                return match rule.tier {
-                    RuleTier::Hard => Err(UnlockError::TargetIsHardBlocked {
-                        rule_id: rule.id.clone(),
-                    }
-                    .into()),
-                    RuleTier::ControlledAccess => Ok(rule),
-                };
+                return unlock_rule_from_site(rule, &self.config.defaults);
+            }
+        }
+
+        for rule in self.config.app_rules.iter().filter(|rule| rule.enabled) {
+            if app_rule_target_matches(rule, target) {
+                return unlock_rule_from_app(rule, &self.config.defaults);
             }
         }
 
@@ -297,12 +337,40 @@ impl<'a> PolicyEngine<'a> {
             })
     }
 
+    fn matching_app_rules<'b>(
+        &'b self,
+        process: &'b ProcessIdentity,
+        tier: RuleTier,
+    ) -> impl Iterator<Item = &'b AppRuleConfig> + 'b {
+        self.config
+            .app_rules
+            .iter()
+            .filter(move |rule| rule.enabled && rule.tier == tier)
+            .filter(move |rule| {
+                rule.matchers
+                    .iter()
+                    .any(|matcher| app_matcher_matches(matcher, process))
+            })
+    }
+
     fn rule_is_active(&self, rule: &RuleConfig, context: &EvaluationContext<'_>) -> bool {
-        if rule.schedule_ids.is_empty() {
+        self.schedule_ids_are_active(&rule.schedule_ids, context)
+    }
+
+    fn app_rule_is_active(&self, rule: &AppRuleConfig, context: &EvaluationContext<'_>) -> bool {
+        self.schedule_ids_are_active(&rule.schedule_ids, context)
+    }
+
+    fn schedule_ids_are_active(
+        &self,
+        schedule_ids: &[String],
+        context: &EvaluationContext<'_>,
+    ) -> bool {
+        if schedule_ids.is_empty() {
             return true;
         }
 
-        rule.schedule_ids.iter().any(|schedule_id| {
+        schedule_ids.iter().any(|schedule_id| {
             self.config
                 .schedules
                 .iter()
@@ -311,6 +379,11 @@ impl<'a> PolicyEngine<'a> {
                 .unwrap_or(true)
         })
     }
+}
+
+struct ResolvedUnlockRule {
+    id: String,
+    unlock_policy: crate::UnlockPolicyConfig,
 }
 
 pub fn evaluate_url(url: &str, context: &EvaluationContext<'_>) -> Decision {
@@ -345,6 +418,86 @@ pub fn record_visit_heartbeat(visit_id: i64, context: &EvaluationContext<'_>) ->
 
 pub fn record_visit_end(visit_id: i64, context: &EvaluationContext<'_>) -> Result<(), Error> {
     PolicyEngine::new(context.config, context.database).record_visit_end(visit_id, context)
+}
+
+fn unlock_rule_from_site(
+    rule: &RuleConfig,
+    defaults: &crate::DefaultsConfig,
+) -> Result<ResolvedUnlockRule, Error> {
+    match rule.tier {
+        RuleTier::Hard => Err(UnlockError::TargetIsHardBlocked {
+            rule_id: rule.id.clone(),
+        }
+        .into()),
+        RuleTier::ControlledAccess => Ok(ResolvedUnlockRule {
+            id: rule.id.clone(),
+            unlock_policy: rule.effective_unlock_policy(defaults),
+        }),
+    }
+}
+
+fn unlock_rule_from_app(
+    rule: &AppRuleConfig,
+    defaults: &crate::DefaultsConfig,
+) -> Result<ResolvedUnlockRule, Error> {
+    match rule.tier {
+        RuleTier::Hard => Err(UnlockError::TargetIsHardBlocked {
+            rule_id: rule.id.clone(),
+        }
+        .into()),
+        RuleTier::ControlledAccess => Ok(ResolvedUnlockRule {
+            id: rule.id.clone(),
+            unlock_policy: rule.effective_unlock_policy(defaults),
+        }),
+    }
+}
+
+fn app_rule_target_matches(rule: &AppRuleConfig, target: &str) -> bool {
+    rule.matchers.iter().any(|matcher| {
+        matcher.value == target
+            || matches!(
+                matcher.kind,
+                AppMatcherKind::ExecutableBasename
+                    | AppMatcherKind::CommandName
+                    | AppMatcherKind::DesktopId
+            ) && matcher.value.eq_ignore_ascii_case(target)
+    })
+}
+
+fn app_matcher_matches(matcher: &AppMatcherConfig, process: &ProcessIdentity) -> bool {
+    match matcher.kind {
+        AppMatcherKind::ExecutablePath => process
+            .executable_path
+            .as_deref()
+            .map(|value| value == matcher.value)
+            .unwrap_or(false),
+        AppMatcherKind::ExecutableBasename => process
+            .executable_basename
+            .as_deref()
+            .map(|value| value == matcher.value)
+            .unwrap_or(false),
+        AppMatcherKind::CommandName => process
+            .command_name
+            .as_deref()
+            .map(|value| value == matcher.value)
+            .unwrap_or(false),
+        AppMatcherKind::DesktopId => process
+            .desktop_id
+            .as_deref()
+            .map(|value| value == matcher.value)
+            .unwrap_or(false),
+        AppMatcherKind::WindowTitleExact => process
+            .window_titles
+            .iter()
+            .any(|title| title == &matcher.value),
+        AppMatcherKind::WindowTitleContains => {
+            let needle = matcher.value.to_ascii_lowercase();
+            process
+                .window_titles
+                .iter()
+                .any(|title| title.to_ascii_lowercase().contains(&needle))
+        }
+    }
 }
 
 fn schedule_is_active(schedule: &ScheduleConfig, context: &EvaluationContext<'_>) -> bool {

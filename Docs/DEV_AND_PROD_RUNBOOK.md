@@ -12,11 +12,13 @@ The development stack is usable today with temporary, non-root paths under
 The production stack has the main pieces in place:
 
 - `blockuntud` daemon with default root paths.
-- Firefox Native Messaging bridge.
+- Browser Native Messaging bridge.
 - Firefox WebExtension source and unsigned XPI packaging helper.
+- Chrome/Chromium MV3 extension source and ZIP packaging helper.
 - Tauri GUI.
 - systemd unit files under `packaging/systemd/`.
-- Native Messaging manifest under `packaging/native-messaging/`.
+- Firefox and Chrome Native Messaging manifests under
+  `packaging/native-messaging/`.
 
 The production path still needs an audited installer/uninstaller and a final
 root-path verification pass before it should be used as a locked-down install.
@@ -29,9 +31,9 @@ Install the normal Linux development tools:
 rustup default stable
 ```
 
-Node/npm are needed for the GUI and Firefox extension. Firefox is needed for
-extension testing. Tauri also needs the normal Linux WebKit/GTK development
-packages for your distribution.
+Node/npm are needed for the GUI and browser extensions. Firefox and
+Chrome/Chromium are needed for extension testing. Tauri also needs the normal
+Linux WebKit/GTK development packages for your distribution.
 
 Optional but useful tools:
 
@@ -52,6 +54,8 @@ The dev helper uses only temporary files:
 | Firefox policy sandbox | `/tmp/blockuntu/firefox/policies.json` |
 | Hosts sandbox | `/tmp/blockuntu/hosts` |
 | Firefox Native Messaging manifest | `~/.mozilla/native-messaging-hosts/blockuntu_native.json` |
+| Chrome Native Messaging manifest | `~/.config/google-chrome/NativeMessagingHosts/blockuntu_native.json` |
+| Chromium Native Messaging manifest | `~/.config/chromium/NativeMessagingHosts/blockuntu_native.json` |
 
 The dev daemon copies `examples/blockuntu.toml` into `/tmp/blockuntu/config.toml`
 the first time it starts. That example currently hard-blocks Instagram, Reddit,
@@ -107,10 +111,12 @@ This builds `native-host`, writes a wrapper to:
 ~/.local/share/blockuntu/blockuntu-native-dev
 ```
 
-and writes the per-user Firefox Native Messaging manifest to:
+and writes the per-user browser Native Messaging manifests to:
 
 ```text
 ~/.mozilla/native-messaging-hosts/blockuntu_native.json
+~/.config/google-chrome/NativeMessagingHosts/blockuntu_native.json
+~/.config/chromium/NativeMessagingHosts/blockuntu_native.json
 ```
 
 The wrapper forces the native host to connect to:
@@ -125,13 +131,13 @@ It also passes a development-only revival command:
 ./scripts/start-dev-daemon.sh
 ```
 
-If Firefox relaunches `blockuntu-native`, or if the existing native host sees a
-missing/stale dev socket, the native host starts that script and retries the
+If a browser relaunches `blockuntu-native`, or if the existing native host sees
+a missing/stale dev socket, the native host starts that script and retries the
 daemon request. The dev daemon script holds `/tmp/blockuntu/dev-daemon.lock` so
 repeated heartbeats do not start competing daemons.
 
-Restart Firefox after installing or changing this manifest. Firefox reads Native
-Messaging manifests at process startup.
+Restart Firefox and Chrome after installing or changing these manifests. Browsers
+read Native Messaging manifests at process startup.
 
 ## Build And Load The Firefox Extension
 
@@ -149,8 +155,8 @@ Load it temporarily in Firefox:
 2. Click "Load Temporary Add-on".
 3. Select `browser-extension-firefox/manifest.json`.
 
-The extension ID is `blockuntu@example.local`, and the Native Messaging host
-name is `blockuntu_native`.
+The signed extension ID is `blockuntu-poc@example.local`, and the Native
+Messaging host name is `blockuntu_native`.
 
 Important behavior: the extension is fail-closed. It blocks all top-level
 HTTP/HTTPS navigation until it receives heartbeat acknowledgements through this
@@ -180,6 +186,55 @@ browser-extension-firefox/BlocKuntu.xpi
 That file is useful for local packaging tests. Confirm signing/installability
 for the target Firefox channel before using it as a production deployment
 artifact.
+
+The current signed local artifact used by the daemon policy is:
+
+```text
+browser-extension-firefox/BlocKuntu-Signed.xpi
+```
+
+## Build And Load The Chrome Extension
+
+Build the extension:
+
+```bash
+cd browser-extension-chrome
+npm install
+npm run build
+```
+
+Load it temporarily in Chrome or Chromium:
+
+1. Open `chrome://extensions`.
+2. Enable Developer mode.
+3. Click "Load unpacked".
+4. Select `browser-extension-chrome/`.
+
+The development extension ID is stable because `manifest.json` embeds a fixed
+key:
+
+```text
+mlfcmoellaplhamddimfpahklojgligk
+```
+
+The Chrome extension is fail-closed through the same daemon path:
+
+```text
+Chrome extension -> blockuntu_native -> blockuntud -> focus-core
+```
+
+Package a local ZIP when needed:
+
+```bash
+cd browser-extension-chrome
+npm run build
+npm run package:zip
+```
+
+Chrome force-install policy is not implemented yet. The current production
+manifest support covers Native Messaging; locked-down Chrome extension
+deployment still needs a final enterprise policy or Web Store/CRX distribution
+decision.
 
 ## Start The Dev GUI
 
@@ -236,6 +291,10 @@ From the GUI Admin page, the healthy dev path should show:
 - Development runtime: ok.
 - Firefox policy sandbox: ok.
 - Native host manifest: ok.
+- Chrome Native host: ok if Chrome/Chromium integration is installed.
+- Unsupported browsers: ok when the mandatory Tier 1 hard app rule is loaded.
+- Firefox extension and Chrome extension: ok only after each extension has sent
+  a recent heartbeat through the daemon.
 
 You can also test the daemon directly:
 
@@ -265,9 +324,9 @@ The dev files can be removed when you want a clean state:
 rm -rf /tmp/blockuntu
 ```
 
-Do not remove the Firefox Native Messaging manifest while Firefox is running and
-expect the current browser process to notice immediately. Restart Firefox after
-manifest changes.
+Do not remove Native Messaging manifests while a browser is running and expect
+the current browser process to notice immediately. Restart Firefox and Chrome
+after manifest changes.
 
 ## Verification Commands
 
@@ -278,11 +337,11 @@ From the repository root:
 ./scripts/verify-focusd.sh
 ./scripts/verify-native-host.sh
 ./scripts/verify-firefox-extension.sh
+./scripts/verify-chrome-extension.sh
 ./scripts/verify-focus-gui.sh
 ```
 
-The Firefox extension verification script has already been approved for this
-workspace. The other scripts are normal local build/test checks.
+These scripts are normal local build/test checks.
 
 ## Production Runtime Paths
 
@@ -294,11 +353,13 @@ The daemon defaults are:
 | SQLite database | `/var/lib/blockuntu/blockuntu.sqlite3` |
 | Daemon socket | `/run/blockuntu/blockuntud.sock` |
 | Firefox policy | `/etc/firefox/policies/policies.json` |
-| Extension XPI | `/usr/local/share/blockuntu/BlocKuntu.xpi` |
+| Extension XPI | `/home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi` |
 | Hosts file | `/etc/hosts` |
 | Native host binary | `/usr/local/bin/blockuntu-native` |
 | Daemon binary | `/usr/local/bin/blockuntud` |
-| Native Messaging manifest | `/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json` |
+| Firefox Native Messaging manifest | `/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json` |
+| Chrome Native Messaging manifest | `/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json` |
+| Chromium Native Messaging manifest | `/etc/chromium/native-messaging-hosts/blockuntu_native.json` |
 
 Production socket access is intended to be group-gated:
 
@@ -320,13 +381,22 @@ cargo build --manifest-path focusd/Cargo.toml --release
 cargo build --manifest-path native-host/Cargo.toml --release
 ```
 
-Build and package the extension:
+Build and package the Firefox extension:
 
 ```bash
 cd browser-extension-firefox
 npm install
 npm run build
 npm run package:xpi
+```
+
+Build and package the Chrome extension:
+
+```bash
+cd browser-extension-chrome
+npm install
+npm run build
+npm run package:zip
 ```
 
 Build the GUI:
@@ -341,7 +411,7 @@ npm run tauri -- build
 
 These commands describe the intended file layout. Review them before using them
 on a real machine because this path writes to `/etc`, `/run`, `/var/lib`, and
-system Firefox locations.
+system browser locations.
 
 Create the socket group and add your desktop user:
 
@@ -358,8 +428,9 @@ Install binaries and configuration:
 sudo install -Dm755 focusd/target/release/blockuntud /usr/local/bin/blockuntud
 sudo install -Dm755 native-host/target/release/blockuntu-native /usr/local/bin/blockuntu-native
 sudo install -Dm644 examples/blockuntu.toml /etc/blockuntu/config.toml
-sudo install -Dm644 browser-extension-firefox/BlocKuntu.xpi /usr/local/share/blockuntu/BlocKuntu.xpi
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.json /usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json
+sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json /etc/opt/chrome/native-messaging-hosts/blockuntu_native.json
+sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json /etc/chromium/native-messaging-hosts/blockuntu_native.json
 ```
 
 Install systemd units:
@@ -402,16 +473,28 @@ systemctl status blockuntu-watchdog.service
 systemctl status blockuntu-hosts.path
 ```
 
-The daemon repairs the Firefox policy on startup and periodically afterwards.
-The expected policy force-installs the extension ID `blockuntu@example.local`
-from:
+The daemon repairs the Firefox policy and hosts file on startup and periodically
+afterwards. The expected policy force-installs the extension ID
+`blockuntu-poc@example.local` from:
 
 ```text
-/usr/local/share/blockuntu/BlocKuntu.xpi
+/home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi
 ```
 
-Restart Firefox after installing or changing the production policy or native
-host manifest.
+For `/etc/hosts`, production repair clears `chattr -i`, rewrites the managed
+Tier 1 block if needed, and reapplies `chattr +i`. The GUI Admin view exposes
+the Firefox policy, hosts-file compliance, browser-extension health, Chrome
+Native Messaging status, unsupported-browser hard-block status, and an explicit
+start/stop enforcement control.
+
+The daemon also injects a mandatory hard app rule for unsupported browsers. The
+supported browsers are Firefox and Google Chrome. Other common browsers such as
+Chromium, Brave, Edge, Opera, Vivaldi, LibreWolf, Waterfox, Epiphany, Falkon,
+qutebrowser, Midori, Min, Nyxt, and Tor Browser are treated as Tier 1
+application blocks by the process scanner.
+
+Restart Firefox and Chrome after installing or changing production policy or
+native host manifests.
 
 ## Production Gaps Before Lockdown
 
@@ -420,13 +503,15 @@ tested end to end:
 
 - Add a real installer that performs all privileged file installation steps
   consistently.
-- Add a deliberate uninstall/disable path that removes systemd units, Firefox
-  policy, Native Messaging manifest, and managed hosts entries in a controlled
-  way.
+- Extend the deliberate uninstall/disable path into a full privileged installer
+  flow for systemd units, Firefox policy, browser Native Messaging manifests,
+  and managed hosts entries.
 - Re-run `systemd-analyze verify` on installed units and test the mutual
   watchdog behavior on a disposable machine.
 - Confirm the target Firefox channel accepts the force-installed local XPI or
   add a signing/distribution step.
+- Decide the locked-down Chrome extension deployment path: enterprise
+  force-install policy with a hosted CRX/update URL, or Web Store distribution.
 - Verify `/etc/hosts` repair behavior on a disposable machine, including
   preservation of unrelated hosts entries.
 - Add production packaging for the GUI, not just `npm run tauri dev`.

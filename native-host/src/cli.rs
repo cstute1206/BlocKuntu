@@ -10,7 +10,7 @@ pub const DEFAULT_REVIVE_MIN_INTERVAL_MS: u64 = 5000;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "blockuntu-native")]
-#[command(about = "BlocKuntu Firefox Native Messaging bridge")]
+#[command(about = "BlocKuntu browser Native Messaging bridge")]
 pub struct Args {
     #[arg(long, default_value = DEFAULT_SOCKET_PATH)]
     pub socket: PathBuf,
@@ -40,4 +40,10 @@ pub struct Args {
         help = "Minimum milliseconds between revival command launches"
     )]
     pub revive_min_interval_ms: u64,
+    #[arg(
+        hide = true,
+        trailing_var_arg = true,
+        help = "Browser-supplied Native Messaging origin arguments"
+    )]
+    pub browser_origin_args: Vec<String>,
 }

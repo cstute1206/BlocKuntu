@@ -1,0 +1,7 @@
+{
+  "name": "blockuntu_native",
+  "description": "BlocKuntu Chrome Native Messaging bridge",
+  "path": "/usr/local/bin/blockuntu-native",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://mlfcmoellaplhamddimfpahklojgligk/"]
+}

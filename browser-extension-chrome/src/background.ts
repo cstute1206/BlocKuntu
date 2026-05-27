@@ -1,11 +1,15 @@
 "use strict";
 
 const NATIVE_HOST_NAME = "blockuntu_native";
-const BLOCKED_PAGE_URL = browser.runtime.getURL("blocked.html");
+const EXTENSION_COMPONENT = "chrome_extension";
+const BROWSER_NAME = "chrome";
+const BLOCKED_PAGE_URL = chrome.runtime.getURL("blocked.html");
 const HEARTBEAT_INTERVAL_MS = 5_000;
-const HEARTBEAT_TIMEOUT_MS = 15_000;
+const HEARTBEAT_TIMEOUT_MS = 75_000;
 const RPC_TIMEOUT_MS = 3_000;
 const VISIT_HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_ALARM = "blockuntu-heartbeat";
+const VISIT_ALARM = "blockuntu-visit-heartbeat";
 
 type JsonObject = Record<string, unknown>;
 
@@ -38,7 +42,7 @@ interface BlockNavigationReason extends JsonObject {
   message?: string;
 }
 
-let nativePort: BlockuntuWebExtension.RuntimePort | null = null;
+let nativePort: BlockuntuChromeExtension.RuntimePort | null = null;
 let nextRequestId = 1;
 let heartbeatInFlight = false;
 let lastHeartbeatOkAt = 0;
@@ -48,15 +52,15 @@ const pendingRequests = new Map<number, PendingRequest>();
 const activeVisits = new Map<number, ActiveVisit>();
 const navigationTokens = new Map<number, number>();
 
-function connectNativeHost(): BlockuntuWebExtension.RuntimePort {
+function connectNativeHost(): BlockuntuChromeExtension.RuntimePort {
   if (nativePort) {
     return nativePort;
   }
 
-  const port = browser.runtime.connectNative(NATIVE_HOST_NAME);
+  const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
   port.onMessage.addListener(handleNativeMessage);
   port.onDisconnect.addListener(() => {
-    const error = browser.runtime.lastError;
+    const error = chrome.runtime.lastError;
     const message = error?.message
       ? `native host disconnected: ${error.message}`
       : "native host disconnected";
@@ -102,7 +106,7 @@ function handleNativeMessage(message: unknown): void {
 
 function sendRpc(method: string, params: JsonObject, timeoutMs = RPC_TIMEOUT_MS): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    let port: BlockuntuWebExtension.RuntimePort;
+    let port: BlockuntuChromeExtension.RuntimePort;
     try {
       port = connectNativeHost();
     } catch (error) {
@@ -164,10 +168,10 @@ function sendHeartbeat(): void {
   sendRpc(
     "extension_heartbeat",
     {
-      browser: "firefox",
-      component: "firefox_extension",
-      extension_id: browser.runtime.id,
-      extension_version: browser.runtime.getManifest().version,
+      browser: BROWSER_NAME,
+      component: EXTENSION_COMPONENT,
+      extension_id: chrome.runtime.id,
+      extension_version: chrome.runtime.getManifest().version,
       now: new Date().toISOString(),
     },
     Math.min(RPC_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS)
@@ -205,7 +209,7 @@ function markBackendUnhealthy(reason: string): void {
   backendHealthy = false;
 }
 
-function handleBeforeNavigate(details: BlockuntuWebExtension.NavigationDetails): void {
+function handleBeforeNavigate(details: BlockuntuChromeExtension.NavigationDetails): void {
   if (!shouldHandleNavigation(details)) {
     return;
   }
@@ -244,17 +248,15 @@ function handleBeforeNavigate(details: BlockuntuWebExtension.NavigationDetails):
     .catch((error) => {
       markBackendUnhealthy(`URL evaluation failed: ${errorMessage(error)}`);
       if (isCurrentNavigation(details.tabId, token)) {
-        redirectToBlocked(details, {
-          ...backendBlockReason(
-            "backend_unavailable",
-            "BlocKuntu daemon did not evaluate the navigation"
-          ),
-        });
+        redirectToBlocked(
+          details,
+          backendBlockReason("backend_unavailable", "BlocKuntu daemon did not evaluate the navigation")
+        );
       }
     });
 }
 
-function shouldHandleNavigation(details: BlockuntuWebExtension.NavigationDetails): boolean {
+function shouldHandleNavigation(details: BlockuntuChromeExtension.NavigationDetails): boolean {
   return (
     details.frameId === 0 &&
     details.tabId >= 0 &&
@@ -264,7 +266,7 @@ function shouldHandleNavigation(details: BlockuntuWebExtension.NavigationDetails
 }
 
 function redirectToBlocked(
-  details: BlockuntuWebExtension.NavigationDetails,
+  details: BlockuntuChromeExtension.NavigationDetails,
   reason: BlockNavigationReason
 ): void {
   if (details.frameId !== 0 || details.tabId < 0 || isOwnBlockedPage(details.url)) {
@@ -288,8 +290,11 @@ function redirectToBlocked(
   setOptionalSearchParam(redirectUrl, "last_heartbeat_ok_at", reason.last_heartbeat_ok_at);
   setOptionalSearchParam(redirectUrl, "message", reason.message);
 
-  browser.tabs.update(details.tabId, { url: redirectUrl.toString() }).catch((error: unknown) => {
-    console.error(`BlocKuntu failed to redirect tab ${details.tabId}: ${errorMessage(error)}`);
+  chrome.tabs.update(details.tabId, { url: redirectUrl.toString() }, () => {
+    const error = chrome.runtime.lastError;
+    if (error?.message) {
+      console.error(`BlocKuntu failed to redirect tab ${details.tabId}: ${error.message}`);
+    }
   });
 }
 
@@ -300,12 +305,12 @@ function setOptionalSearchParam(url: URL, key: string, value: unknown): void {
 }
 
 function startVisitForNavigation(
-  details: BlockuntuWebExtension.NavigationDetails,
+  details: BlockuntuChromeExtension.NavigationDetails,
   token: number
 ): Promise<void> {
   return sendRpc("record_visit_start", {
     url: details.url,
-    tab_id: String(details.tabId),
+    tab_id: `chrome:${details.tabId}`,
     now: new Date().toISOString(),
   })
     .then((result) => {
@@ -403,12 +408,16 @@ function blockReasonFromResult(result: unknown): BlockNavigationReason {
   };
 }
 
-function backendBlockReason(kind: "backend_unhealthy" | "backend_unavailable", message: string): BlockNavigationReason {
+function backendBlockReason(
+  kind: "backend_unhealthy" | "backend_unavailable",
+  message: string
+): BlockNavigationReason {
   const reason: BlockNavigationReason = {
     kind,
     message,
     summary: "BlocKuntu cannot verify the daemon heartbeat.",
-    detail: "Browsing is blocked fail-closed until the Firefox extension, native host, and daemon heartbeat chain is healthy again.",
+    detail:
+      "Browsing is blocked fail-closed until the Chrome extension, native host, and daemon heartbeat chain is healthy again.",
     heartbeat_timeout_seconds: HEARTBEAT_TIMEOUT_MS / 1000,
   };
 
@@ -441,7 +450,7 @@ function isOwnBlockedPage(url: string): boolean {
 
 function isExtensionUrl(value: string): boolean {
   try {
-    return new URL(value).protocol === "moz-extension:";
+    return new URL(value).protocol === "chrome-extension:";
   } catch {
     return false;
   }
@@ -463,11 +472,21 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
-browser.webNavigation.onBeforeNavigate.addListener(handleBeforeNavigate);
-browser.tabs.onRemoved.addListener((tabId: number) => {
+chrome.webNavigation.onBeforeNavigate.addListener(handleBeforeNavigate);
+chrome.tabs.onRemoved.addListener((tabId: number) => {
   navigationTokens.delete(tabId);
   void endVisitForTab(tabId);
 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === HEARTBEAT_ALARM) {
+    sendHeartbeat();
+  }
+  if (alarm.name === VISIT_ALARM) {
+    heartbeatActiveVisits();
+  }
+});
+chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 1 });
+chrome.alarms.create(VISIT_ALARM, { periodInMinutes: 1 });
 
 sendHeartbeat();
 globalThis.setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
