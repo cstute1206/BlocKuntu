@@ -7,8 +7,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::{
     AllowanceConfig, AppMatcherConfig, AppMatcherKind, AppRuleConfig, Config, ConfigError,
     DefaultsConfig, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
-    ScheduleConfig, ScheduleWindow, TimeOfDay, UnlockPolicyConfig, UnlockState, VisitState,
-    Weekday,
+    ScheduleConfig, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockPolicyConfig, UnlockState,
+    VisitState, Weekday,
 };
 
 pub struct Database {
@@ -120,6 +120,7 @@ impl Database {
         let schedules = self.load_policy_schedules()?;
         let rules = self.load_policy_site_lists()?;
         let app_rules = self.load_policy_app_rules()?;
+        let strict_mode = self.load_policy_strict_mode()?;
 
         let config = Config {
             rules,
@@ -127,6 +128,7 @@ impl Database {
             schedules,
             allowances,
             defaults,
+            strict_mode,
         };
         config.validate()?;
         Ok(config)
@@ -148,6 +150,7 @@ impl Database {
             DELETE FROM policy_schedules;
             DELETE FROM policy_allowances;
             DELETE FROM policy_defaults;
+            DELETE FROM policy_strict_mode;
             "#,
         )?;
 
@@ -165,6 +168,27 @@ impl Database {
                 i64::from(config.defaults.unlock_policy.max_session_minutes),
                 i64::from(config.defaults.unlock_policy.cooldown_minutes),
                 i64::from(config.defaults.unlock_policy.max_unlocks_per_hour),
+            ],
+        )?;
+
+        transaction.execute(
+            r#"
+            INSERT INTO policy_strict_mode (
+                key,
+                require_firefox_extension,
+                require_chrome_extension,
+                kill_supported_browser_if_extension_stale,
+                block_unsupported_browsers,
+                grace_seconds
+            )
+            VALUES (1, ?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                bool_to_i64(config.strict_mode.require_firefox_extension),
+                bool_to_i64(config.strict_mode.require_chrome_extension),
+                bool_to_i64(config.strict_mode.kill_supported_browser_if_extension_stale),
+                bool_to_i64(config.strict_mode.block_unsupported_browsers),
+                i64::from(config.strict_mode.grace_seconds),
             ],
         )?;
 
@@ -372,6 +396,54 @@ impl Database {
                     max_unlocks_per_hour,
                 )?,
             },
+        })
+    }
+
+    fn load_policy_strict_mode(&self) -> Result<StrictModeConfig, Error> {
+        let row = self
+            .conn
+            .query_row(
+                r#"
+                SELECT
+                    require_firefox_extension,
+                    require_chrome_extension,
+                    kill_supported_browser_if_extension_stale,
+                    block_unsupported_browsers,
+                    grace_seconds
+                FROM policy_strict_mode
+                WHERE key = 1
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((
+            require_firefox_extension,
+            require_chrome_extension,
+            kill_supported_browser_if_extension_stale,
+            block_unsupported_browsers,
+            grace_seconds,
+        )) = row
+        else {
+            return Ok(StrictModeConfig::default());
+        };
+
+        Ok(StrictModeConfig {
+            require_firefox_extension: require_firefox_extension != 0,
+            require_chrome_extension: require_chrome_extension != 0,
+            kill_supported_browser_if_extension_stale: kill_supported_browser_if_extension_stale
+                != 0,
+            block_unsupported_browsers: block_unsupported_browsers != 0,
+            grace_seconds: to_u32("strict_mode.grace_seconds", grace_seconds)?,
         })
     }
 
@@ -756,6 +828,29 @@ impl Database {
             .map_err(Error::from)
     }
 
+    pub(crate) fn active_unlock_for_rule_and_target(
+        &self,
+        rule_id: &str,
+        target: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<UnlockState>, Error> {
+        let now = format_time(now);
+        self.conn
+            .query_row(
+                r#"
+                SELECT id, target, rule_id, minutes, reason, started_at, expires_at
+                FROM unlocks
+                WHERE rule_id = ?1 AND target = ?2 AND expires_at > ?3
+                ORDER BY expires_at DESC
+                LIMIT 1
+                "#,
+                params![rule_id, target, now],
+                unlock_from_row,
+            )
+            .optional()
+            .map_err(Error::from)
+    }
+
     pub(crate) fn latest_unlock_for_rule(
         &self,
         rule_id: &str,
@@ -1037,6 +1132,15 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
             max_unlocks_per_hour INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS policy_strict_mode (
+            key INTEGER PRIMARY KEY CHECK (key = 1),
+            require_firefox_extension INTEGER NOT NULL,
+            require_chrome_extension INTEGER NOT NULL,
+            kill_supported_browser_if_extension_stale INTEGER NOT NULL,
+            block_unsupported_browsers INTEGER NOT NULL,
+            grace_seconds INTEGER NOT NULL CHECK (grace_seconds > 0)
+        );
+
         CREATE TABLE IF NOT EXISTS policy_allowances (
             id TEXT PRIMARY KEY,
             name TEXT,
@@ -1154,6 +1258,14 @@ fn to_u32(label: &str, value: i64) -> Result<u32, Error> {
         ))
         .into()
     })
+}
+
+fn bool_to_i64(value: bool) -> i64 {
+    if value {
+        1
+    } else {
+        0
+    }
 }
 
 fn optional_unlock_policy(

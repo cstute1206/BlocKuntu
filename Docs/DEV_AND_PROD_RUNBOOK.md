@@ -14,7 +14,8 @@ The production stack has the main pieces in place:
 - `blockuntud` daemon with default root paths.
 - Browser Native Messaging bridge.
 - Firefox WebExtension source and unsigned XPI packaging helper.
-- Chrome/Chromium MV3 extension source and ZIP packaging helper.
+- Chrome/Chromium MV3 extension source plus Chrome force-install policy for
+  the hosted CRX.
 - Tauri GUI.
 - systemd unit files under `packaging/systemd/`.
 - Firefox and Chrome Native Messaging manifests under
@@ -52,6 +53,8 @@ The dev helper uses only temporary files:
 | SQLite database | `/tmp/blockuntu/blockuntu.sqlite3` |
 | Daemon socket | `/tmp/blockuntu/blockuntud.sock` |
 | Firefox policy sandbox | `/tmp/blockuntu/firefox/policies.json` |
+| Chrome policy sandbox | `/tmp/blockuntu/chrome/policies/managed/blockuntu.json` |
+| Chrome update manifest sandbox | `/tmp/blockuntu/chrome/updates.xml` |
 | Hosts sandbox | `/tmp/blockuntu/hosts` |
 | Firefox Native Messaging manifest | `~/.mozilla/native-messaging-hosts/blockuntu_native.json` |
 | Chrome Native Messaging manifest | `~/.config/google-chrome/NativeMessagingHosts/blockuntu_native.json` |
@@ -76,6 +79,8 @@ socket: /tmp/blockuntu/blockuntud.sock
 config: /tmp/blockuntu/config.toml
 database: /tmp/blockuntu/blockuntu.sqlite3
 firefox policy sandbox: /tmp/blockuntu/firefox/policies.json
+chrome policy sandbox: /tmp/blockuntu/chrome/policies/managed/blockuntu.json
+chrome update manifest sandbox: /tmp/blockuntu/chrome/updates.xml
 hosts sandbox: /tmp/blockuntu/hosts
 ```
 
@@ -90,6 +95,8 @@ cargo run --manifest-path focusd/Cargo.toml -- \
   --database /tmp/blockuntu/blockuntu.sqlite3 \
   --socket /tmp/blockuntu/blockuntud.sock \
   --firefox-policy /tmp/blockuntu/firefox/policies.json \
+  --chrome-policy /tmp/blockuntu/chrome/policies/managed/blockuntu.json \
+  --chrome-update-manifest /tmp/blockuntu/chrome/updates.xml \
   --hosts /tmp/blockuntu/hosts \
   --dev-bind-socket \
   serve
@@ -214,7 +221,7 @@ The development extension ID is stable because `manifest.json` embeds a fixed
 key:
 
 ```text
-mlfcmoellaplhamddimfpahklojgligk
+odedgejjcdilkoibeljkeohekonmdfea
 ```
 
 The Chrome extension is fail-closed through the same daemon path:
@@ -231,10 +238,16 @@ npm run build
 npm run package:zip
 ```
 
-Chrome force-install policy is not implemented yet. The current production
-manifest support covers Native Messaging; locked-down Chrome extension
-deployment still needs a final enterprise policy or Web Store/CRX distribution
-decision.
+The hosted CRX currently used by Chrome force-install policy is:
+
+```text
+https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download
+```
+
+The daemon writes a local Chrome update manifest that points at that CRX and
+then force-installs the extension through Chrome managed policy. Future CRX
+uploads must be signed with the same Chrome packaging key, otherwise the
+extension ID changes and the policy/native-host origin must be updated again.
 
 ## Start The Dev GUI
 
@@ -290,6 +303,7 @@ From the GUI Admin page, the healthy dev path should show:
 - Daemon socket: ok.
 - Development runtime: ok.
 - Firefox policy sandbox: ok.
+- Chrome policy: ok.
 - Native host manifest: ok.
 - Chrome Native host: ok if Chrome/Chromium integration is installed.
 - Unsupported browsers: ok when the mandatory Tier 1 hard app rule is loaded.
@@ -353,6 +367,8 @@ The daemon defaults are:
 | SQLite database | `/var/lib/blockuntu/blockuntu.sqlite3` |
 | Daemon socket | `/run/blockuntu/blockuntud.sock` |
 | Firefox policy | `/etc/firefox/policies/policies.json` |
+| Chrome policy | `/etc/opt/chrome/policies/managed/blockuntu.json` |
+| Chrome update manifest | `/usr/local/share/blockuntu/chrome-extension-updates.xml` |
 | Extension XPI | `/home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi` |
 | Hosts file | `/etc/hosts` |
 | Native host binary | `/usr/local/bin/blockuntu-native` |
@@ -474,18 +490,31 @@ systemctl status blockuntu-hosts.path
 ```
 
 The daemon repairs the Firefox policy and hosts file on startup and periodically
-afterwards. The expected policy force-installs the extension ID
+afterwards. The expected Firefox policy force-installs the extension ID
 `blockuntu-poc@example.local` from:
 
 ```text
 /home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi
 ```
 
+The expected Chrome policy force-installs the extension ID
+`odedgejjcdilkoibeljkeohekonmdfea` from the local update manifest:
+
+```text
+/usr/local/share/blockuntu/chrome-extension-updates.xml
+```
+
+That update manifest points at:
+
+```text
+https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download
+```
+
 For `/etc/hosts`, production repair clears `chattr -i`, rewrites the managed
 Tier 1 block if needed, and reapplies `chattr +i`. The GUI Admin view exposes
-the Firefox policy, hosts-file compliance, browser-extension health, Chrome
-Native Messaging status, unsupported-browser hard-block status, and an explicit
-start/stop enforcement control.
+the Firefox policy, Chrome policy, hosts-file compliance, browser-extension
+health, Chrome Native Messaging status, unsupported-browser hard-block status,
+and an explicit start/stop enforcement control.
 
 The daemon also injects a mandatory hard app rule for unsupported browsers. The
 supported browsers are Firefox and Google Chrome. Other common browsers such as
@@ -510,14 +539,15 @@ tested end to end:
   watchdog behavior on a disposable machine.
 - Confirm the target Firefox channel accepts the force-installed local XPI or
   add a signing/distribution step.
-- Decide the locked-down Chrome extension deployment path: enterprise
-  force-install policy with a hosted CRX/update URL, or Web Store distribution.
+- Verify Chrome force-install on a disposable production-path install with the
+  hosted CRX and local update manifest.
 - Verify `/etc/hosts` repair behavior on a disposable machine, including
   preservation of unrelated hosts entries.
 - Add production packaging for the GUI, not just `npm run tauri dev`.
 - Implement `focus-cli` for admin/debug commands outside the GUI.
 - Expand root-path integration tests or scripted dry-runs for `/etc`,
-  `/var/lib/blockuntu`, `/run/blockuntu`, and Firefox policy handling.
+  `/var/lib/blockuntu`, `/run/blockuntu`, Firefox policy handling, and Chrome
+  policy/update-manifest handling.
 - Decide how strict production should be about stopping or uninstalling the
   watchdog units during maintenance.
 

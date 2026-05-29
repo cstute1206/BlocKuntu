@@ -22,6 +22,8 @@ echo "[blockuntud-dev] config: ${RUNTIME_DIR}/config.toml"
 echo "[blockuntud-dev] database: ${RUNTIME_DIR}/blockuntu.sqlite3"
 echo "[blockuntud-dev] socket: ${RUNTIME_DIR}/blockuntud.sock"
 echo "[blockuntud-dev] firefox policy sandbox: ${RUNTIME_DIR}/firefox/policies.json"
+echo "[blockuntud-dev] chrome policy sandbox: ${RUNTIME_DIR}/chrome/policies/managed/blockuntu.json"
+echo "[blockuntud-dev] chrome update manifest sandbox: ${RUNTIME_DIR}/chrome/updates.xml"
 echo "[blockuntud-dev] hosts sandbox: ${RUNTIME_DIR}/hosts"
 
 exec cargo run --manifest-path "${REPO_ROOT}/focusd/Cargo.toml" -- \
@@ -29,6 +31,8 @@ exec cargo run --manifest-path "${REPO_ROOT}/focusd/Cargo.toml" -- \
   --database "${RUNTIME_DIR}/blockuntu.sqlite3" \
   --socket "${RUNTIME_DIR}/blockuntud.sock" \
   --firefox-policy "${RUNTIME_DIR}/firefox/policies.json" \
+  --chrome-policy "${RUNTIME_DIR}/chrome/policies/managed/blockuntu.json" \
+  --chrome-update-manifest "${RUNTIME_DIR}/chrome/updates.xml" \
   --hosts "${RUNTIME_DIR}/hosts" \
   --dev-bind-socket \
   serve

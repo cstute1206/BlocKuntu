@@ -169,12 +169,13 @@ fn controlled_app_rules_can_be_unlocked_by_rule_or_matcher_value() {
     assert!(evaluate_app(&process, &before_unlock).is_block());
     let unlock = request_unlock(
         "game-bin",
-        5,
+        20,
         "Need app briefly".to_string(),
         &before_unlock,
     )
     .expect("app unlock should be granted");
     assert_eq!(unlock.rule_id, "game-controlled");
+    assert_eq!(unlock.minutes, 2);
 
     let during_unlock = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
     assert_eq!(evaluate_app(&process, &during_unlock), Decision::Allow);
@@ -246,6 +247,87 @@ fn schedules_and_allowances_transition_between_allow_and_block() {
 }
 
 #[test]
+fn overlapping_rules_apply_the_strictest_active_result() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "broad-daily"
+        daily_minutes = 60
+
+        [[allowances]]
+        id = "permissive-daily"
+        daily_minutes = 60
+
+        [[rules]]
+        id = "broad-controlled"
+        name = "Broad controlled"
+        tier = "controlled_access"
+        allowance_id = "broad-daily"
+        patterns = [
+          { kind = "domain", value = "overlap.example", match_subdomains = true }
+        ]
+
+        [[rules]]
+        id = "strict-controlled"
+        name = "Strict controlled"
+        tier = "controlled_access"
+        patterns = [
+          { kind = "exact_url", value = "https://overlap.example/watch" }
+        ]
+
+        [[rules]]
+        id = "hard-overlap"
+        name = "Hard overlap"
+        tier = "hard"
+        patterns = [
+          { kind = "domain", value = "hard-overlap.example", match_subdomains = true }
+        ]
+
+        [[rules]]
+        id = "permissive-overlap"
+        name = "Permissive overlap"
+        tier = "controlled_access"
+        allowance_id = "permissive-daily"
+        patterns = [
+          { kind = "domain", value = "hard-overlap.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+
+    assert_eq!(
+        evaluate_url("https://overlap.example/watch", &ctx),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id: "strict-controlled".to_string(),
+            rule_name: "Strict controlled".to_string(),
+            reason: ControlledBlockReason::NoAllowance,
+        })
+    );
+    let unlock = request_unlock(
+        "https://overlap.example/watch",
+        2,
+        "Need exact page".to_string(),
+        &ctx,
+    )
+    .expect("unlock should target the blocking overlap rule");
+    assert_eq!(unlock.rule_id, "strict-controlled");
+    assert_eq!(
+        evaluate_url("https://overlap.example/watch", &ctx),
+        Decision::Allow
+    );
+
+    assert_eq!(
+        evaluate_url("https://hard-overlap.example/", &ctx),
+        Decision::Block(BlockReason::HardBlock {
+            rule_id: "hard-overlap".to_string(),
+            rule_name: "Hard overlap".to_string(),
+        })
+    );
+}
+
+#[test]
 fn overnight_schedule_windows_remain_active_after_midnight() {
     let config = Config::from_toml_str(
         r#"
@@ -283,7 +365,7 @@ fn overnight_schedule_windows_remain_active_after_midnight() {
 }
 
 #[test]
-fn unlocks_allow_controlled_access_then_expire_and_enforce_cooldown() {
+fn unlocks_allow_only_the_exact_url_and_use_fixed_quota() {
     let config = Config::from_toml_str(
         r#"
         [[rules]]
@@ -293,11 +375,6 @@ fn unlocks_allow_controlled_access_then_expire_and_enforce_cooldown() {
         patterns = [
           { kind = "domain", value = "focus.example", match_subdomains = false }
         ]
-
-        [rules.unlock_policy]
-        max_session_minutes = 5
-        cooldown_minutes = 30
-        max_unlocks_per_hour = 2
         "#,
     )
     .expect("config should parse");
@@ -313,39 +390,27 @@ fn unlocks_allow_controlled_access_then_expire_and_enforce_cooldown() {
         })
     );
 
-    let too_long = request_unlock(
-        "https://focus.example/",
-        6,
-        "Need access".to_string(),
-        &before_unlock,
-    )
-    .expect_err("oversized unlock should be denied");
-    assert!(matches!(
-        too_long,
-        Error::Unlock(UnlockError::ExceedsMaxSession {
-            requested_minutes: 6,
-            max_minutes: 5
-        })
-    ));
-
     let unlock = request_unlock(
-        "https://focus.example/",
-        5,
+        "focus.example",
+        60,
         "Need access for a task".to_string(),
         &before_unlock,
     )
     .expect("unlock should be granted");
     assert_eq!(unlock.rule_id, "controlled-no-allowance");
+    assert_eq!(unlock.target, "https://focus.example/");
+    assert_eq!(unlock.minutes, 2);
 
     let during_unlock = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
     assert_eq!(
         evaluate_url("https://focus.example/", &during_unlock),
         Decision::Allow
     );
+    assert!(evaluate_url("https://focus.example/watch?v=abc", &during_unlock).is_block());
 
     let duplicate = request_unlock(
-        "controlled-no-allowance",
-        5,
+        "https://focus.example/",
+        2,
         "Still active".to_string(),
         &during_unlock,
     )
@@ -355,24 +420,34 @@ fn unlocks_allow_controlled_access_then_expire_and_enforce_cooldown() {
         Error::Unlock(UnlockError::UnlockAlreadyActive { .. })
     ));
 
-    let cooldown_ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 6));
-    let cooldown = request_unlock(
-        "controlled-no-allowance",
-        5,
-        "Try again".to_string(),
-        &cooldown_ctx,
+    let quota_ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 3));
+    let quota = request_unlock(
+        "https://focus.example/other",
+        2,
+        "Try another link".to_string(),
+        &quota_ctx,
     )
-    .expect_err("cooldown should block after unlock expiry");
+    .expect_err("quota should block another unlock in the same hour");
     assert!(matches!(
-        cooldown,
-        Error::Unlock(UnlockError::CooldownActive { .. })
+        quota,
+        Error::Unlock(UnlockError::HourlyQuotaExceeded { limit: 1, .. })
     ));
 
-    assert!(evaluate_url("https://focus.example/", &cooldown_ctx).is_block());
+    assert!(evaluate_url("https://focus.example/", &quota_ctx).is_block());
+
+    let next_hour = context(&config, &database, at_utc(2026, 5, 18, 11, 1));
+    let next_unlock = request_unlock(
+        "https://focus.example/other",
+        2,
+        "Next hour".to_string(),
+        &next_hour,
+    )
+    .expect("next-hour unlock should pass");
+    assert_eq!(next_unlock.target, "https://focus.example/other");
 }
 
 #[test]
-fn hourly_unlock_quota_blocks_rapid_successive_unlocks() {
+fn hourly_unlock_quota_applies_to_site_rules() {
     let config = Config::from_toml_str(
         r#"
         [[rules]]
@@ -382,32 +457,28 @@ fn hourly_unlock_quota_blocks_rapid_successive_unlocks() {
         patterns = [
           { kind = "domain", value = "quota.example", match_subdomains = false }
         ]
-
-        [rules.unlock_policy]
-        max_session_minutes = 5
-        cooldown_minutes = 0
-        max_unlocks_per_hour = 2
         "#,
     )
     .expect("config should parse");
     let database = Database::in_memory().expect("database should initialize");
 
     let first = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
-    request_unlock("quota-controlled", 5, "first".to_string(), &first)
+    request_unlock("https://quota.example/", 2, "first".to_string(), &first)
         .expect("first unlock should pass");
 
-    let second = context(&config, &database, at_utc(2026, 5, 18, 10, 5));
-    request_unlock("quota-controlled", 5, "second".to_string(), &second)
-        .expect("second unlock should pass");
-
-    let third = context(&config, &database, at_utc(2026, 5, 18, 10, 10));
-    let denied = request_unlock("quota-controlled", 5, "third".to_string(), &third)
-        .expect_err("third unlock in an hour should be denied");
+    let second = context(&config, &database, at_utc(2026, 5, 18, 10, 10));
+    let denied = request_unlock(
+        "https://quota.example/second",
+        2,
+        "second".to_string(),
+        &second,
+    )
+    .expect_err("second site unlock in an hour should be denied");
     assert!(matches!(
         denied,
         Error::Unlock(UnlockError::HourlyQuotaExceeded {
             rule_id,
-            limit: 2
+            limit: 1
         }) if rule_id == "quota-controlled"
     ));
 }
@@ -439,6 +510,7 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
         "heartbeats",
         "service_state",
         "policy_defaults",
+        "policy_strict_mode",
         "policy_allowances",
         "policy_schedules",
         "policy_schedule_windows",
@@ -479,6 +551,13 @@ fn policy_config_roundtrips_through_sqlite() {
         max_session_minutes = 8
         cooldown_minutes = 20
         max_unlocks_per_hour = 3
+
+        [strict_mode]
+        require_firefox_extension = true
+        require_chrome_extension = true
+        kill_supported_browser_if_extension_stale = true
+        block_unsupported_browsers = true
+        grace_seconds = 30
 
         [[allowances]]
         id = "daily"
@@ -621,6 +700,41 @@ fn corrupt_and_unsafe_configurations_fail_safely() {
         "#,
     );
     assert!(app_with_allowance.is_err());
+
+    let shared_allowance = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "daily"
+        daily_minutes = 15
+
+        [[rules]]
+        id = "first"
+        name = "First"
+        tier = "controlled_access"
+        allowance_id = "daily"
+        patterns = [
+          { kind = "domain", value = "first.example", match_subdomains = false }
+        ]
+
+        [[rules]]
+        id = "second"
+        name = "Second"
+        tier = "controlled_access"
+        allowance_id = "daily"
+        patterns = [
+          { kind = "domain", value = "second.example", match_subdomains = false }
+        ]
+        "#,
+    );
+    assert!(shared_allowance.is_err());
+
+    let zero_strict_grace = Config::from_toml_str(
+        r#"
+        [strict_mode]
+        grace_seconds = 0
+        "#,
+    );
+    assert!(zero_strict_grace.is_err());
 }
 
 #[test]

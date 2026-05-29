@@ -7,6 +7,7 @@ import type {
   EnforcementStatus,
   EventsResponse,
   AppRule,
+  Allowance,
   Rule,
   Schedule,
   SystemHealth,
@@ -44,6 +45,25 @@ export function upsertSiteList(rule: Rule, socketPath?: string): Promise<ConfigM
 export function deleteSiteList(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "delete_site_list",
+    { id, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<ConfigMutationResponse>;
+}
+
+export function upsertAllowance(
+  allowance: Allowance,
+  socketPath?: string
+): Promise<ConfigMutationResponse> {
+  return daemonRpc(
+    "upsert_allowance",
+    { allowance, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<ConfigMutationResponse>;
+}
+
+export function deleteAllowance(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
+  return daemonRpc(
+    "delete_allowance",
     { id, now: new Date().toISOString() },
     socketPath
   ) as Promise<ConfigMutationResponse>;

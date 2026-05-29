@@ -1,6 +1,6 @@
 use crate::error::ConfigError;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -28,6 +28,8 @@ pub struct Config {
     pub allowances: Vec<AllowanceConfig>,
     #[serde(default)]
     pub defaults: DefaultsConfig,
+    #[serde(default)]
+    pub strict_mode: StrictModeConfig,
 }
 
 impl Config {
@@ -67,6 +69,11 @@ impl Config {
             .collect();
 
         validate_unlock_policy("defaults.unlock_policy", &self.defaults.unlock_policy)?;
+        if self.strict_mode.grace_seconds == 0 {
+            return Err(ConfigError::Validation(
+                "strict_mode.grace_seconds must be greater than zero".to_string(),
+            ));
+        }
 
         for schedule in &self.schedules {
             require_identifier("schedule", &schedule.id)?;
@@ -89,6 +96,8 @@ impl Config {
                 )));
             }
         }
+
+        let mut allowance_links: HashMap<&str, &str> = HashMap::new();
 
         for rule in &self.rules {
             require_identifier("rule", &rule.id)?;
@@ -123,6 +132,15 @@ impl Config {
                     return Err(ConfigError::Validation(format!(
                         "rule '{}' references missing allowance '{}'",
                         rule.id, allowance_id
+                    )));
+                }
+
+                if let Some(existing_rule_id) =
+                    allowance_links.insert(allowance_id.as_str(), rule.id.as_str())
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "allowance '{}' is already linked to rule '{}' and cannot also be linked to rule '{}'",
+                        allowance_id, existing_rule_id, rule.id
                     )));
                 }
             }
@@ -216,6 +234,7 @@ impl Default for Config {
             schedules: Vec::new(),
             allowances: Vec::new(),
             defaults: DefaultsConfig::default(),
+            strict_mode: StrictModeConfig::default(),
         }
     }
 }
@@ -230,6 +249,32 @@ impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             unlock_policy: UnlockPolicyConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StrictModeConfig {
+    #[serde(default = "default_enabled")]
+    pub require_firefox_extension: bool,
+    #[serde(default = "default_enabled")]
+    pub require_chrome_extension: bool,
+    #[serde(default = "default_enabled")]
+    pub kill_supported_browser_if_extension_stale: bool,
+    #[serde(default = "default_enabled")]
+    pub block_unsupported_browsers: bool,
+    #[serde(default = "default_strict_grace_seconds")]
+    pub grace_seconds: u32,
+}
+
+impl Default for StrictModeConfig {
+    fn default() -> Self {
+        Self {
+            require_firefox_extension: true,
+            require_chrome_extension: true,
+            kill_supported_browser_if_extension_stale: true,
+            block_unsupported_browsers: true,
+            grace_seconds: default_strict_grace_seconds(),
         }
     }
 }
@@ -622,14 +667,18 @@ fn default_enabled() -> bool {
     true
 }
 
-fn default_max_session_minutes() -> u32 {
-    10
-}
-
-fn default_cooldown_minutes() -> u32 {
+fn default_strict_grace_seconds() -> u32 {
     30
 }
 
-fn default_max_unlocks_per_hour() -> u32 {
+fn default_max_session_minutes() -> u32 {
     2
+}
+
+fn default_cooldown_minutes() -> u32 {
+    0
+}
+
+fn default_max_unlocks_per_hour() -> u32 {
+    1
 }

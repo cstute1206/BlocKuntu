@@ -14,6 +14,8 @@ focus-gui/src-tauri/gen/schemas/
 # Firefox extension package artifacts
 browser-extension-firefox/*.xpi
 browser-extension-firefox/*.zip
+browser-extension-chrome/*.crx
+browser-extension-chrome/*.pem
 browser-extension-chrome/*.zip
 
 # Local databases and runtime state
@@ -54,3 +56,4 @@ tarpaulin-report.html
 Thumbs.db
 .idea/
 .vscode/
+.env

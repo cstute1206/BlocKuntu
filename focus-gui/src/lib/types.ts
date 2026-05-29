@@ -3,7 +3,6 @@ export type ViewId =
   | "blocks"
   | "apps"
   | "schedule"
-  | "allowances"
   | "statistics"
   | "admin";
 
@@ -134,6 +133,23 @@ export interface FirefoxPolicyStatus {
   detail: string;
 }
 
+export interface ChromePolicyStatus {
+  path: string;
+  update_manifest_path: string;
+  extension_id: string;
+  extension_version: string;
+  extension_crx_url: string;
+  update_url: string;
+  policy_exists: boolean;
+  update_manifest_exists: boolean;
+  valid_json: boolean;
+  compliant: boolean;
+  update_manifest_compliant: boolean;
+  force_install_configured: boolean;
+  override_update_url: boolean;
+  detail: string;
+}
+
 export interface HostsFileStatus {
   path: string;
   expected_domain_count: number;
@@ -149,6 +165,7 @@ export interface EnforcementStatus {
   status: string;
   enforcement_state: "active" | "stopped";
   firefox_policy: FirefoxPolicyStatus;
+  chrome_policy: ChromePolicyStatus;
   hosts_file: HostsFileStatus;
 }
 

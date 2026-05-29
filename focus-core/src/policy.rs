@@ -4,7 +4,14 @@ use url::Url;
 use crate::{
     AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Config, ControlledBlockReason,
     Database, Decision, Error, EvaluationContext, ProcessIdentity, RuleConfig, RulePatternConfig,
-    RulePatternKind, RuleTier, ScheduleConfig, UnlockError, UnlockState, VisitState, Weekday,
+    RulePatternKind, RuleTier, ScheduleConfig, UnlockError, UnlockPolicyConfig, UnlockState,
+    VisitState, Weekday,
+};
+
+const FIXED_TIER_2_UNLOCK_POLICY: UnlockPolicyConfig = UnlockPolicyConfig {
+    max_session_minutes: 2,
+    cooldown_minutes: 0,
+    max_unlocks_per_hour: 1,
 };
 
 pub struct PolicyEngine<'a> {
@@ -41,7 +48,11 @@ impl<'a> PolicyEngine<'a> {
                 continue;
             }
 
-            return self.evaluate_controlled_rule(rule, context);
+            let decision =
+                self.evaluate_controlled_rule(rule, &parsed.url_without_fragment, context);
+            if decision.is_block() {
+                return decision;
+            }
         }
 
         Decision::Allow
@@ -66,12 +77,16 @@ impl<'a> PolicyEngine<'a> {
                 continue;
             }
 
-            return self.evaluate_controlled_rule_fields(
+            let decision = self.evaluate_controlled_rule_fields(
                 &rule.id,
                 &rule.name,
                 rule.allowance_id.as_deref(),
+                None,
                 context,
             );
+            if decision.is_block() {
+                return decision;
+            }
         }
 
         Decision::Allow
@@ -97,19 +112,19 @@ impl<'a> PolicyEngine<'a> {
             return Err(UnlockError::EmptyReason.into());
         }
 
-        let rule = self.resolve_unlock_rule(target)?;
-        let policy = rule.unlock_policy;
-
-        if minutes > policy.max_session_minutes {
-            return Err(UnlockError::ExceedsMaxSession {
-                requested_minutes: minutes,
-                max_minutes: policy.max_session_minutes,
-            }
-            .into());
-        }
+        let rule = self.resolve_unlock_rule(target, context)?;
+        let policy = FIXED_TIER_2_UNLOCK_POLICY;
+        let minutes = policy.max_session_minutes;
 
         let now = context.now_utc();
-        if let Some(active) = self.database.active_unlock_for_rule(&rule.id, now)? {
+        let active_unlock = match rule.scope {
+            UnlockScope::ExactUrl => {
+                self.database
+                    .active_unlock_for_rule_and_target(&rule.id, &rule.target, now)?
+            }
+            UnlockScope::Rule => self.database.active_unlock_for_rule(&rule.id, now)?,
+        };
+        if let Some(active) = active_unlock {
             return Err(UnlockError::UnlockAlreadyActive {
                 rule_id: rule.id.clone(),
                 active_until: active.expires_at,
@@ -141,7 +156,7 @@ impl<'a> PolicyEngine<'a> {
         }
 
         let unlock = self.database.insert_unlock(
-            target,
+            &rule.target,
             &rule.id,
             minutes,
             &reason,
@@ -150,7 +165,7 @@ impl<'a> PolicyEngine<'a> {
         )?;
         self.database.record_event(
             "unlock_granted",
-            Some(target),
+            Some(&rule.target),
             Some(&format!("rule_id={};minutes={minutes}", rule.id)),
             now,
         )?;
@@ -192,12 +207,14 @@ impl<'a> PolicyEngine<'a> {
     fn evaluate_controlled_rule(
         &self,
         rule: &RuleConfig,
+        url_without_fragment: &str,
         context: &EvaluationContext<'_>,
     ) -> Decision {
         self.evaluate_controlled_rule_fields(
             &rule.id,
             &rule.name,
             rule.allowance_id.as_deref(),
+            Some(url_without_fragment),
             context,
         )
     }
@@ -207,10 +224,17 @@ impl<'a> PolicyEngine<'a> {
         rule_id: &str,
         rule_name: &str,
         allowance_id: Option<&str>,
+        exact_unlock_target: Option<&str>,
         context: &EvaluationContext<'_>,
     ) -> Decision {
         let now = context.now_utc();
-        match self.database.active_unlock_for_rule(rule_id, now) {
+        let active_unlock = match exact_unlock_target {
+            Some(target) => self
+                .database
+                .active_unlock_for_rule_and_target(rule_id, target, now),
+            None => self.database.active_unlock_for_rule(rule_id, now),
+        };
+        match active_unlock {
             Ok(Some(_)) => return Decision::Allow,
             Ok(None) => {}
             Err(err) => return runtime_error(err),
@@ -256,50 +280,56 @@ impl<'a> PolicyEngine<'a> {
         }
     }
 
-    fn resolve_unlock_rule(&self, target: &str) -> Result<ResolvedUnlockRule, Error> {
-        if let Some(rule) = self
-            .config
-            .rules
-            .iter()
-            .find(|rule| rule.enabled && rule.id == target)
-        {
-            return unlock_rule_from_site(rule, &self.config.defaults);
+    fn resolve_unlock_rule(
+        &self,
+        target: &str,
+        context: &EvaluationContext<'_>,
+    ) -> Result<ResolvedUnlockRule, Error> {
+        if let Some(rule) = self.config.app_rules.iter().find(|rule| {
+            rule.enabled && rule.id == target && self.app_rule_is_active(rule, context)
+        }) {
+            return unlock_rule_from_app(rule, target);
         }
 
-        if let Some(rule) = self
-            .config
-            .app_rules
-            .iter()
-            .find(|rule| rule.enabled && rule.id == target)
-        {
-            return unlock_rule_from_app(rule, &self.config.defaults);
-        }
+        if let Some(parsed) = normalize_unlock_url_target(target) {
+            let unlock_target = parsed.url_without_fragment.clone();
+            for rule in self.matching_rules(&parsed, RuleTier::Hard) {
+                if self.rule_is_active(rule, context) {
+                    return Err(UnlockError::TargetIsHardBlocked {
+                        rule_id: rule.id.clone(),
+                    }
+                    .into());
+                }
+            }
 
-        let parsed = NormalizedUrl::parse(target).ok();
-        for rule in self.config.rules.iter().filter(|rule| rule.enabled) {
-            let matches = if let Some(parsed) = &parsed {
-                rule.patterns
-                    .iter()
-                    .any(|pattern| pattern_matches(pattern, parsed))
-            } else {
-                rule.patterns.iter().any(|pattern| {
-                    pattern.value.eq_ignore_ascii_case(target)
-                        || matches!(
-                            pattern.kind,
-                            RulePatternKind::Domain | RulePatternKind::PathPrefix
-                        ) && normalized_pattern_value(&pattern.value)
-                            == target.to_ascii_lowercase()
-                })
-            };
-
-            if matches {
-                return unlock_rule_from_site(rule, &self.config.defaults);
+            if let Some(rule) = self.controlled_rule_for_unlock(&parsed, &unlock_target, context) {
+                return Ok(ResolvedUnlockRule {
+                    id: rule.id.clone(),
+                    target: unlock_target,
+                    scope: UnlockScope::ExactUrl,
+                });
             }
         }
 
-        for rule in self.config.app_rules.iter().filter(|rule| rule.enabled) {
+        if let Some(rule) = self.config.app_rules.iter().find(|rule| {
+            rule.enabled
+                && rule.tier == RuleTier::Hard
+                && self.app_rule_is_active(rule, context)
+                && app_rule_target_matches(rule, target)
+        }) {
+            return Err(UnlockError::TargetIsHardBlocked {
+                rule_id: rule.id.clone(),
+            }
+            .into());
+        }
+
+        for rule in self.config.app_rules.iter().filter(|rule| {
+            rule.enabled
+                && rule.tier == RuleTier::ControlledAccess
+                && self.app_rule_is_active(rule, context)
+        }) {
             if app_rule_target_matches(rule, target) {
-                return unlock_rule_from_app(rule, &self.config.defaults);
+                return unlock_rule_from_app(rule, target);
             }
         }
 
@@ -307,6 +337,34 @@ impl<'a> PolicyEngine<'a> {
             target: target.to_string(),
         }
         .into())
+    }
+
+    fn controlled_rule_for_unlock<'b>(
+        &'b self,
+        parsed: &'b NormalizedUrl,
+        exact_unlock_target: &str,
+        context: &EvaluationContext<'_>,
+    ) -> Option<&'b RuleConfig> {
+        let mut first_active_match = None;
+
+        for rule in self.matching_rules(parsed, RuleTier::ControlledAccess) {
+            if !self.rule_is_active(rule, context) {
+                continue;
+            }
+
+            if first_active_match.is_none() {
+                first_active_match = Some(rule);
+            }
+
+            if self
+                .evaluate_controlled_rule(rule, exact_unlock_target, context)
+                .is_block()
+            {
+                return Some(rule);
+            }
+        }
+
+        first_active_match
     }
 
     fn matching_rules<'b>(
@@ -383,7 +441,14 @@ impl<'a> PolicyEngine<'a> {
 
 struct ResolvedUnlockRule {
     id: String,
-    unlock_policy: crate::UnlockPolicyConfig,
+    target: String,
+    scope: UnlockScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnlockScope {
+    ExactUrl,
+    Rule,
 }
 
 pub fn evaluate_url(url: &str, context: &EvaluationContext<'_>) -> Decision {
@@ -420,10 +485,7 @@ pub fn record_visit_end(visit_id: i64, context: &EvaluationContext<'_>) -> Resul
     PolicyEngine::new(context.config, context.database).record_visit_end(visit_id, context)
 }
 
-fn unlock_rule_from_site(
-    rule: &RuleConfig,
-    defaults: &crate::DefaultsConfig,
-) -> Result<ResolvedUnlockRule, Error> {
+fn unlock_rule_from_app(rule: &AppRuleConfig, target: &str) -> Result<ResolvedUnlockRule, Error> {
     match rule.tier {
         RuleTier::Hard => Err(UnlockError::TargetIsHardBlocked {
             rule_id: rule.id.clone(),
@@ -431,23 +493,8 @@ fn unlock_rule_from_site(
         .into()),
         RuleTier::ControlledAccess => Ok(ResolvedUnlockRule {
             id: rule.id.clone(),
-            unlock_policy: rule.effective_unlock_policy(defaults),
-        }),
-    }
-}
-
-fn unlock_rule_from_app(
-    rule: &AppRuleConfig,
-    defaults: &crate::DefaultsConfig,
-) -> Result<ResolvedUnlockRule, Error> {
-    match rule.tier {
-        RuleTier::Hard => Err(UnlockError::TargetIsHardBlocked {
-            rule_id: rule.id.clone(),
-        }
-        .into()),
-        RuleTier::ControlledAccess => Ok(ResolvedUnlockRule {
-            id: rule.id.clone(),
-            unlock_policy: rule.effective_unlock_policy(defaults),
+            target: target.to_string(),
+            scope: UnlockScope::Rule,
         }),
     }
 }
@@ -555,6 +602,14 @@ fn normalize_url_pattern(pattern: &str) -> Result<String, url::ParseError> {
     let mut parsed = Url::parse(pattern)?;
     parsed.set_fragment(None);
     Ok(parsed.to_string())
+}
+
+fn normalize_unlock_url_target(target: &str) -> Option<NormalizedUrl> {
+    if let Ok(parsed) = NormalizedUrl::parse(target) {
+        return Some(parsed);
+    }
+
+    NormalizedUrl::parse(&format!("https://{target}")).ok()
 }
 
 fn normalized_pattern_value(value: &str) -> String {

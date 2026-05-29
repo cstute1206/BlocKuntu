@@ -15,7 +15,7 @@ mod types;
 pub use config::{
     load_config, validate_config, AllowanceConfig, AppMatcherConfig, AppMatcherKind, AppRuleConfig,
     Config, DefaultsConfig, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
-    ScheduleConfig, ScheduleWindow, TimeOfDay, UnlockPolicyConfig, Weekday,
+    ScheduleConfig, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockPolicyConfig, Weekday,
 };
 pub use core::FocusCore;
 pub use db::{migrate_database, Database, HeartbeatState};

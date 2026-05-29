@@ -6,7 +6,6 @@
     BarChart3,
     CalendarDays,
     CheckCircle2,
-    Clock3,
     Gauge,
     Gamepad2,
     LayoutDashboard,
@@ -23,7 +22,6 @@
     Settings,
     Shield,
     Terminal,
-    Timer,
     Trash2,
     Unlock,
     Wrench,
@@ -43,11 +41,13 @@
     startEnforcement,
     stopEnforcement,
     systemHealth,
+    upsertAllowance,
     upsertAppRule,
     upsertSchedule,
     upsertSiteList
   } from "./lib/api";
   import type {
+    Allowance,
     AppMatcher,
     AppRule,
     ConfigSnapshot,
@@ -72,7 +72,6 @@
     { id: "blocks", label: "Lists", icon: ListChecks },
     { id: "apps", label: "Apps", icon: Gamepad2 },
     { id: "schedule", label: "Schedule", icon: CalendarDays },
-    { id: "allowances", label: "Allowances", icon: Timer },
     { id: "statistics", label: "Statistics", icon: BarChart3 },
     { id: "admin", label: "Admin", icon: Settings }
   ];
@@ -103,6 +102,8 @@
     { id: "window_title_exact", label: "Title exact" }
   ];
 
+  const defaultDailyAllowanceMinutes = 30;
+
   let activeView: ViewId = $state("overview");
   let socketPath = $state("");
   let status = $state<DaemonStatus | null>(null);
@@ -120,14 +121,14 @@
   let urlDecision = $state<DecisionResult | null>(null);
   let urlChecking = $state(false);
 
-  let unlockTarget = $state("youtube-controlled");
-  let unlockMinutes = $state(10);
+  let unlockTarget = $state("https://youtube.com/");
   let unlockReason = $state("Task-related access");
   let unlockResult = $state<UnlockResult | null>(null);
   let unlocking = $state(false);
 
   let selectedRuleId = $state<string | null>(null);
   let ruleDraft = $state<Rule | null>(null);
+  let ruleAllowanceDraft = $state<Allowance | null>(null);
   let ruleSaving = $state(false);
   let ruleMessage: string | null = $state(null);
   let selectedAppRuleId = $state<string | null>(null);
@@ -261,12 +262,14 @@
   }
 
   function syncConfigSelection(snapshot: ConfigSnapshot): void {
-    const selectedRuleStillExists = snapshot.rules.some((rule) => rule.id === selectedRuleId);
+    const selectedRuleSnapshot =
+      snapshot.rules.find((rule) => rule.id === selectedRuleId) ?? null;
+    const selectedRuleStillExists = Boolean(selectedRuleSnapshot);
     if (!selectedRuleStillExists) {
       selectedRuleId = snapshot.rules[0]?.id ?? null;
-      ruleDraft = snapshot.rules[0] ? cloneRule(snapshot.rules[0]) : null;
-    } else if (!ruleDraft && selectedRule) {
-      ruleDraft = cloneRule(selectedRule);
+      setRuleDraft(snapshot.rules[0] ?? null, snapshot);
+    } else if (!ruleDraft && selectedRuleSnapshot) {
+      setRuleDraft(selectedRuleSnapshot, snapshot);
     }
 
     const selectedAppRuleStillExists = snapshot.app_rules.some(
@@ -309,7 +312,7 @@
     unlockResult = null;
     lastError = null;
     try {
-      unlockResult = await requestUnlock(unlockTarget, unlockMinutes, unlockReason, socketArg());
+      unlockResult = await requestUnlock(unlockTarget, 2, unlockReason, socketArg());
       await refreshEventsOnly();
     } catch (error) {
       lastError = formatError(error);
@@ -372,17 +375,25 @@
     }
   }
 
+  function setRuleDraft(rule: Rule | null, snapshot: ConfigSnapshot | null = config): void {
+    ruleDraft = rule ? cloneRule(rule) : null;
+    ruleAllowanceDraft = rule ? cloneAllowanceForRule(rule, snapshot) : null;
+  }
+
   function selectRule(rule: Rule): void {
     selectedRuleId = rule.id;
-    ruleDraft = cloneRule(rule);
+    setRuleDraft(rule, config);
     ruleMessage = null;
   }
 
   function startNewRule(): void {
-    const index = (config?.rules.length ?? 0) + 1;
+    const { id, index } = nextAvailableIndexedId(
+      config?.rules.map((rule) => rule.id) ?? [],
+      "site-list"
+    );
     selectedRuleId = null;
-    ruleDraft = {
-      id: `site-list-${index}`,
+    const newRule: Rule = {
+      id,
       name: `Site list ${index}`,
       tier: "controlled_access",
       enabled: true,
@@ -391,6 +402,8 @@
       allowance_id: null,
       unlock_policy: null
     };
+    ruleDraft = newRule;
+    ruleAllowanceDraft = defaultAllowanceForRule(newRule);
     ruleMessage = null;
   }
 
@@ -400,11 +413,28 @@
     lastError = null;
     ruleMessage = null;
     try {
-      const response = await upsertSiteList(normalizeRuleDraft(ruleDraft), socketArg());
+      const socket = socketArg();
+      if (ruleDraft.tier === "controlled_access") {
+        const allowance = normalizeAllowanceDraft(
+          ruleAllowanceDraft ?? defaultAllowanceForRule(ruleDraft),
+          ruleDraft
+        );
+        const allowanceResponse = await upsertAllowance(allowance, socket);
+        config = allowanceResponse.config;
+        ruleAllowanceDraft = cloneAllowance(allowance);
+        ruleDraft.allowance_id = allowance.id;
+      } else {
+        ruleDraft.allowance_id = null;
+      }
+
+      const response = await upsertSiteList(normalizeRuleDraft(ruleDraft), socket);
       config = response.config;
       selectedRuleId = ruleDraft.id.trim();
-      ruleDraft = cloneRule(
-        response.config.rules.find((rule) => rule.id === selectedRuleId) ?? response.config.rules[0]
+      setRuleDraft(
+        response.config.rules.find((rule) => rule.id === selectedRuleId) ??
+          response.config.rules[0] ??
+          null,
+        response.config
       );
       ruleMessage = "Saved.";
       await refreshEventsOnly();
@@ -424,7 +454,7 @@
       const response = await deleteSiteList(ruleDraft.id, socketArg());
       config = response.config;
       selectedRuleId = response.config.rules[0]?.id ?? null;
-      ruleDraft = response.config.rules[0] ? cloneRule(response.config.rules[0]) : null;
+      setRuleDraft(response.config.rules[0] ?? null, response.config);
       ruleMessage = "Deleted.";
       await refreshEventsOnly();
     } catch (error) {
@@ -441,10 +471,13 @@
   }
 
   function startNewAppRule(): void {
-    const index = (config?.app_rules.length ?? 0) + 1;
+    const { id, index } = nextAvailableIndexedId(
+      config?.app_rules.map((rule) => rule.id) ?? [],
+      "app-rule"
+    );
     selectedAppRuleId = null;
     appRuleDraft = {
-      id: `app-rule-${index}`,
+      id,
       name: `App rule ${index}`,
       tier: "hard",
       enabled: true,
@@ -565,6 +598,50 @@
     };
   }
 
+  function cloneAllowance(allowance: Allowance): Allowance {
+    return {
+      ...allowance,
+      name: allowance.name ?? ""
+    };
+  }
+
+  function defaultAllowanceForRule(rule: Rule): Allowance {
+    return {
+      id: linkedAllowanceIdForRule(rule),
+      name: allowanceNameForRule(rule),
+      daily_minutes: defaultDailyAllowanceMinutes
+    };
+  }
+
+  function linkedAllowanceIdForRule(rule: Rule): string {
+    return `${rule.id.trim()}-daily`;
+  }
+
+  function allowanceNameForRule(rule: Rule): string {
+    const name = rule.name.trim() || rule.id.trim() || "Site list";
+    return `${name} daily allowance`;
+  }
+
+  function cloneAllowanceForRule(
+    rule: Rule,
+    snapshot: ConfigSnapshot | null = config
+  ): Allowance | null {
+    if (rule.tier !== "controlled_access") return null;
+
+    const linkedId = linkedAllowanceIdForRule(rule);
+    const allowance = snapshot?.allowances.find(
+      (candidate) => candidate.id === rule.allowance_id
+    ) ?? snapshot?.allowances.find((candidate) => candidate.id === linkedId);
+
+    return allowance
+      ? {
+          ...cloneAllowance(allowance),
+          id: linkedId,
+          name: allowanceNameForRule(rule)
+        }
+      : defaultAllowanceForRule(rule);
+  }
+
   function cloneAppRule(rule: AppRule): AppRule {
     return {
       ...rule,
@@ -588,8 +665,9 @@
       ...rule,
       id: rule.id.trim(),
       name: rule.name.trim(),
-      allowance_id: null,
-      unlock_policy: rule.tier === "controlled_access" ? rule.unlock_policy : null,
+      allowance_id:
+        rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
+      unlock_policy: null,
       patterns: rule.patterns.map((pattern) => ({
         ...pattern,
         value: pattern.value.trim(),
@@ -599,14 +677,22 @@
     };
   }
 
+  function normalizeAllowanceDraft(allowance: Allowance, rule: Rule): Allowance {
+    return {
+      ...allowance,
+      id: linkedAllowanceIdForRule(rule),
+      name: allowanceNameForRule(rule),
+      daily_minutes: Math.max(1, Math.round(Number(allowance.daily_minutes) || 1))
+    };
+  }
+
   function normalizeAppRuleDraft(rule: AppRule): AppRule {
     return {
       ...rule,
       id: rule.id.trim(),
       name: rule.name.trim(),
-      allowance_id:
-        rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id : null,
-      unlock_policy: rule.tier === "controlled_access" ? rule.unlock_policy : null,
+      allowance_id: null,
+      unlock_policy: null,
       matchers: rule.matchers.map((matcher) => ({
         ...matcher,
         value: matcher.value.trim()
@@ -654,13 +740,11 @@
     ruleDraft.tier = tier;
     if (tier === "hard") {
       ruleDraft.allowance_id = null;
+      ruleAllowanceDraft = null;
       ruleDraft.unlock_policy = null;
+    } else if (!ruleAllowanceDraft) {
+      ruleAllowanceDraft = defaultAllowanceForRule(ruleDraft);
     }
-  }
-
-  function setRuleAllowance(value: string): void {
-    if (!ruleDraft) return;
-    ruleDraft.allowance_id = value || null;
   }
 
   function setAppRuleTier(tier: AppRule["tier"]): void {
@@ -771,6 +855,20 @@
   function windowsFor(schedule: Schedule, weekday: string): string {
     const windows = schedule.windows.filter((window) => window.weekday === weekday);
     return windows.map((window) => `${window.start}-${window.end}`).join(", ");
+  }
+
+  function nextAvailableIndexedId(
+    existingIds: string[],
+    prefix: string
+  ): { id: string; index: number } {
+    const existing = new Set(existingIds);
+    let index = 1;
+    let id = `${prefix}-${index}`;
+    while (existing.has(id)) {
+      index += 1;
+      id = `${prefix}-${index}`;
+    }
+    return { id, index };
   }
 </script>
 
@@ -931,10 +1029,6 @@
               <span>Target</span>
               <input bind:value={unlockTarget} />
             </label>
-            <label>
-              <span>Minutes</span>
-              <input type="number" min="1" max="240" bind:value={unlockMinutes} />
-            </label>
             <label class="reason-field">
               <span>Reason</span>
               <input bind:value={unlockReason} />
@@ -947,7 +1041,7 @@
           {#if unlockResult}
             <p class="result-text">
               Active until {new Date(unlockResult.expires_at).toLocaleTimeString()} for
-              {unlockResult.rule_id}
+              {unlockResult.target}
             </p>
           {/if}
         </article>
@@ -993,8 +1087,8 @@
             {/if}
             <div class="form-grid">
               <label>
-                <span>List ID</span>
-                <input bind:value={ruleDraft.id} readonly={ruleDraftIsExisting} disabled={ruleDraftLocked} />
+                <span>Name</span>
+                <input bind:value={ruleDraft.name} disabled={ruleDraftLocked} />
               </label>
               <label>
                 <span>Tier</span>
@@ -1008,29 +1102,31 @@
                   <option value="hard">Tier 1</option>
                 </select>
               </label>
-              <label>
-                <span>Name</span>
-                <input bind:value={ruleDraft.name} disabled={ruleDraftLocked} />
-              </label>
-              <label>
-                <span>Allowance</span>
-                <select
-                  value={ruleDraft.allowance_id ?? ""}
-                  disabled={ruleDraftLocked || ruleDraft.tier === "hard"}
-                  onchange={(event) => setRuleAllowance(event.currentTarget.value)}
-                >
-                  <option value="">None</option>
-                  {#each config?.allowances ?? [] as allowance (allowance.id)}
-                    <option value={allowance.id}>{allowance.name ?? allowance.id}</option>
-                  {/each}
-                </select>
-              </label>
             </div>
 
             <label class="check-row">
               <input type="checkbox" bind:checked={ruleDraft.enabled} disabled={ruleDraftLocked} />
               <span>Enabled</span>
             </label>
+
+            {#if ruleDraft.tier === "controlled_access"}
+              <div class="section-label">Daily allowance</div>
+              <div class="allowance-editor">
+                {#if ruleAllowanceDraft}
+                  <label>
+                    <span>Daily minutes</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="1440"
+                      bind:value={ruleAllowanceDraft.daily_minutes}
+                      disabled={ruleDraftLocked}
+                    />
+                  </label>
+                {/if}
+              </div>
+
+            {/if}
 
             <div class="section-label">Schedules</div>
             <div class="chip-grid">
@@ -1164,12 +1260,8 @@
             {/if}
             <div class="form-grid">
               <label>
-                <span>Rule ID</span>
-                <input
-                  bind:value={appRuleDraft.id}
-                  readonly={appRuleDraftIsExisting}
-                  disabled={appRuleDraftLocked}
-                />
+                <span>Name</span>
+                <input bind:value={appRuleDraft.name} disabled={appRuleDraftLocked} />
               </label>
               <label>
                 <span>Tier</span>
@@ -1182,10 +1274,6 @@
                   <option value="hard">Tier 1</option>
                   <option value="controlled_access">Tier 2</option>
                 </select>
-              </label>
-              <label>
-                <span>Name</span>
-                <input bind:value={appRuleDraft.name} disabled={appRuleDraftLocked} />
               </label>
             </div>
 
@@ -1424,23 +1512,6 @@
           </div>
         </article>
       </section>
-    {:else if activeView === "allowances"}
-      <section class="content-grid">
-        {#each config?.allowances ?? [] as allowance (allowance.id)}
-          <article class="panel allowance-panel">
-            <div class="panel-title">
-              <Clock3 size={18} aria-hidden="true" />
-              <h2>{allowance.name ?? allowance.id}</h2>
-            </div>
-            <div class="allowance-value">{allowance.daily_minutes} min</div>
-            <p class="muted">Daily allowance</p>
-          </article>
-        {:else}
-          <article class="panel">
-            <p class="empty-state">No allowances reported by the daemon.</p>
-          </article>
-        {/each}
-      </section>
     {:else if activeView === "statistics"}
       <section class="content-grid">
         <article class="panel">
@@ -1516,6 +1587,10 @@
             <div class="status-row">
               <span>Firefox policy</span>
               <small>{enforcement?.firefox_policy.path ?? "unknown"}</small>
+            </div>
+            <div class="status-row">
+              <span>Chrome policy</span>
+              <small>{enforcement?.chrome_policy.path ?? "unknown"}</small>
             </div>
             <div class="status-row">
               <span>Hosts file</span>
@@ -1873,8 +1948,7 @@
     justify-content: space-between;
   }
 
-  .metric-line span:last-child,
-  .muted {
+  .metric-line span:last-child {
     color: #64736c;
   }
 
@@ -1972,6 +2046,13 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+  }
+
+  .allowance-editor {
+    align-items: end;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: minmax(180px, 260px);
   }
 
   .chip-check {
@@ -2081,16 +2162,6 @@
     background: #e2f3ea;
     color: #145c3d;
     font-weight: 700;
-  }
-
-  .allowance-panel {
-    min-height: 148px;
-  }
-
-  .allowance-value {
-    font-size: 2.4rem;
-    font-weight: 800;
-    letter-spacing: 0;
   }
 
   .bar-list,
@@ -2257,7 +2328,8 @@
 
     .dashboard-grid,
     .content-grid,
-    .split-view {
+    .split-view,
+    .allowance-editor {
       grid-template-columns: 1fr;
     }
 

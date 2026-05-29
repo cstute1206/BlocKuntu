@@ -15,9 +15,11 @@ const DEFAULT_SOCKET_PATH: &str = "/run/blockuntu/blockuntud.sock";
 const DEV_SOCKET_PATH: &str = "/tmp/blockuntu/blockuntud.sock";
 const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.json";
 const DEV_FIREFOX_POLICY_PATH: &str = "/tmp/blockuntu/firefox/policies.json";
+const DEFAULT_CHROME_POLICY_PATH: &str = "/etc/opt/chrome/policies/managed/blockuntu.json";
+const DEV_CHROME_POLICY_PATH: &str = "/tmp/blockuntu/chrome/policies/managed/blockuntu.json";
 const SYSTEM_NATIVE_HOST_MANIFEST: &str =
     "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json";
-const CHROME_EXTENSION_ID: &str = "mlfcmoellaplhamddimfpahklojgligk";
+const CHROME_EXTENSION_ID: &str = "odedgejjcdilkoibeljkeohekonmdfea";
 const CHROME_USER_NATIVE_HOST_MANIFEST: &str =
     ".config/google-chrome/NativeMessagingHosts/blockuntu_native.json";
 const CHROMIUM_USER_NATIVE_HOST_MANIFEST: &str =
@@ -176,12 +178,17 @@ fn system_health(socket_path: Option<String>) -> SystemHealth {
     if let Some(enforcement) = &enforcement {
         checks.push(enforcement_mode_check(enforcement));
         checks.push(policy_enforcement_check(enforcement));
+        checks.push(chrome_policy_enforcement_check(enforcement));
         checks.push(hosts_enforcement_check(enforcement));
     } else if using_dev_socket {
         checks.push(policy_file_check(Path::new(DEV_FIREFOX_POLICY_PATH)));
+        checks.push(chrome_policy_file_check(Path::new(DEV_CHROME_POLICY_PATH)));
         checks.push(hosts_file_check(Path::new("/tmp/blockuntu/hosts")));
     } else {
         checks.push(policy_file_check(Path::new(DEFAULT_FIREFOX_POLICY_PATH)));
+        checks.push(chrome_policy_file_check(Path::new(
+            DEFAULT_CHROME_POLICY_PATH,
+        )));
         checks.push(hosts_file_check(Path::new("/etc/hosts")));
     }
     checks.push(native_host_manifest_check());
@@ -335,6 +342,30 @@ fn policy_file_check(path: &Path) -> HealthCheck {
     }
 }
 
+fn chrome_policy_file_check(path: &Path) -> HealthCheck {
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            let valid_json = serde_json::from_str::<Value>(&contents).is_ok();
+            HealthCheck {
+                key: "chrome_policy".to_string(),
+                label: "Chrome policy".to_string(),
+                state: if valid_json {
+                    HealthState::Ok
+                } else {
+                    HealthState::Error
+                },
+                detail: path.display().to_string(),
+            }
+        }
+        Err(err) => HealthCheck {
+            key: "chrome_policy".to_string(),
+            label: "Chrome policy".to_string(),
+            state: HealthState::Warn,
+            detail: format!("{}: {err}", path.display()),
+        },
+    }
+}
+
 fn hosts_file_check(path: &Path) -> HealthCheck {
     match fs::read_to_string(path) {
         Ok(contents) => {
@@ -403,6 +434,35 @@ fn policy_enforcement_check(status: &Value) -> HealthCheck {
     HealthCheck {
         key: "firefox_policy".to_string(),
         label: "Firefox policy".to_string(),
+        state,
+        detail: format!("{path}: {detail}"),
+    }
+}
+
+fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
+    let active = status
+        .get("enforcement_state")
+        .and_then(Value::as_str)
+        .unwrap_or("active")
+        == "active";
+    let policy = status.get("chrome_policy").unwrap_or(&Value::Null);
+    let compliant = bool_field(policy, "compliant");
+    let force_install = bool_field(policy, "force_install_configured");
+    let update_manifest = bool_field(policy, "update_manifest_compliant");
+    let override_update_url = bool_field(policy, "override_update_url");
+    let path = string_field(policy, "path").unwrap_or("unknown");
+    let detail = string_field(policy, "detail").unwrap_or("no Chrome policy detail");
+    let state = if !active {
+        HealthState::Warn
+    } else if compliant && force_install && update_manifest && override_update_url {
+        HealthState::Ok
+    } else {
+        HealthState::Error
+    };
+
+    HealthCheck {
+        key: "chrome_policy".to_string(),
+        label: "Chrome policy".to_string(),
         state,
         detail: format!("{path}: {detail}"),
     }

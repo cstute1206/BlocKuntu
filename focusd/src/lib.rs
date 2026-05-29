@@ -1,4 +1,5 @@
 pub mod app;
+pub mod chrome_policy;
 pub mod cli;
 pub mod error;
 pub mod firefox_policy;

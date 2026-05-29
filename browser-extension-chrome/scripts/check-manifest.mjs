@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const EXPECTED_EXTENSION_ID = "mlfcmoellaplhamddimfpahklojgligk";
+const EXPECTED_EXTENSION_ID = "odedgejjcdilkoibeljkeohekonmdfea";
 
 const manifestPath = resolve("manifest.json");
 const backgroundPath = resolve("dist/background.js");

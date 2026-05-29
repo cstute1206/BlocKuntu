@@ -23,6 +23,11 @@ async fn run() -> Result<()> {
             println!("Firefox policy: {status:?}");
             Ok(())
         }
+        Command::RepairChromePolicy => {
+            let status = app.repair_chrome_policy()?;
+            println!("Chrome policy: {status:?}");
+            Ok(())
+        }
         Command::RepairHosts => {
             let status = app.repair_hosts()?;
             println!("hosts: {status:?}");

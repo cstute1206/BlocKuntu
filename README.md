@@ -69,6 +69,9 @@ writing, process killing, socket binding, and systemd watchdogs belongs in
 - Serves local JSON-RPC requests over a Unix domain socket.
 - Supports systemd socket activation for `/run/blockuntu/blockuntud.sock`.
 - Repairs Firefox enterprise policy at `/etc/firefox/policies/policies.json`.
+- Repairs Chrome managed policy at
+  `/etc/opt/chrome/policies/managed/blockuntu.json` and a local Chrome update
+  manifest at `/usr/local/share/blockuntu/chrome-extension-updates.xml`.
 - Repairs the BlocKuntu managed block inside `/etc/hosts` and reapplies
   `chattr +i` for the production hosts path.
 - Exposes explicit start/stop enforcement RPCs so the GUI can disable the
@@ -614,11 +617,11 @@ npm run build
 ```
 
 Load `browser-extension-chrome/` from `chrome://extensions` with Developer mode
-enabled and "Load unpacked". The manifest embeds a fixed development key so the
-extension ID remains:
+enabled and "Load unpacked". The manifest embeds the public key from the hosted
+CRX so the extension ID remains:
 
 ```text
-mlfcmoellaplhamddimfpahklojgligk
+odedgejjcdilkoibeljkeohekonmdfea
 ```
 
 Create a local ZIP archive when needed:
@@ -628,6 +631,16 @@ cd browser-extension-chrome
 npm run build
 npm run package:zip
 ```
+
+The production Chrome policy uses a local update manifest that points at the
+hosted CRX:
+
+```text
+https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download
+```
+
+Future CRX builds must be signed with the same Chrome packaging key to keep the
+extension ID stable.
 
 ## Current Verification Status
 

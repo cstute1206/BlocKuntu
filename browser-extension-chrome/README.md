@@ -4,11 +4,11 @@ This is the Chrome/Chromium MV3 companion to the Firefox extension. It uses a
 service worker, Chrome Native Messaging, and the same daemon JSON-RPC methods as
 Firefox.
 
-The manifest contains a fixed development key so the unpacked extension ID is
-stable:
+The manifest contains the public key from the currently hosted CRX, so the
+unpacked extension ID matches the force-installed extension ID:
 
 ```text
-mlfcmoellaplhamddimfpahklojgligk
+odedgejjcdilkoibeljkeohekonmdfea
 ```
 
 Build and verify:
@@ -23,6 +23,16 @@ Package a local ZIP:
 ```bash
 npm run package:zip
 ```
+
+The production Chrome policy currently points at this hosted CRX through a
+local update manifest written by `focusd`:
+
+```text
+https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download
+```
+
+Keep the private `.pem` used to build that CRX outside git. Future CRX builds
+must use the same private key or Chrome will assign a different extension ID.
 
 Load locally:
 

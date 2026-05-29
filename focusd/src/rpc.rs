@@ -3,15 +3,17 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelike, Utc};
 use focus_core::{
     evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
-    AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision, EvaluationContext,
-    FocusCore, HeartbeatState, RuleConfig, ScheduleConfig, UnlockState, VisitState, Weekday,
+    AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision,
+    EvaluationContext, FocusCore, HeartbeatState, RuleConfig, ScheduleConfig, UnlockState,
+    VisitState, Weekday,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::chrome_policy::ChromePolicyManager;
 use crate::error::{DaemonError, Result};
 use crate::firefox_policy::FirefoxPolicyManager;
-use crate::hosts::HostsManager;
+use crate::hosts::{HostsManager, HostsRepairStatus};
 
 const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
 const CHROME_EXTENSION_HEARTBEAT_COMPONENT: &str = "chrome_extension";
@@ -26,6 +28,7 @@ pub struct RpcContext {
     core: Arc<Mutex<FocusCore>>,
     extension_heartbeat_timeout_seconds: u64,
     firefox_policy: Option<FirefoxPolicyManager>,
+    chrome_policy: Option<ChromePolicyManager>,
     hosts: Option<HostsManager>,
 }
 
@@ -35,6 +38,7 @@ impl RpcContext {
             core,
             extension_heartbeat_timeout_seconds: DEFAULT_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS,
             firefox_policy: None,
+            chrome_policy: None,
             hosts: None,
         }
     }
@@ -47,9 +51,11 @@ impl RpcContext {
     pub fn with_enforcement_managers(
         mut self,
         firefox_policy: FirefoxPolicyManager,
+        chrome_policy: ChromePolicyManager,
         hosts: HostsManager,
     ) -> Self {
         self.firefox_policy = Some(firefox_policy);
+        self.chrome_policy = Some(chrome_policy);
         self.hosts = Some(hosts);
         self
     }
@@ -63,6 +69,12 @@ impl RpcContext {
     fn hosts(&self) -> Result<&HostsManager> {
         self.hosts.as_ref().ok_or_else(|| {
             DaemonError::InvalidRequest("hosts manager is not configured".to_string())
+        })
+    }
+
+    fn chrome_policy(&self) -> Result<&ChromePolicyManager> {
+        self.chrome_policy.as_ref().ok_or_else(|| {
+            DaemonError::InvalidRequest("Chrome policy manager is not configured".to_string())
         })
     }
 }
@@ -162,6 +174,20 @@ struct DeleteSiteListParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct UpsertAllowanceParams {
+    allowance: AllowanceConfig,
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteAllowanceParams {
+    id: String,
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UpsertAppRuleParams {
     rule: AppRuleConfig,
     #[serde(default)]
@@ -239,6 +265,14 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
             let params = parse_params::<DeleteSiteListParams>(params)?;
             delete_site_list_method(context, params)
         }
+        "upsert_allowance" => {
+            let params = parse_params::<UpsertAllowanceParams>(params)?;
+            upsert_allowance_method(context, params)
+        }
+        "delete_allowance" => {
+            let params = parse_params::<DeleteAllowanceParams>(params)?;
+            delete_allowance_method(context, params)
+        }
         "upsert_app_rule" => {
             let params = parse_params::<UpsertAppRuleParams>(params)?;
             upsert_app_rule_method(context, params)
@@ -306,6 +340,7 @@ fn status(context: &RpcContext) -> Result<Value> {
 
 fn enforcement_status(context: &RpcContext) -> Result<Value> {
     let firefox_policy = context.firefox_policy()?;
+    let chrome_policy = context.chrome_policy()?;
     let hosts = context.hosts()?;
     let (enforcement_state, config) = {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -316,12 +351,14 @@ fn enforcement_status(context: &RpcContext) -> Result<Value> {
         "status": "ok",
         "enforcement_state": enforcement_state,
         "firefox_policy": firefox_policy.status(),
+        "chrome_policy": chrome_policy.status(),
         "hosts_file": hosts.status(&config)
     }))
 }
 
 fn start_enforcement(context: &RpcContext) -> Result<Value> {
     let firefox_policy = context.firefox_policy()?;
+    let chrome_policy = context.chrome_policy()?;
     let hosts = context.hosts()?;
     let now = Utc::now();
 
@@ -332,6 +369,7 @@ fn start_enforcement(context: &RpcContext) -> Result<Value> {
     }
 
     let firefox_policy_repair = firefox_policy.verify_and_repair()?;
+    let chrome_policy_repair = chrome_policy.verify_and_repair()?;
     let hosts_repair = {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
         hosts.verify_and_repair(core.config())?
@@ -344,7 +382,7 @@ fn start_enforcement(context: &RpcContext) -> Result<Value> {
             "enforcement_started",
             Some("system"),
             Some(&format!(
-                "firefox_policy={firefox_policy_repair:?};hosts={hosts_repair:?}"
+                "firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}"
             )),
             now,
         )?;
@@ -355,6 +393,7 @@ fn start_enforcement(context: &RpcContext) -> Result<Value> {
 
 fn stop_enforcement(context: &RpcContext) -> Result<Value> {
     let firefox_policy = context.firefox_policy()?;
+    let chrome_policy = context.chrome_policy()?;
     let hosts = context.hosts()?;
     let now = Utc::now();
 
@@ -365,6 +404,7 @@ fn stop_enforcement(context: &RpcContext) -> Result<Value> {
     }
 
     let firefox_policy_repair = firefox_policy.remove_policy()?;
+    let chrome_policy_repair = chrome_policy.remove_policy()?;
     let hosts_repair = hosts.remove_managed_block()?;
     let status = enforcement_status(context)?;
 
@@ -374,7 +414,7 @@ fn stop_enforcement(context: &RpcContext) -> Result<Value> {
             "enforcement_stopped",
             Some("system"),
             Some(&format!(
-                "firefox_policy={firefox_policy_repair:?};hosts={hosts_repair:?}"
+                "firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}"
             )),
             now,
         )?;
@@ -394,6 +434,11 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
     let rule_id = params.rule.id.clone();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
+    let old_allowance_id = next
+        .rules
+        .iter()
+        .find(|candidate| candidate.id == params.rule.id)
+        .and_then(|rule| rule.allowance_id.clone());
 
     match next
         .rules
@@ -409,14 +454,26 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
         }
         None => next.rules.push(params.rule),
     }
+    let new_allowance_id = next
+        .rules
+        .iter()
+        .find(|candidate| candidate.id == rule_id)
+        .and_then(|rule| rule.allowance_id.clone());
+    if old_allowance_id != new_allowance_id {
+        remove_unreferenced_allowance(&mut next, old_allowance_id.as_deref());
+    }
 
     focus_core::validate_config(&next)?;
     core.database().replace_policy_config(&next)?;
     core.replace_config(next)?;
+    let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
     core.database().record_event(
         "site_list_saved",
         Some(&rule_id),
-        Some("GUI structured edit"),
+        Some(&format!(
+            "GUI structured edit{}",
+            hosts_repair_detail(hosts_repair)
+        )),
         updated_at,
     )?;
 
@@ -447,12 +504,119 @@ fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -
         return Err(active_site_list_edit_error(&current_rule.id));
     }
     let removed = next.rules.remove(index);
+    remove_unreferenced_allowance(&mut next, removed.allowance_id.as_deref());
+
+    focus_core::validate_config(&next)?;
+    core.database().replace_policy_config(&next)?;
+    core.replace_config(next)?;
+    let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
+    core.database().record_event(
+        "site_list_deleted",
+        Some(&removed.id),
+        Some(&format!(
+            "GUI structured edit{}",
+            hosts_repair_detail(hosts_repair)
+        )),
+        updated_at,
+    )?;
+
+    Ok(json!({
+        "status": "ok",
+        "config": core.config(),
+        "updated_at": updated_at
+    }))
+}
+
+fn upsert_allowance_method(context: &RpcContext, params: UpsertAllowanceParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let updated_at = Utc::now();
+    let allowance_id = params.allowance.id.clone();
+    let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let mut next = core.config().clone();
+
+    match next
+        .allowances
+        .iter()
+        .position(|candidate| candidate.id == params.allowance.id)
+    {
+        Some(index) => {
+            let current_allowance = &next.allowances[index];
+            if current_allowance != &params.allowance
+                && allowance_is_active_at(&current_allowance.id, core.config(), now)
+            {
+                return Err(active_allowance_edit_error(&current_allowance.id));
+            }
+            next.allowances[index] = params.allowance;
+        }
+        None => next.allowances.push(params.allowance),
+    }
 
     focus_core::validate_config(&next)?;
     core.database().replace_policy_config(&next)?;
     core.replace_config(next)?;
     core.database().record_event(
-        "site_list_deleted",
+        "allowance_saved",
+        Some(&allowance_id),
+        Some("GUI structured edit"),
+        updated_at,
+    )?;
+
+    Ok(json!({
+        "status": "ok",
+        "config": core.config(),
+        "updated_at": updated_at
+    }))
+}
+
+fn delete_allowance_method(context: &RpcContext, params: DeleteAllowanceParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let updated_at = Utc::now();
+    let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let mut next = core.config().clone();
+    let Some(index) = next
+        .allowances
+        .iter()
+        .position(|candidate| candidate.id == params.id)
+    else {
+        return Err(DaemonError::InvalidRequest(format!(
+            "allowance '{}' does not exist",
+            params.id
+        )));
+    };
+
+    if allowance_is_active_at(&params.id, core.config(), now) {
+        return Err(active_allowance_edit_error(&params.id));
+    }
+
+    if let Some(rule) = next
+        .rules
+        .iter()
+        .find(|rule| rule.allowance_id.as_deref() == Some(params.id.as_str()))
+    {
+        return Err(DaemonError::InvalidRequest(format!(
+            "allowance '{}' is still used by site list '{}'",
+            params.id, rule.id
+        )));
+    }
+
+    if let Some(rule) = next
+        .app_rules
+        .iter()
+        .find(|rule| rule.allowance_id.as_deref() == Some(params.id.as_str()))
+    {
+        return Err(DaemonError::InvalidRequest(format!(
+            "allowance '{}' is still used by app rule '{}'",
+            params.id, rule.id
+        )));
+    }
+
+    let removed = next.allowances.remove(index);
+
+    focus_core::validate_config(&next)?;
+    core.database().replace_policy_config(&next)?;
+    core.replace_config(next)?;
+    core.database().record_event(
+        "allowance_deleted",
         Some(&removed.id),
         Some("GUI structured edit"),
         updated_at,
@@ -862,7 +1026,7 @@ fn extension_component<'a>(
     }
 
     if extension_id
-        .map(|extension_id| extension_id == "mlfcmoellaplhamddimfpahklojgligk")
+        .map(|extension_id| extension_id == "odedgejjcdilkoibeljkeohekonmdfea")
         .unwrap_or(false)
     {
         return CHROME_EXTENSION_HEARTBEAT_COMPONENT;
@@ -1231,6 +1395,27 @@ fn enforcement_active_from_core(core: &FocusCore) -> Result<bool> {
     Ok(enforcement_state_from_core(core)? == ENFORCEMENT_ACTIVE)
 }
 
+fn repair_hosts_after_policy_change(
+    context: &RpcContext,
+    core: &FocusCore,
+) -> Result<Option<HostsRepairStatus>> {
+    let Some(hosts) = context.hosts.as_ref() else {
+        return Ok(None);
+    };
+
+    if !enforcement_active_from_core(core)? {
+        return Ok(Some(HostsRepairStatus::SkippedStopped));
+    }
+
+    hosts.verify_and_repair(core.config()).map(Some)
+}
+
+fn hosts_repair_detail(status: Option<HostsRepairStatus>) -> String {
+    status
+        .map(|status| format!(";hosts={status:?}"))
+        .unwrap_or_default()
+}
+
 fn active_site_list_edit_error(rule_id: &str) -> DaemonError {
     DaemonError::InvalidRequest(format!(
         "site list '{rule_id}' is currently active and cannot be edited"
@@ -1247,6 +1432,45 @@ fn active_schedule_edit_error(schedule_id: &str) -> DaemonError {
     DaemonError::InvalidRequest(format!(
         "schedule '{schedule_id}' is currently active and cannot be edited"
     ))
+}
+
+fn active_allowance_edit_error(allowance_id: &str) -> DaemonError {
+    DaemonError::InvalidRequest(format!(
+        "allowance '{allowance_id}' is currently used by an active site list and cannot be edited"
+    ))
+}
+
+fn remove_unreferenced_allowance(config: &mut Config, allowance_id: Option<&str>) {
+    let Some(allowance_id) = allowance_id else {
+        return;
+    };
+
+    let used_by_site_list = config
+        .rules
+        .iter()
+        .any(|rule| rule.allowance_id.as_deref() == Some(allowance_id));
+    let used_by_app_rule = config
+        .app_rules
+        .iter()
+        .any(|rule| rule.allowance_id.as_deref() == Some(allowance_id));
+
+    if used_by_site_list || used_by_app_rule {
+        return;
+    }
+
+    if let Some(index) = config
+        .allowances
+        .iter()
+        .position(|allowance| allowance.id == allowance_id)
+    {
+        config.allowances.remove(index);
+    }
+}
+
+fn allowance_is_active_at(allowance_id: &str, config: &Config, now: DateTime<FixedOffset>) -> bool {
+    config.rules.iter().any(|rule| {
+        rule.allowance_id.as_deref() == Some(allowance_id) && rule_is_active_at(rule, config, now)
+    })
 }
 
 fn rule_is_active_at(rule: &RuleConfig, config: &Config, now: DateTime<FixedOffset>) -> bool {
@@ -1580,6 +1804,93 @@ mod tests {
     }
 
     #[test]
+    fn upserts_allowance_for_site_list_edits() {
+        let context = editable_rpc_context();
+        let allowance_request = json!({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "upsert_allowance",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "allowance": {
+                    "id": "daily",
+                    "name": "Daily",
+                    "daily_minutes": 20
+                }
+            }
+        });
+        let allowance_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&allowance_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(
+            allowance_response.get("error").is_none(),
+            "{allowance_response}"
+        );
+        assert!(allowance_response["result"]["config"]["allowances"]
+            .as_array()
+            .expect("allowances should be an array")
+            .iter()
+            .any(|allowance| allowance["id"] == "daily"));
+
+        let rule_request = json!({
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "daily-list",
+                    "name": "Daily List",
+                    "tier": "controlled_access",
+                    "enabled": true,
+                    "allowance_id": "daily",
+                    "patterns": [
+                        { "kind": "domain", "value": "daily.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let rule_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&rule_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(rule_response.get("error").is_none(), "{rule_response}");
+        assert!(rule_response["result"]["config"]["rules"]
+            .as_array()
+            .expect("rules should be an array")
+            .iter()
+            .any(|rule| rule["allowance_id"] == "daily"));
+
+        let delete_request = json!({
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "delete_site_list",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "id": "daily-list"
+            }
+        });
+        let delete_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&delete_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(delete_response.get("error").is_none(), "{delete_response}");
+        assert!(!delete_response["result"]["config"]["allowances"]
+            .as_array()
+            .expect("allowances should be an array")
+            .iter()
+            .any(|allowance| allowance["id"] == "daily"));
+    }
+
+    #[test]
     fn upserts_app_rule_after_validation_and_reloads_core() {
         let context = editable_rpc_context();
         let request = json!({
@@ -1789,7 +2100,7 @@ mod tests {
             "params": {
                 "browser": "chrome",
                 "component": "chrome_extension",
-                "extension_id": "mlfcmoellaplhamddimfpahklojgligk",
+                "extension_id": "odedgejjcdilkoibeljkeohekonmdfea",
                 "extension_version": "0.2.1",
                 "now": "2026-05-22T10:00:00Z"
             }
@@ -1816,7 +2127,7 @@ mod tests {
         assert_eq!(response["result"]["browser"], "chrome");
         assert_eq!(
             response["result"]["extension_id"],
-            "mlfcmoellaplhamddimfpahklojgligk"
+            "odedgejjcdilkoibeljkeohekonmdfea"
         );
 
         let firefox_status = json!({

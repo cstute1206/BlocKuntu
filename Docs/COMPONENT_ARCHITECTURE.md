@@ -59,6 +59,9 @@ Only `focusd` is trusted to mutate system state.
 Allowed privileged side effects:
 
 - Write Firefox enterprise policy at `/etc/firefox/policies/policies.json`.
+- Write Chrome managed policy at
+  `/etc/opt/chrome/policies/managed/blockuntu.json` and the local Chrome
+  update manifest at `/usr/local/share/blockuntu/chrome-extension-updates.xml`.
 - Repair the managed BlocKuntu section in `/etc/hosts`.
 - Maintain `/run/blockuntu/blockuntud.sock` through systemd socket activation.
 - Kill forbidden processes found through `/proc`.
@@ -244,14 +247,14 @@ Production uses:
 /etc/hosts
 ```
 
-### Chrome Native Messaging
+### Chrome Policy And Native Messaging
 
 The Chrome/Chromium extension uses the same `blockuntu_native` host name as
 Firefox, but Chrome requires `allowed_origins` in the manifest. The fixed
-development extension ID is:
+extension ID for the hosted CRX is:
 
 ```text
-mlfcmoellaplhamddimfpahklojgligk
+odedgejjcdilkoibeljkeohekonmdfea
 ```
 
 Development manifest paths:
@@ -268,9 +271,29 @@ Production manifest paths:
 /etc/chromium/native-messaging-hosts/blockuntu_native.json
 ```
 
-Chrome force-install policy is still a production packaging decision; the
-current code implements extension behavior, native messaging integration, and
-GUI health reporting.
+`focusd` also writes Chrome managed policy for Google Chrome:
+
+```text
+/etc/opt/chrome/policies/managed/blockuntu.json
+```
+
+The policy sets `ExtensionInstallForcelist` and `ExtensionSettings` for
+`odedgejjcdilkoibeljkeohekonmdfea`, with `override_update_url` enabled. The
+policy update URL points at a local update manifest:
+
+```text
+/usr/local/share/blockuntu/chrome-extension-updates.xml
+```
+
+That XML contains the hosted CRX codebase:
+
+```text
+https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download
+```
+
+The Chrome CRX signing key determines the extension ID. Repackaging with a new
+key changes the ID and requires updating Chrome policy and Native Messaging
+origins.
 
 ### Process Scanner
 
@@ -292,6 +315,13 @@ cannot bypass browser-extension enforcement by switching engines. Firefox and
 Google Chrome are the supported browser paths. Chromium, Brave, Edge, Opera,
 Vivaldi, LibreWolf, Waterfox, Epiphany, Falkon, qutebrowser, Midori, Min, Nyxt,
 and Tor Browser are treated as Tier 1 application blocks.
+
+Strict mode also protects supported browsers. When Firefox or Chrome is running
+and its required extension heartbeat is missing or stale beyond the configured
+grace period, `focusd` terminates that browser and records a
+`browser_killed_extension_stale` event. The default grace period is 30 seconds.
+The stronger network fallback remains future work; see
+`Docs/STRICT_MODE_TODO.md`.
 
 ## Development Connections
 
@@ -404,6 +434,8 @@ GUI Config page
 focusd startup and repair loop
   -> verify Firefox policy
   -> repair policy if missing or changed
+  -> verify Chrome policy and local update manifest
+  -> repair Chrome policy/update manifest if missing or changed
   -> verify managed hosts block
   -> repair hosts block if missing or changed
 ```
