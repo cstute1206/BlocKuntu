@@ -38,23 +38,36 @@ Runtime layout:
 
 ## Install Prerequisites
 
-Install the build and verification tools for your distribution. On Debian or
-Ubuntu, this is a reasonable baseline:
+The scripted installer checks for required commands and Linux GUI build
+libraries. If something is missing, it installs the matching packages through
+the system package manager. Supported package managers are `apt-get`, `dnf`,
+`pacman`, and `zypper`.
+
+On Debian or Ubuntu, the equivalent manual baseline is:
 
 ```bash
 sudo apt update
 sudo apt install -y \
   build-essential \
+  cargo \
   curl \
   e2fsprogs \
+  file \
   git \
   jq \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  libssl-dev \
+  libwebkit2gtk-4.1-dev \
+  libxdo-dev \
   nodejs \
   npm \
   pkg-config \
+  rustc \
   socat \
   systemd \
   unzip \
+  wget \
   wmctrl \
   zip
 ```
@@ -68,11 +81,60 @@ node --version
 npm --version
 ```
 
-For the optional Tauri GUI package, install the Tauri Linux dependencies for
-your distribution as well. The daemon and browser enforcement do not require
-the GUI to be running.
+For the Tauri GUI build, the installer also installs the distribution-specific
+WebKitGTK, app indicator, SVG, OpenSSL, and X11 helper packages. The daemon and
+browser enforcement do not require the GUI to be running.
 
-## Build And Verify
+## Scripted Install
+
+For a normal production-style install, run the installer from the repository
+root:
+
+```bash
+./scripts/install-production.sh
+```
+
+By default, the script:
+
+- Builds `blockuntud` and `blockuntu-native` as release binaries.
+- Builds the Tauri GUI and installs it as `/usr/local/bin/blockuntu-gui`.
+- Installs missing build/runtime prerequisites through the system package
+  manager.
+- Installs the GUI desktop launcher as `/usr/share/applications/blockuntu.desktop`.
+- Installs `/etc/blockuntu/config.toml` if it does not already exist.
+- Installs systemd units and the Native Messaging manifests.
+- Adds the current desktop user to the `blockuntu` socket group.
+- Starts the daemon with browser policy repair disabled.
+- Enables and starts `blockuntu.socket`, `blockuntu.service`,
+  `blockuntu-watchdog.service`, and `blockuntu-hosts.path`.
+
+Browser extensions are intentionally not installed or force-installed by this
+script. The user must install and enable the Firefox and/or Chrome extension
+manually. The script installs the Native Messaging manifests so the manually
+installed extension can reach `/run/blockuntu/blockuntud.sock` through
+`blockuntu-native`. Existing browser managed-policy files are left untouched;
+remove old policy files manually if you are converting a previous force-install
+setup to manual extension mode.
+
+Installer options:
+
+```bash
+./scripts/install-production.sh --help
+./scripts/install-production.sh --no-build
+./scripts/install-production.sh --no-start
+./scripts/install-production.sh --skip-prereqs
+./scripts/install-production.sh --skip-gui
+./scripts/install-production.sh --overwrite-config
+./scripts/install-production.sh --user christian
+```
+
+After the script completes, log out and back in so the desktop session receives
+the new `blockuntu` group membership.
+
+## Manual Build And Install
+
+The following steps are the manual equivalent of the scripted install. Use them
+when you need to inspect or customize individual installation steps.
 
 Run from the repository root:
 
@@ -123,7 +185,7 @@ https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download
 
 If you host the CRX somewhere else, use that URL in the systemd override below.
 
-## Install Files
+## Manual Install Files
 
 Create the socket group and add your desktop user. Log out and back in after
 this step so group membership reaches Firefox, Chrome, the GUI, and shells:
@@ -193,7 +255,7 @@ is later started without a working extension, set this value in
 require_chrome_extension = false
 ```
 
-## Enable Services
+## Manual Enable Services
 
 Verify unit syntax:
 
@@ -345,8 +407,6 @@ If policies or manifests changed, restart the affected browser.
 
 ## Current Production Limits
 
-- There is no repo-root production installer yet. This document is the manual
-  install path.
 - The repo-root daemon does not yet have a single production uninstall command.
   Removal should stay deliberate and privileged.
 - The stronger `nftables` fallback from `Docs/STRICT_MODE_TODO.md` is not

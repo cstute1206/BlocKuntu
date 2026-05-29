@@ -21,6 +21,7 @@ pub enum RepairStatus {
     AlreadyCompliant,
     Repaired,
     SkippedStopped,
+    SkippedDisabled,
 }
 
 #[derive(Debug, Clone, Serialize)]

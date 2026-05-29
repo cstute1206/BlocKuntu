@@ -36,6 +36,8 @@ pub struct DaemonApp {
     firefox_policy: FirefoxPolicyManager,
     chrome_policy: ChromePolicyManager,
     hosts: HostsManager,
+    manage_firefox_policy: bool,
+    manage_chrome_policy: bool,
     process_scan_interval: Duration,
     policy_repair_interval: Duration,
 }
@@ -71,11 +73,12 @@ impl DaemonApp {
             &args.chrome_extension_crx_url,
         );
         let hosts = HostsManager::new_with_immutable(&args.hosts, hosts_immutable_enabled(args));
-        let rpc_context = rpc_context.with_enforcement_managers(
-            firefox_policy.clone(),
-            chrome_policy.clone(),
-            hosts.clone(),
-        );
+        let rpc_context = rpc_context
+            .with_enforcement_managers(firefox_policy.clone(), chrome_policy.clone(), hosts.clone())
+            .with_browser_policy_management(
+                args.manage_firefox_policy(),
+                args.manage_chrome_policy(),
+            );
 
         Ok(Self {
             core,
@@ -83,6 +86,8 @@ impl DaemonApp {
             firefox_policy,
             chrome_policy,
             hosts,
+            manage_firefox_policy: args.manage_firefox_policy(),
+            manage_chrome_policy: args.manage_chrome_policy(),
             process_scan_interval: Duration::from_secs(args.process_scan_interval_seconds),
             policy_repair_interval: Duration::from_secs(args.policy_repair_interval_seconds),
         })
@@ -97,6 +102,9 @@ impl DaemonApp {
     }
 
     pub fn repair_firefox_policy(&self) -> Result<RepairStatus> {
+        if !self.manage_firefox_policy {
+            return Ok(RepairStatus::SkippedDisabled);
+        }
         if !self.enforcement_is_active()? {
             return Ok(RepairStatus::SkippedStopped);
         }
@@ -104,6 +112,9 @@ impl DaemonApp {
     }
 
     pub fn repair_chrome_policy(&self) -> Result<ChromePolicyRepairStatus> {
+        if !self.manage_chrome_policy {
+            return Ok(ChromePolicyRepairStatus::SkippedDisabled);
+        }
         if !self.enforcement_is_active()? {
             return Ok(ChromePolicyRepairStatus::SkippedStopped);
         }

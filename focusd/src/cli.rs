@@ -51,6 +51,12 @@ pub struct Args {
     #[arg(long, conflicts_with = "hosts_immutable")]
     pub no_hosts_immutable: bool,
     #[arg(long)]
+    pub no_browser_policy_repair: bool,
+    #[arg(long)]
+    pub no_firefox_policy_repair: bool,
+    #[arg(long)]
+    pub no_chrome_policy_repair: bool,
+    #[arg(long)]
     pub dev_bind_socket: bool,
     #[arg(long, default_value_t = 15)]
     pub extension_heartbeat_timeout_seconds: u64,
@@ -74,5 +80,13 @@ pub enum Command {
 impl Args {
     pub fn command(&self) -> Command {
         self.command.clone().unwrap_or(Command::Serve)
+    }
+
+    pub fn manage_firefox_policy(&self) -> bool {
+        !(self.no_browser_policy_repair || self.no_firefox_policy_repair)
+    }
+
+    pub fn manage_chrome_policy(&self) -> bool {
+        !(self.no_browser_policy_repair || self.no_chrome_policy_repair)
     }
 }

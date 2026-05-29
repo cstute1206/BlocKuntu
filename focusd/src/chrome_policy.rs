@@ -23,6 +23,7 @@ pub enum ChromePolicyRepairStatus {
     AlreadyCompliant,
     Repaired,
     SkippedStopped,
+    SkippedDisabled,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -417,6 +417,10 @@ fn policy_enforcement_check(status: &Value) -> HealthCheck {
         .unwrap_or("active")
         == "active";
     let policy = status.get("firefox_policy").unwrap_or(&Value::Null);
+    let managed = policy
+        .get("managed")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let compliant = bool_field(policy, "compliant");
     let private_browsing = bool_field(policy, "private_browsing_enabled");
     let private_browsing_available = bool_field(policy, "private_browsing_available");
@@ -425,6 +429,8 @@ fn policy_enforcement_check(status: &Value) -> HealthCheck {
     let detail = string_field(policy, "detail").unwrap_or("no policy detail");
     let state = if !active {
         HealthState::Warn
+    } else if !managed {
+        HealthState::Ok
     } else if compliant && private_browsing && private_browsing_available && xpi_exists {
         HealthState::Ok
     } else {
@@ -446,6 +452,10 @@ fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
         .unwrap_or("active")
         == "active";
     let policy = status.get("chrome_policy").unwrap_or(&Value::Null);
+    let managed = policy
+        .get("managed")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let compliant = bool_field(policy, "compliant");
     let force_install = bool_field(policy, "force_install_configured");
     let update_manifest = bool_field(policy, "update_manifest_compliant");
@@ -454,6 +464,8 @@ fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
     let detail = string_field(policy, "detail").unwrap_or("no Chrome policy detail");
     let state = if !active {
         HealthState::Warn
+    } else if !managed {
+        HealthState::Ok
     } else if compliant && force_install && update_manifest && override_update_url {
         HealthState::Ok
     } else {

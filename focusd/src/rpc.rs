@@ -10,9 +10,9 @@ use focus_core::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::chrome_policy::ChromePolicyManager;
+use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
 use crate::error::{DaemonError, Result};
-use crate::firefox_policy::FirefoxPolicyManager;
+use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
 
 const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
@@ -30,6 +30,8 @@ pub struct RpcContext {
     firefox_policy: Option<FirefoxPolicyManager>,
     chrome_policy: Option<ChromePolicyManager>,
     hosts: Option<HostsManager>,
+    manage_firefox_policy: bool,
+    manage_chrome_policy: bool,
 }
 
 impl RpcContext {
@@ -40,6 +42,8 @@ impl RpcContext {
             firefox_policy: None,
             chrome_policy: None,
             hosts: None,
+            manage_firefox_policy: true,
+            manage_chrome_policy: true,
         }
     }
 
@@ -57,6 +61,16 @@ impl RpcContext {
         self.firefox_policy = Some(firefox_policy);
         self.chrome_policy = Some(chrome_policy);
         self.hosts = Some(hosts);
+        self
+    }
+
+    pub fn with_browser_policy_management(
+        mut self,
+        manage_firefox_policy: bool,
+        manage_chrome_policy: bool,
+    ) -> Self {
+        self.manage_firefox_policy = manage_firefox_policy;
+        self.manage_chrome_policy = manage_chrome_policy;
         self
     }
 
@@ -339,8 +353,6 @@ fn status(context: &RpcContext) -> Result<Value> {
 }
 
 fn enforcement_status(context: &RpcContext) -> Result<Value> {
-    let firefox_policy = context.firefox_policy()?;
-    let chrome_policy = context.chrome_policy()?;
     let hosts = context.hosts()?;
     let (enforcement_state, config) = {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -350,15 +362,13 @@ fn enforcement_status(context: &RpcContext) -> Result<Value> {
     Ok(json!({
         "status": "ok",
         "enforcement_state": enforcement_state,
-        "firefox_policy": firefox_policy.status(),
-        "chrome_policy": chrome_policy.status(),
+        "firefox_policy": firefox_policy_status_json(context)?,
+        "chrome_policy": chrome_policy_status_json(context)?,
         "hosts_file": hosts.status(&config)
     }))
 }
 
 fn start_enforcement(context: &RpcContext) -> Result<Value> {
-    let firefox_policy = context.firefox_policy()?;
-    let chrome_policy = context.chrome_policy()?;
     let hosts = context.hosts()?;
     let now = Utc::now();
 
@@ -368,8 +378,8 @@ fn start_enforcement(context: &RpcContext) -> Result<Value> {
             .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_ACTIVE, now)?;
     }
 
-    let firefox_policy_repair = firefox_policy.verify_and_repair()?;
-    let chrome_policy_repair = chrome_policy.verify_and_repair()?;
+    let firefox_policy_repair = repair_firefox_policy_from_context(context)?;
+    let chrome_policy_repair = repair_chrome_policy_from_context(context)?;
     let hosts_repair = {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
         hosts.verify_and_repair(core.config())?
@@ -392,8 +402,6 @@ fn start_enforcement(context: &RpcContext) -> Result<Value> {
 }
 
 fn stop_enforcement(context: &RpcContext) -> Result<Value> {
-    let firefox_policy = context.firefox_policy()?;
-    let chrome_policy = context.chrome_policy()?;
     let hosts = context.hosts()?;
     let now = Utc::now();
 
@@ -403,8 +411,8 @@ fn stop_enforcement(context: &RpcContext) -> Result<Value> {
             .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_STOPPED, now)?;
     }
 
-    let firefox_policy_repair = firefox_policy.remove_policy()?;
-    let chrome_policy_repair = chrome_policy.remove_policy()?;
+    let firefox_policy_repair = remove_firefox_policy_from_context(context)?;
+    let chrome_policy_repair = remove_chrome_policy_from_context(context)?;
     let hosts_repair = hosts.remove_managed_block()?;
     let status = enforcement_status(context)?;
 
@@ -421,6 +429,67 @@ fn stop_enforcement(context: &RpcContext) -> Result<Value> {
     }
 
     Ok(status)
+}
+
+fn firefox_policy_status_json(context: &RpcContext) -> Result<Value> {
+    let mut status = serde_json::to_value(context.firefox_policy()?.status())?;
+    if let Some(object) = status.as_object_mut() {
+        object.insert("managed".to_string(), json!(context.manage_firefox_policy));
+        if !context.manage_firefox_policy {
+            object.insert("compliant".to_string(), json!(true));
+            object.insert(
+                "detail".to_string(),
+                json!("Firefox policy management is disabled; install and enable the extension manually"),
+            );
+        }
+    }
+    Ok(status)
+}
+
+fn chrome_policy_status_json(context: &RpcContext) -> Result<Value> {
+    let mut status = serde_json::to_value(context.chrome_policy()?.status())?;
+    if let Some(object) = status.as_object_mut() {
+        object.insert("managed".to_string(), json!(context.manage_chrome_policy));
+        if !context.manage_chrome_policy {
+            object.insert("compliant".to_string(), json!(true));
+            object.insert("force_install_configured".to_string(), json!(true));
+            object.insert("update_manifest_compliant".to_string(), json!(true));
+            object.insert("override_update_url".to_string(), json!(true));
+            object.insert(
+                "detail".to_string(),
+                json!("Chrome policy management is disabled; install and enable the extension manually"),
+            );
+        }
+    }
+    Ok(status)
+}
+
+fn repair_firefox_policy_from_context(context: &RpcContext) -> Result<RepairStatus> {
+    if !context.manage_firefox_policy {
+        return Ok(RepairStatus::SkippedDisabled);
+    }
+    context.firefox_policy()?.verify_and_repair()
+}
+
+fn repair_chrome_policy_from_context(context: &RpcContext) -> Result<ChromePolicyRepairStatus> {
+    if !context.manage_chrome_policy {
+        return Ok(ChromePolicyRepairStatus::SkippedDisabled);
+    }
+    context.chrome_policy()?.verify_and_repair()
+}
+
+fn remove_firefox_policy_from_context(context: &RpcContext) -> Result<RepairStatus> {
+    if !context.manage_firefox_policy {
+        return Ok(RepairStatus::SkippedDisabled);
+    }
+    context.firefox_policy()?.remove_policy()
+}
+
+fn remove_chrome_policy_from_context(context: &RpcContext) -> Result<ChromePolicyRepairStatus> {
+    if !context.manage_chrome_policy {
+        return Ok(ChromePolicyRepairStatus::SkippedDisabled);
+    }
+    context.chrome_policy()?.remove_policy()
 }
 
 fn config_snapshot(context: &RpcContext) -> Result<Value> {
@@ -1537,6 +1606,10 @@ mod tests {
     use focus_core::{Config, Database, FocusCore};
     use serde_json::{json, Value};
 
+    use crate::chrome_policy::ChromePolicyManager;
+    use crate::firefox_policy::FirefoxPolicyManager;
+    use crate::hosts::HostsManager;
+
     use super::{handle_payload, parse_optional_now, RpcContext};
 
     fn rpc_context() -> RpcContext {
@@ -1608,6 +1681,29 @@ mod tests {
         RpcContext::new(Arc::new(Mutex::new(core)))
     }
 
+    fn rpc_context_with_enforcement_managers(
+        manage_browser_policies: bool,
+    ) -> (tempfile::TempDir, RpcContext) {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let firefox_policy = FirefoxPolicyManager::new(
+            temp.path().join("firefox/policies.json"),
+            "blockuntu-poc@example.local",
+            temp.path().join("BlocKuntu-Signed.xpi"),
+        );
+        let chrome_policy = ChromePolicyManager::new(
+            temp.path().join("chrome/policies/managed/blockuntu.json"),
+            temp.path().join("chrome-extension-updates.xml"),
+            "odedgejjcdilkoibeljkeohekonmdfea",
+            "0.2.1",
+            "https://example.invalid/blockuntu.crx",
+        );
+        let hosts = HostsManager::new(temp.path().join("hosts"));
+        let context = rpc_context()
+            .with_enforcement_managers(firefox_policy, chrome_policy, hosts)
+            .with_browser_policy_management(manage_browser_policies, manage_browser_policies);
+        (temp, context)
+    }
+
     #[test]
     fn handles_jsonrpc_evaluate_url() {
         let context = rpc_context();
@@ -1658,6 +1754,33 @@ mod tests {
         assert_eq!(response["id"], 8);
         assert_eq!(response["result"]["decision"], "allow");
         assert_eq!(response["result"]["enforcement_state"], "stopped");
+    }
+
+    #[test]
+    fn manual_browser_extension_mode_does_not_write_browser_policies() {
+        let (temp, context) = rpc_context_with_enforcement_managers(false);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 71,
+            "method": "start_enforcement",
+            "params": {}
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["firefox_policy"]["managed"], false);
+        assert_eq!(response["result"]["chrome_policy"]["managed"], false);
+        assert_eq!(response["result"]["firefox_policy"]["compliant"], true);
+        assert_eq!(response["result"]["chrome_policy"]["compliant"], true);
+        assert!(!temp.path().join("firefox/policies.json").exists());
+        assert!(!temp
+            .path()
+            .join("chrome/policies/managed/blockuntu.json")
+            .exists());
     }
 
     #[test]
