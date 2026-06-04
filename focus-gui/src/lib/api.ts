@@ -11,6 +11,8 @@ import type {
   Rule,
   Schedule,
   SystemHealth,
+  UninstallConfirmation,
+  UninstallResult,
   UnlockResult
 } from "./types";
 
@@ -129,6 +131,14 @@ export function requestUnlock(
     request: { target, minutes, reason },
     socketPath
   });
+}
+
+export function uninstallConfirmationPhrase(): Promise<UninstallConfirmation> {
+  return invoke("uninstall_confirmation_phrase");
+}
+
+export function uninstallBlockuntu(phrase: string): Promise<UninstallResult> {
+  return invoke("uninstall_blockuntu", { phrase });
 }
 
 export function daemonRpc(method: string, params: unknown, socketPath?: string): Promise<unknown> {

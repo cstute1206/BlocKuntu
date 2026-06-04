@@ -57,6 +57,12 @@ pub struct Args {
     #[arg(long)]
     pub no_chrome_policy_repair: bool,
     #[arg(long)]
+    pub defer_browser_policy_repair_until_heartbeat: bool,
+    #[arg(long)]
+    pub defer_firefox_policy_repair_until_heartbeat: bool,
+    #[arg(long)]
+    pub defer_chrome_policy_repair_until_heartbeat: bool,
+    #[arg(long)]
     pub dev_bind_socket: bool,
     #[arg(long, default_value_t = 15)]
     pub extension_heartbeat_timeout_seconds: u64,
@@ -88,5 +94,15 @@ impl Args {
 
     pub fn manage_chrome_policy(&self) -> bool {
         !(self.no_browser_policy_repair || self.no_chrome_policy_repair)
+    }
+
+    pub fn defer_firefox_policy_repair_until_heartbeat(&self) -> bool {
+        self.defer_browser_policy_repair_until_heartbeat
+            || self.defer_firefox_policy_repair_until_heartbeat
+    }
+
+    pub fn defer_chrome_policy_repair_until_heartbeat(&self) -> bool {
+        self.defer_browser_policy_repair_until_heartbeat
+            || self.defer_chrome_policy_repair_until_heartbeat
     }
 }

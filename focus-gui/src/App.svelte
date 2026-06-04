@@ -41,6 +41,8 @@
     startEnforcement,
     stopEnforcement,
     systemHealth,
+    uninstallBlockuntu,
+    uninstallConfirmationPhrase,
     upsertAllowance,
     upsertAppRule,
     upsertSchedule,
@@ -61,11 +63,13 @@
     Schedule,
     ScheduleWindow,
     SystemHealth,
+    UninstallResult,
     UnlockResult,
     ViewId
   } from "./lib/types";
 
   type Icon = typeof LayoutDashboard;
+  type BrowserSetupState = "ok" | "warn" | "error" | "unknown";
 
   const navItems: Array<{ id: ViewId; label: string; icon: Icon }> = [
     { id: "overview", label: "Dashboard", icon: LayoutDashboard },
@@ -116,6 +120,7 @@
   let enforcementMessage: string | null = $state(null);
   let lastError: string | null = $state(null);
   let lastRefresh: string | null = $state(null);
+  let showFirstRunOverview = $state(false);
 
   let testUrl = $state("https://youtube.com/");
   let urlDecision = $state<DecisionResult | null>(null);
@@ -143,6 +148,12 @@
   let rawParams = $state("{}");
   let rawResult = $state("");
   let rawRunning = $state(false);
+  let uninstallPhrase: string | null = $state(null);
+  let uninstallPhraseLoading = $state(false);
+  let uninstallPhraseError: string | null = $state(null);
+  let uninstallPhraseInput = $state("");
+  let uninstallRunning = $state(false);
+  let uninstallResult: UninstallResult | null = $state(null);
 
   let hardRules = $derived(config?.rules.filter((rule) => rule.tier === "hard") ?? []);
   let controlledRules = $derived(
@@ -208,8 +219,33 @@
   let failingChecks = $derived(
     health?.checks.filter((check) => check.state === "error" || check.state === "warn") ?? []
   );
+  let firefoxExtensionCheck = $derived(
+    health?.checks.find((check) => check.key === "firefox_extension") ?? null
+  );
+  let chromeExtensionCheck = $derived(
+    health?.checks.find((check) => check.key === "chrome_extension") ?? null
+  );
+  let firefoxSetupState = $derived(browserSetupState(firefoxExtensionCheck));
+  let chromeSetupState = $derived(browserSetupState(chromeExtensionCheck));
+  let firefoxPolicyPending = $derived(
+    Boolean(
+      enforcement?.firefox_policy.deferred_until_heartbeat &&
+        !enforcement.firefox_policy.active_after_heartbeat
+    )
+  );
+  let chromePolicyPending = $derived(
+    Boolean(
+      enforcement?.chrome_policy.deferred_until_heartbeat &&
+        !enforcement.chrome_policy.active_after_heartbeat
+    )
+  );
+  let uninstallPhraseMatches = $derived(
+    Boolean(uninstallPhrase && uninstallPhraseInput.trim() === uninstallPhrase)
+  );
 
   onMount(() => {
+    showFirstRunOverview = !firstRunOverviewDismissed();
+    void loadUninstallPhrase();
     void refreshAll();
   });
 
@@ -372,6 +408,33 @@
       lastError = formatError(error);
     } finally {
       enforcementChanging = false;
+    }
+  }
+
+  async function loadUninstallPhrase(): Promise<void> {
+    uninstallPhraseLoading = true;
+    uninstallPhraseError = null;
+    try {
+      uninstallPhrase = (await uninstallConfirmationPhrase()).phrase;
+    } catch (error) {
+      uninstallPhrase = null;
+      uninstallPhraseError = formatError(error);
+    } finally {
+      uninstallPhraseLoading = false;
+    }
+  }
+
+  async function runUninstallBlockuntu(): Promise<void> {
+    if (!uninstallPhraseMatches) return;
+    uninstallRunning = true;
+    uninstallResult = null;
+    lastError = null;
+    try {
+      uninstallResult = await uninstallBlockuntu(uninstallPhraseInput);
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      uninstallRunning = false;
     }
   }
 
@@ -841,6 +904,35 @@
     return String(error);
   }
 
+  function firstRunOverviewDismissed(): boolean {
+    try {
+      return window.localStorage.getItem("blockuntu.firstRunOverviewDismissed") === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  function dismissFirstRunOverview(): void {
+    showFirstRunOverview = false;
+    try {
+      window.localStorage.setItem("blockuntu.firstRunOverviewDismissed", "true");
+    } catch {
+      // localStorage can be unavailable in restricted WebView profiles.
+    }
+  }
+
+  function browserSetupState(check: HealthCheck | null): BrowserSetupState {
+    if (!check) return "unknown";
+    return check.state;
+  }
+
+  function setupStateLabel(state: BrowserSetupState): string {
+    if (state === "ok") return "Connected";
+    if (state === "error") return "Needs attention";
+    if (state === "warn") return "Install extension";
+    return "Checking";
+  }
+
   function checkIcon(check: HealthCheck): Icon {
     if (check.state === "ok") return CheckCircle2;
     if (check.state === "error") return XCircle;
@@ -938,6 +1030,107 @@
     {/if}
 
     {#if activeView === "overview"}
+      {#if showFirstRunOverview}
+        <section class="setup-panel" aria-label="First run setup">
+          <div class="setup-panel-header">
+            <div class="panel-title">
+              <Shield size={18} aria-hidden="true" />
+              <h2>First Run</h2>
+            </div>
+            <button
+              class="icon-button"
+              title="Dismiss"
+              onclick={dismissFirstRunOverview}
+              disabled={!uninstallPhrase}
+            >
+              <XCircle size={17} aria-hidden="true" />
+            </button>
+          </div>
+          <div class="setup-grid">
+            <div class="setup-row" data-state={firefoxSetupState}>
+              {#if firefoxSetupState === "ok"}
+                <CheckCircle2 size={18} aria-hidden="true" />
+              {:else if firefoxSetupState === "error"}
+                <XCircle size={18} aria-hidden="true" />
+              {:else}
+                <AlertTriangle size={18} aria-hidden="true" />
+              {/if}
+              <span>Firefox extension</span>
+              <strong>{setupStateLabel(firefoxSetupState)}</strong>
+              <small>
+                {firefoxExtensionCheck?.detail ??
+                  "No heartbeat yet. Install and enable the BlocKuntu Firefox extension."}
+              </small>
+            </div>
+
+            <div class="setup-row" data-state={chromeSetupState}>
+              {#if chromeSetupState === "ok"}
+                <CheckCircle2 size={18} aria-hidden="true" />
+              {:else if chromeSetupState === "error"}
+                <XCircle size={18} aria-hidden="true" />
+              {:else}
+                <AlertTriangle size={18} aria-hidden="true" />
+              {/if}
+              <span>Chrome extension</span>
+              <strong>{setupStateLabel(chromeSetupState)}</strong>
+              <small>
+                {chromeExtensionCheck?.detail ??
+                  "No heartbeat yet. Install and enable the BlocKuntu Chrome extension."}
+              </small>
+            </div>
+
+            <div class="setup-row" data-state={firefoxPolicyPending ? "warn" : "ok"}>
+              {#if firefoxPolicyPending}
+                <AlertTriangle size={18} aria-hidden="true" />
+              {:else}
+                <CheckCircle2 size={18} aria-hidden="true" />
+              {/if}
+              <span>Firefox policy</span>
+              <strong>{firefoxPolicyPending ? "Deferred" : "Ready"}</strong>
+              <small>
+                {firefoxPolicyPending
+                  ? "Managed policy will be written after the first Firefox extension heartbeat."
+                  : (enforcement?.firefox_policy.detail ?? "Waiting for daemon status.")}
+              </small>
+            </div>
+
+            <div class="setup-row" data-state={chromePolicyPending ? "warn" : "ok"}>
+              {#if chromePolicyPending}
+                <AlertTriangle size={18} aria-hidden="true" />
+              {:else}
+                <CheckCircle2 size={18} aria-hidden="true" />
+              {/if}
+              <span>Chrome policy</span>
+              <strong>{chromePolicyPending ? "Deferred" : "Ready"}</strong>
+              <small>
+                {chromePolicyPending
+                  ? "Managed policy will be written after the first Chrome extension heartbeat."
+                  : (enforcement?.chrome_policy.detail ?? "Waiting for daemon status.")}
+              </small>
+            </div>
+
+            <div class="setup-row setup-row-wide" data-state={uninstallPhrase ? "ok" : "warn"}>
+              {#if uninstallPhrase}
+                <CheckCircle2 size={18} aria-hidden="true" />
+              {:else}
+                <AlertTriangle size={18} aria-hidden="true" />
+              {/if}
+              <span>Uninstall phrase</span>
+              <strong>{uninstallPhrase ? "Created" : "Unavailable"}</strong>
+              <small>
+                {#if uninstallPhrase}
+                  <code class="phrase-code">{uninstallPhrase}</code>
+                {:else if uninstallPhraseLoading}
+                  Creating confirmation phrase.
+                {:else}
+                  {uninstallPhraseError ?? "Confirmation phrase could not be created."}
+                {/if}
+              </small>
+            </div>
+          </div>
+        </section>
+      {/if}
+
       <section class="dashboard-grid">
         <article class="panel metric-panel">
           <div class="panel-title">
@@ -1643,6 +1836,38 @@
             <pre>{rawResult}</pre>
           {/if}
         </article>
+
+        <article class="panel">
+          <div class="panel-title">
+            <Trash2 size={18} aria-hidden="true" />
+            <h2>Uninstall</h2>
+          </div>
+          <div class="uninstall-form">
+            <label>
+              <span>Confirmation phrase</span>
+              <input
+                bind:value={uninstallPhraseInput}
+                autocomplete="off"
+                placeholder="Type the first-run uninstall phrase"
+                spellcheck="false"
+              />
+            </label>
+            <button
+              class="secondary danger-action"
+              onclick={runUninstallBlockuntu}
+              disabled={uninstallRunning || !uninstallPhraseMatches}
+            >
+              <Trash2 size={17} aria-hidden="true" />
+              <span>{uninstallRunning ? "Removing" : "Uninstall"}</span>
+            </button>
+          </div>
+          {#if uninstallPhraseError}
+            <p class="result-text danger-text">{uninstallPhraseError}</p>
+          {/if}
+          {#if uninstallResult}
+            <p class="result-text">{uninstallResult.detail}</p>
+          {/if}
+        </article>
       </section>
     {/if}
 
@@ -1936,6 +2161,91 @@
     margin-bottom: 14px;
   }
 
+  .setup-panel {
+    background: #ffffff;
+    border: 1px solid #d5ddd8;
+    border-radius: 8px;
+    margin-bottom: 14px;
+    min-width: 0;
+    padding: 16px;
+  }
+
+  .setup-panel-header {
+    align-items: start;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+  }
+
+  .setup-grid {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .setup-row {
+    align-items: center;
+    background: #f6f8f6;
+    border: 1px solid #dfe6e1;
+    border-radius: 8px;
+    display: grid;
+    gap: 8px 10px;
+    grid-template-columns: 22px minmax(120px, 0.45fr) max-content;
+    min-height: 78px;
+    padding: 10px;
+  }
+
+  .setup-row-wide {
+    grid-column: 1 / -1;
+  }
+
+  .setup-row span {
+    color: #2a342f;
+    font-weight: 800;
+  }
+
+  .setup-row strong {
+    justify-self: end;
+    white-space: nowrap;
+  }
+
+  .setup-row small {
+    color: #68766f;
+    grid-column: 2 / -1;
+    line-height: 1.35;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .phrase-code {
+    background: #e8eee9;
+    border-radius: 6px;
+    color: #17211d;
+    display: block;
+    font-size: 0.86rem;
+    font-weight: 800;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    padding: 6px 8px;
+  }
+
+  .setup-row[data-state="ok"] :global(svg),
+  .setup-row[data-state="ok"] strong {
+    color: #1f8f68;
+  }
+
+  .setup-row[data-state="warn"] :global(svg),
+  .setup-row[data-state="warn"] strong,
+  .setup-row[data-state="unknown"] :global(svg),
+  .setup-row[data-state="unknown"] strong {
+    color: #b87912;
+  }
+
+  .setup-row[data-state="error"] :global(svg),
+  .setup-row[data-state="error"] strong {
+    color: #c94f4f;
+  }
+
   .metric-panel {
     display: grid;
     gap: 8px;
@@ -1993,6 +2303,10 @@
   .result-text {
     color: #145c3d;
     margin-top: 12px;
+  }
+
+  .danger-text {
+    color: #8b1d1d;
   }
 
   .split-view {
@@ -2254,6 +2568,13 @@
     color: #7b2727;
   }
 
+  .uninstall-form {
+    align-items: end;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
   .health-row {
     border-bottom: 1px solid #e2e8e4;
     grid-template-columns: 22px 170px 70px minmax(0, 1fr);
@@ -2329,7 +2650,9 @@
     .dashboard-grid,
     .content-grid,
     .split-view,
-    .allowance-editor {
+    .setup-grid,
+    .allowance-editor,
+    .uninstall-form {
       grid-template-columns: 1fr;
     }
 

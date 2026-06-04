@@ -1,8 +1,10 @@
 # BlocKuntu Production Installation
 
 This document describes a manual production-style install on a new Linux device.
-It installs the daemon, Native Messaging host, browser policy files, systemd
-units, and the Firefox extension artifact into system paths.
+It installs the daemon, Native Messaging host, systemd units, and the Tauri GUI
+into system paths. Browser extensions are installed manually by the user.
+Browser managed policy is not written at install time; the daemon defers it
+until the matching extension sends its first heartbeat through Native Messaging.
 
 This is not yet a polished installer. Read the commands before running them:
 they write to `/usr/local`, `/etc`, `/var/lib`, `/run`, and browser managed
@@ -18,6 +20,20 @@ Expected environment:
 - Firefox installed as a normal system package, not only as Snap or Flatpak.
 - Google Chrome or Chromium only if you want Chrome enforcement.
 
+On Ubuntu, check the Firefox packaging before testing browser integration:
+
+```bash
+which firefox || true
+readlink -f "$(command -v firefox)" 2>/dev/null || true
+snap list firefox 2>/dev/null || true
+flatpak info org.mozilla.firefox 2>/dev/null || true
+```
+
+BlocKuntu's normal Firefox integration expects an unconfined Firefox that can
+read host policy and Native Messaging locations. Snap and Flatpak Firefox are
+strictly confined and may not see `/etc/firefox/policies` or
+`/usr/lib/mozilla/native-messaging-hosts` in the same way.
+
 Runtime layout:
 
 | Purpose | Path |
@@ -27,14 +43,30 @@ Runtime layout:
 | Config | `/etc/blockuntu/config.toml` |
 | SQLite database | `/var/lib/blockuntu/blockuntu.sqlite3` |
 | Daemon socket | `/run/blockuntu/blockuntud.sock` |
-| Firefox policy | `/etc/firefox/policies/policies.json` |
-| Firefox signed XPI | `/usr/local/share/blockuntu/BlocKuntu-Signed.xpi` |
-| Chrome policy | `/etc/opt/chrome/policies/managed/blockuntu.json` |
-| Chrome update manifest | `/usr/local/share/blockuntu/chrome-extension-updates.xml` |
 | Hosts fallback | `/etc/hosts` |
 | Firefox Native Messaging manifest | `/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json` |
 | Chrome Native Messaging manifest | `/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json` |
 | Chromium Native Messaging manifest | `/etc/chromium/native-messaging-hosts/blockuntu_native.json` |
+
+Firefox enterprise policy locations on Linux are package-dependent. Firefox
+checks `distribution/policies.json` under its installation directory, and
+system-wide policy can also be placed at
+`/etc/firefox/policies/policies.json`. If `/etc/firefox` does not exist on a
+normal system Firefox install, creating it is fine:
+
+```bash
+sudo install -d -m 0755 /etc/firefox/policies
+```
+
+For Flatpak or Snap Firefox, treat policy and Native Messaging support as a
+separate compatibility target. Prefer a Mozilla `.deb`/tarball or another
+unconfined system Firefox package for BlocKuntu production testing.
+
+The scripted installer and Debian package start the daemon with
+`--defer-browser-policy-repair-until-heartbeat`. That means they do not create
+`/etc/firefox/policies/policies.json` or Chrome managed policy at install time.
+This is intentional: install and enable the browser extension manually first,
+then the first heartbeat activates managed browser policy repair.
 
 ## Install Prerequisites
 
@@ -101,10 +133,13 @@ By default, the script:
 - Installs missing build/runtime prerequisites through the system package
   manager.
 - Installs the GUI desktop launcher as `/usr/share/applications/blockuntu.desktop`.
-- Installs `/etc/blockuntu/config.toml` if it does not already exist.
+- Installs a minimal `/etc/blockuntu/config.toml` if it does not already exist.
+  It contains strict browser enforcement only; site lists, schedules,
+  allowances, and user app rules start empty.
 - Installs systemd units and the Native Messaging manifests.
 - Adds the current desktop user to the `blockuntu` socket group.
-- Starts the daemon with browser policy repair disabled.
+- Starts the daemon with browser policy repair deferred until the first
+  extension heartbeat.
 - Enables and starts `blockuntu.socket`, `blockuntu.service`,
   `blockuntu-watchdog.service`, and `blockuntu-hosts.path`.
 
@@ -112,9 +147,13 @@ Browser extensions are intentionally not installed or force-installed by this
 script. The user must install and enable the Firefox and/or Chrome extension
 manually. The script installs the Native Messaging manifests so the manually
 installed extension can reach `/run/blockuntu/blockuntud.sock` through
-`blockuntu-native`. Existing browser managed-policy files are left untouched;
-remove old policy files manually if you are converting a previous force-install
-setup to manual extension mode.
+`blockuntu-native`. Existing browser managed-policy files are left untouched.
+
+Because browser policy repair is deferred, a missing
+`/etc/firefox/policies/policies.json` or Chrome
+`/etc/opt/chrome/policies/managed/blockuntu.json` is expected immediately after
+install. The daemon writes the matching policy after the first extension
+heartbeat.
 
 Installer options:
 
@@ -128,8 +167,78 @@ Installer options:
 ./scripts/install-production.sh --user christian
 ```
 
+Uninstall the scripted production install:
+
+```bash
+./scripts/uninstall-production.sh
+```
+
+Uninstall options:
+
+```bash
+./scripts/uninstall-production.sh --help
+./scripts/uninstall-production.sh --purge-data
+./scripts/uninstall-production.sh --remove-browser-policies
+./scripts/uninstall-production.sh --remove-group
+./scripts/uninstall-production.sh --yes
+```
+
 After the script completes, log out and back in so the desktop session receives
 the new `blockuntu` group membership.
+
+## Debian Package Build
+
+Build a complete Debian package from the repository root:
+
+```bash
+./scripts/package-deb.sh
+```
+
+The package is written to `target/debian`, for example:
+
+```bash
+target/debian/blockuntu_0.1.0-3_$(dpkg --print-architecture).deb
+```
+
+On a target Ubuntu/Debian machine, install it with:
+
+```bash
+sudo apt install ./target/debian/blockuntu_0.1.0-3_$(dpkg --print-architecture).deb
+```
+
+Use `apt install ./...deb`, not `dpkg -i`, for normal installs. `dpkg -i`
+only unpacks the local package and leaves it unconfigured when dependencies are
+missing. If you already ran `dpkg -i` and saw dependency errors, recover with:
+
+```bash
+sudo apt install -f
+```
+
+The build machine needs `node`, `npm`, `rustc`, `cargo`, and the Tauri build
+libraries. The target machine does not need those build tools; it only needs
+the runtime dependencies declared by the package.
+
+The `.deb` installs:
+
+- `blockuntud`, `blockuntu-native`, and `blockuntu-gui`
+- systemd units
+- Native Messaging manifests
+- the GUI desktop launcher and icons
+- a minimal config with only strict browser enforcement enabled
+- local extension artifacts used later as managed-policy install sources
+
+It does not install or enable browser extensions inside Firefox or Chrome, and
+it does not create browser policy files during package installation. Add the
+desktop user to the socket group after package install:
+
+```bash
+sudo usermod -aG blockuntu "$USER"
+```
+
+Then log out and back in, open the GUI once for the first-run overview, and
+store the uninstall phrase shown there. Install and enable the browser
+extension manually, then restart the browser. The daemon writes the matching
+managed policy after the first heartbeat.
 
 ## Manual Build And Install
 
@@ -203,7 +312,7 @@ sudo install -Dm755 focusd/target/release/blockuntud \
 sudo install -Dm755 native-host/target/release/blockuntu-native \
   /usr/local/bin/blockuntu-native
 
-sudo install -Dm644 examples/blockuntu.toml \
+sudo install -Dm644 packaging/deb/blockuntu.toml \
   /etc/blockuntu/config.toml
 sudo install -Dm644 browser-extension-firefox/BlocKuntu-Signed.xpi \
   /usr/local/share/blockuntu/BlocKuntu-Signed.xpi
@@ -232,14 +341,15 @@ sudo install -Dm644 packaging/systemd/blockuntu-hosts.service \
 ```
 
 Add a production path override. This avoids the daemon using the development
-default XPI path from the source tree.
+default XPI path from the source tree and defers browser policy repair until
+the first browser-extension heartbeat.
 
 ```bash
 sudo install -d -m 0755 /etc/systemd/system/blockuntu.service.d
 sudo tee /etc/systemd/system/blockuntu.service.d/10-production-paths.conf >/dev/null <<'EOF'
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/blockuntud --extension-xpi /usr/local/share/blockuntu/BlocKuntu-Signed.xpi --chrome-extension-crx-url https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download serve
+ExecStart=/usr/local/bin/blockuntud --extension-xpi /usr/local/share/blockuntu/BlocKuntu-Signed.xpi --chrome-extension-crx-url https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download --defer-browser-policy-repair-until-heartbeat serve
 EOF
 ```
 
@@ -319,7 +429,8 @@ printf '%s' '{"jsonrpc":"2.0","id":2,"method":"enforcement_status","params":{}}'
   | jq .
 ```
 
-Verify Firefox policy:
+Before the first extension heartbeat, missing browser policy files are expected.
+After the first Firefox heartbeat, verify Firefox policy:
 
 ```bash
 sudo test -f /etc/firefox/policies/policies.json
@@ -327,9 +438,9 @@ sudo jq . /etc/firefox/policies/policies.json
 ```
 
 In Firefox, open `about:policies` and confirm that the BlocKuntu extension is
-force-installed. Restart Firefox after installing or changing policy files.
+force-installed. Restart Firefox after the policy appears.
 
-Verify Chrome policy if Chrome enforcement is enabled:
+After the first Chrome heartbeat, verify Chrome policy:
 
 ```bash
 sudo test -f /etc/opt/chrome/policies/managed/blockuntu.json
@@ -338,8 +449,7 @@ sudo test -f /usr/local/share/blockuntu/chrome-extension-updates.xml
 ```
 
 In Chrome, open `chrome://policy`, reload policies, and confirm that the
-BlocKuntu extension is force-installed. Restart Chrome after installing or
-changing policy files.
+BlocKuntu extension is force-installed. Restart Chrome after the policy appears.
 
 Verify hosts fallback:
 
@@ -356,11 +466,12 @@ immutable flag when it manages the default `/etc/hosts` path.
 After the service is active and your user has re-logged in:
 
 1. Restart Firefox.
-2. Open `about:addons` and confirm the BlocKuntu extension is installed by
-   policy.
-3. Navigate to a configured hard-blocked domain such as `https://reddit.com/`.
-4. Check daemon status again and confirm the Firefox extension heartbeat becomes
+2. Install and enable the BlocKuntu extension manually if it is not present.
+3. Check daemon status again and confirm the Firefox extension heartbeat becomes
    recent.
+4. Confirm `/etc/firefox/policies/policies.json` appears after that heartbeat.
+5. Add a site list in the GUI, then navigate to a configured hard-blocked
+   domain.
 
 For Chrome, repeat the same check with `chrome://extensions` and
 `chrome://policy`.
@@ -405,12 +516,55 @@ sudo systemctl restart blockuntu.service
 
 If policies or manifests changed, restart the affected browser.
 
+## Uninstall
+
+For a Debian package install, use the GUI Admin uninstall action and type the
+first-run uninstall phrase exactly. The GUI uses `pkexec` to run:
+
+```bash
+dpkg --purge blockuntu
+```
+
+Package removal stops the BlocKuntu systemd units, removes the managed
+`/etc/hosts` block, removes BlocKuntu-owned browser policies, and purges the
+package config/data paths.
+
+The scripted uninstall removes the production-style system install:
+
+```bash
+./scripts/uninstall-production.sh
+```
+
+By default it removes:
+
+- systemd units and drop-ins
+- `/usr/local/bin/blockuntud`
+- `/usr/local/bin/blockuntu-native`
+- `/usr/local/bin/blockuntu-gui`
+- system Native Messaging manifests
+- GUI launcher and icons
+- `/run/blockuntu`
+- the BlocKuntu managed block from `/etc/hosts`
+
+By default it preserves:
+
+- `/etc/blockuntu`
+- `/var/lib/blockuntu`
+- browser policy files
+- the `blockuntu` group
+
+Use explicit flags for destructive cleanup:
+
+```bash
+./scripts/uninstall-production.sh --purge-data
+./scripts/uninstall-production.sh --remove-browser-policies
+./scripts/uninstall-production.sh --remove-group
+```
+
 ## Current Production Limits
 
-- The repo-root daemon does not yet have a single production uninstall command.
-  Removal should stay deliberate and privileged.
-- The stronger `nftables` fallback from `Docs/STRICT_MODE_TODO.md` is not
-  installed by this procedure.
+- The stronger `nftables` fallback from `Docs/TODO.md` is not installed by this
+  procedure.
 - A user with unrestricted `sudo` can still remove or alter local enforcement.
   The goal of this install is to prevent easy user-level bypasses, not to defeat
   root access.

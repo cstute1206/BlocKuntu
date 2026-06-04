@@ -1,0 +1,6 @@
+[strict_mode]
+require_firefox_extension = true
+require_chrome_extension = true
+kill_supported_browser_if_extension_stale = true
+block_unsupported_browsers = true
+grace_seconds = 30

@@ -217,6 +217,11 @@ Production uses:
 /etc/firefox/policies/policies.json
 ```
 
+Production installers can defer Firefox and Chrome policy repair until the
+matching extension sends its first Native Messaging heartbeat. This lets the
+user install and enable the extension manually first, then makes the daemon
+write managed policy once the integration is proven alive.
+
 ### Hosts Fallback
 
 `focusd` renders a managed block in the hosts file for enabled Tier 1 domain
@@ -321,7 +326,7 @@ and its required extension heartbeat is missing or stale beyond the configured
 grace period, `focusd` terminates that browser and records a
 `browser_killed_extension_stale` event. The default grace period is 30 seconds.
 The stronger network fallback remains future work; see
-`Docs/STRICT_MODE_TODO.md`.
+`Docs/TODO.md`.
 
 ## Development Connections
 
@@ -432,10 +437,10 @@ GUI Config page
 
 ```text
 focusd startup and repair loop
-  -> verify Firefox policy
-  -> repair policy if missing or changed
-  -> verify Chrome policy and local update manifest
-  -> repair Chrome policy/update manifest if missing or changed
+  -> verify Firefox policy, or defer until first heartbeat
+  -> repair policy if missing or changed after policy repair is active
+  -> verify Chrome policy and local update manifest, or defer until first heartbeat
+  -> repair Chrome policy/update manifest if missing or changed after policy repair is active
   -> verify managed hosts block
   -> repair hosts block if missing or changed
 ```
@@ -446,9 +451,10 @@ The architecture is in place, but a few pieces should be completed before a real
 locked-down deployment:
 
 - `focus-cli` is not implemented yet.
-- There is no single privileged installer/uninstaller.
+- Production install, uninstall, and initial `.deb` packaging exist, but the
+  `.deb` still needs clean-VM acceptance testing.
 - Production Firefox XPI signing/installability needs final verification for
   the target Firefox channel.
 - The watchdog behavior needs disposable-machine validation after unit install.
 - Full root-path integration tests are still missing.
-- GUI production packaging and update flow need final packaging decisions.
+- GUI update flow needs final packaging decisions.

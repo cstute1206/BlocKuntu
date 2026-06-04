@@ -1,5 +1,6 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -29,6 +30,8 @@ const CHROME_SYSTEM_NATIVE_HOST_MANIFEST: &str =
 const CHROMIUM_SYSTEM_NATIVE_HOST_MANIFEST: &str =
     "/etc/chromium/native-messaging-hosts/blockuntu_native.json";
 const UNSUPPORTED_BROWSER_RULE_ID: &str = "unsupported-browsers-hard";
+const UNINSTALL_PHRASE_FILE: &str = "uninstall-confirmation.txt";
+const DEBIAN_PACKAGE_NAME: &str = "blockuntu";
 
 #[derive(Debug, Error)]
 enum GuiError {
@@ -40,6 +43,14 @@ enum GuiError {
     Rpc(String),
     #[error("daemon returned an invalid response")]
     InvalidRpcResponse,
+    #[error("HOME is not set; cannot store the uninstall confirmation phrase")]
+    HomeNotSet,
+    #[error("uninstall confirmation phrase does not match")]
+    InvalidUninstallPhrase,
+    #[error("GUI uninstall requires pkexec, but pkexec was not found")]
+    MissingPkexec,
+    #[error("uninstall command failed: {0}")]
+    UninstallCommand(String),
 }
 
 impl Serialize for GuiError {
@@ -90,6 +101,17 @@ struct UnlockRequest {
     target: String,
     minutes: u32,
     reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UninstallConfirmation {
+    phrase: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UninstallResult {
+    status: String,
+    detail: String,
 }
 
 #[tauri::command]
@@ -160,6 +182,51 @@ fn request_unlock(request: UnlockRequest, socket_path: Option<String>) -> Result
 }
 
 #[tauri::command]
+fn uninstall_confirmation_phrase() -> Result<UninstallConfirmation, GuiError> {
+    Ok(UninstallConfirmation {
+        phrase: load_or_create_uninstall_phrase()?,
+    })
+}
+
+#[tauri::command]
+fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
+    let expected = load_or_create_uninstall_phrase()?;
+    if phrase.trim() != expected {
+        return Err(GuiError::InvalidUninstallPhrase);
+    }
+
+    if !debian_package_installed()? {
+        return Err(GuiError::UninstallCommand(
+            "Debian package blockuntu is not installed on this system".to_string(),
+        ));
+    }
+
+    let pkexec =
+        command_path(&["/usr/bin/pkexec", "/bin/pkexec"]).ok_or(GuiError::MissingPkexec)?;
+    let dpkg = command_path(&["/usr/bin/dpkg", "/bin/dpkg"]).ok_or_else(|| {
+        GuiError::UninstallCommand("dpkg was not found on this system".to_string())
+    })?;
+    let output = Command::new(pkexec)
+        .arg(dpkg)
+        .args(["--purge", DEBIAN_PACKAGE_NAME])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(GuiError::UninstallCommand(command_failure_detail(
+            "dpkg --purge blockuntu",
+            &output,
+        )));
+    }
+
+    Ok(UninstallResult {
+        status: "ok".to_string(),
+        detail:
+            "BlocKuntu package removal completed. Close this window after reviewing the result."
+                .to_string(),
+    })
+}
+
+#[tauri::command]
 fn system_health(socket_path: Option<String>) -> SystemHealth {
     let socket = resolve_socket_path(socket_path.as_deref());
     let using_dev_socket = socket == DEV_SOCKET_PATH;
@@ -227,6 +294,111 @@ fn resolve_socket_path(socket_path: Option<&str>) -> String {
     } else {
         DEFAULT_SOCKET_PATH.to_string()
     }
+}
+
+fn load_or_create_uninstall_phrase() -> Result<String, GuiError> {
+    let path = uninstall_phrase_path()?;
+    match fs::read_to_string(&path) {
+        Ok(contents) => {
+            let phrase = contents.trim().to_string();
+            if phrase.is_empty() {
+                write_uninstall_phrase(&path)
+            } else {
+                Ok(phrase)
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => write_uninstall_phrase(&path),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn write_uninstall_phrase(path: &Path) -> Result<String, GuiError> {
+    let phrase = generate_uninstall_phrase()?;
+    let parent = path.parent().ok_or_else(|| {
+        GuiError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("uninstall phrase path has no parent: {}", path.display()),
+        ))
+    })?;
+
+    fs::create_dir_all(parent)?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(phrase.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(phrase)
+}
+
+fn uninstall_phrase_path() -> Result<PathBuf, GuiError> {
+    Ok(blockuntu_data_dir()?.join(UNINSTALL_PHRASE_FILE))
+}
+
+fn blockuntu_data_dir() -> Result<PathBuf, GuiError> {
+    if let Some(path) = std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return Ok(path.join("blockuntu"));
+    }
+
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|home| home.join(".local/share/blockuntu"))
+        .ok_or(GuiError::HomeNotSet)
+}
+
+fn generate_uninstall_phrase() -> Result<String, GuiError> {
+    let mut bytes = [0_u8; 24];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let hex = bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<String>();
+    let chunks = hex
+        .as_bytes()
+        .chunks(8)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("-");
+    Ok(format!("BLOCKUNTU-UNINSTALL-{chunks}"))
+}
+
+fn debian_package_installed() -> Result<bool, GuiError> {
+    let Some(dpkg_query) = command_path(&["/usr/bin/dpkg-query", "/bin/dpkg-query"]) else {
+        return Ok(false);
+    };
+    let output = Command::new(dpkg_query)
+        .args(["-W", "-f=${db:Status-Abbrev}", DEBIAN_PACKAGE_NAME])
+        .output()?;
+    Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).starts_with("ii"))
+}
+
+fn command_path(candidates: &[&str]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+}
+
+fn command_failure_detail(command: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        "no command output".to_string()
+    };
+    format!("{command} exited with {}: {detail}", output.status)
 }
 
 fn call_daemon(socket_path: &str, method: &str, params: Value) -> Result<Value, GuiError> {
@@ -421,6 +593,8 @@ fn policy_enforcement_check(status: &Value) -> HealthCheck {
         .get("managed")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let deferred = bool_field(policy, "deferred_until_heartbeat");
+    let active_after_heartbeat = bool_field(policy, "active_after_heartbeat");
     let compliant = bool_field(policy, "compliant");
     let private_browsing = bool_field(policy, "private_browsing_enabled");
     let private_browsing_available = bool_field(policy, "private_browsing_available");
@@ -431,6 +605,8 @@ fn policy_enforcement_check(status: &Value) -> HealthCheck {
         HealthState::Warn
     } else if !managed {
         HealthState::Ok
+    } else if deferred && !active_after_heartbeat {
+        HealthState::Warn
     } else if compliant && private_browsing && private_browsing_available && xpi_exists {
         HealthState::Ok
     } else {
@@ -456,6 +632,8 @@ fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
         .get("managed")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let deferred = bool_field(policy, "deferred_until_heartbeat");
+    let active_after_heartbeat = bool_field(policy, "active_after_heartbeat");
     let compliant = bool_field(policy, "compliant");
     let force_install = bool_field(policy, "force_install_configured");
     let update_manifest = bool_field(policy, "update_manifest_compliant");
@@ -466,6 +644,8 @@ fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
         HealthState::Warn
     } else if !managed {
         HealthState::Ok
+    } else if deferred && !active_after_heartbeat {
+        HealthState::Warn
     } else if compliant && force_install && update_manifest && override_update_url {
         HealthState::Ok
     } else {
@@ -743,6 +923,8 @@ pub fn run() {
             recent_events,
             evaluate_url,
             request_unlock,
+            uninstall_confirmation_phrase,
+            uninstall_blockuntu,
             system_health
         ])
         .run(tauri::generate_context!())

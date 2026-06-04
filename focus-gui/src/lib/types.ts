@@ -127,6 +127,9 @@ export interface FirefoxPolicyStatus {
   policy_exists: boolean;
   valid_json: boolean;
   compliant: boolean;
+  managed?: boolean;
+  deferred_until_heartbeat?: boolean;
+  active_after_heartbeat?: boolean;
   private_browsing_enabled: boolean;
   private_browsing_available: boolean;
   install_url?: string | null;
@@ -144,6 +147,9 @@ export interface ChromePolicyStatus {
   update_manifest_exists: boolean;
   valid_json: boolean;
   compliant: boolean;
+  managed?: boolean;
+  deferred_until_heartbeat?: boolean;
+  active_after_heartbeat?: boolean;
   update_manifest_compliant: boolean;
   force_install_configured: boolean;
   override_update_url: boolean;
@@ -188,4 +194,13 @@ export interface UnlockResult {
   reason: string;
   started_at: string;
   expires_at: string;
+}
+
+export interface UninstallConfirmation {
+  phrase: string;
+}
+
+export interface UninstallResult {
+  status: string;
+  detail: string;
 }

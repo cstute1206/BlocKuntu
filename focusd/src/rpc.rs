@@ -32,6 +32,8 @@ pub struct RpcContext {
     hosts: Option<HostsManager>,
     manage_firefox_policy: bool,
     manage_chrome_policy: bool,
+    defer_firefox_policy_repair_until_heartbeat: bool,
+    defer_chrome_policy_repair_until_heartbeat: bool,
 }
 
 impl RpcContext {
@@ -44,6 +46,8 @@ impl RpcContext {
             hosts: None,
             manage_firefox_policy: true,
             manage_chrome_policy: true,
+            defer_firefox_policy_repair_until_heartbeat: false,
+            defer_chrome_policy_repair_until_heartbeat: false,
         }
     }
 
@@ -71,6 +75,18 @@ impl RpcContext {
     ) -> Self {
         self.manage_firefox_policy = manage_firefox_policy;
         self.manage_chrome_policy = manage_chrome_policy;
+        self
+    }
+
+    pub fn with_deferred_browser_policy_repair(
+        mut self,
+        defer_firefox_policy_repair_until_heartbeat: bool,
+        defer_chrome_policy_repair_until_heartbeat: bool,
+    ) -> Self {
+        self.defer_firefox_policy_repair_until_heartbeat =
+            defer_firefox_policy_repair_until_heartbeat;
+        self.defer_chrome_policy_repair_until_heartbeat =
+            defer_chrome_policy_repair_until_heartbeat;
         self
     }
 
@@ -433,13 +449,26 @@ fn stop_enforcement(context: &RpcContext) -> Result<Value> {
 
 fn firefox_policy_status_json(context: &RpcContext) -> Result<Value> {
     let mut status = serde_json::to_value(context.firefox_policy()?.status())?;
+    let heartbeat_seen = has_extension_heartbeat(context, FIREFOX_EXTENSION_HEARTBEAT_COMPONENT)?;
+    let deferred = context.defer_firefox_policy_repair_until_heartbeat && !heartbeat_seen;
     if let Some(object) = status.as_object_mut() {
         object.insert("managed".to_string(), json!(context.manage_firefox_policy));
+        object.insert(
+            "deferred_until_heartbeat".to_string(),
+            json!(context.defer_firefox_policy_repair_until_heartbeat),
+        );
+        object.insert("active_after_heartbeat".to_string(), json!(heartbeat_seen));
         if !context.manage_firefox_policy {
             object.insert("compliant".to_string(), json!(true));
             object.insert(
                 "detail".to_string(),
                 json!("Firefox policy management is disabled; install and enable the extension manually"),
+            );
+        } else if deferred {
+            object.insert("compliant".to_string(), json!(true));
+            object.insert(
+                "detail".to_string(),
+                json!("Firefox policy repair is deferred until the first extension heartbeat"),
             );
         }
     }
@@ -448,8 +477,15 @@ fn firefox_policy_status_json(context: &RpcContext) -> Result<Value> {
 
 fn chrome_policy_status_json(context: &RpcContext) -> Result<Value> {
     let mut status = serde_json::to_value(context.chrome_policy()?.status())?;
+    let heartbeat_seen = has_extension_heartbeat(context, CHROME_EXTENSION_HEARTBEAT_COMPONENT)?;
+    let deferred = context.defer_chrome_policy_repair_until_heartbeat && !heartbeat_seen;
     if let Some(object) = status.as_object_mut() {
         object.insert("managed".to_string(), json!(context.manage_chrome_policy));
+        object.insert(
+            "deferred_until_heartbeat".to_string(),
+            json!(context.defer_chrome_policy_repair_until_heartbeat),
+        );
+        object.insert("active_after_heartbeat".to_string(), json!(heartbeat_seen));
         if !context.manage_chrome_policy {
             object.insert("compliant".to_string(), json!(true));
             object.insert("force_install_configured".to_string(), json!(true));
@@ -458,6 +494,15 @@ fn chrome_policy_status_json(context: &RpcContext) -> Result<Value> {
             object.insert(
                 "detail".to_string(),
                 json!("Chrome policy management is disabled; install and enable the extension manually"),
+            );
+        } else if deferred {
+            object.insert("compliant".to_string(), json!(true));
+            object.insert("force_install_configured".to_string(), json!(true));
+            object.insert("update_manifest_compliant".to_string(), json!(true));
+            object.insert("override_update_url".to_string(), json!(true));
+            object.insert(
+                "detail".to_string(),
+                json!("Chrome policy repair is deferred until the first extension heartbeat"),
             );
         }
     }
@@ -468,12 +513,22 @@ fn repair_firefox_policy_from_context(context: &RpcContext) -> Result<RepairStat
     if !context.manage_firefox_policy {
         return Ok(RepairStatus::SkippedDisabled);
     }
+    if context.defer_firefox_policy_repair_until_heartbeat
+        && !has_extension_heartbeat(context, FIREFOX_EXTENSION_HEARTBEAT_COMPONENT)?
+    {
+        return Ok(RepairStatus::SkippedDeferred);
+    }
     context.firefox_policy()?.verify_and_repair()
 }
 
 fn repair_chrome_policy_from_context(context: &RpcContext) -> Result<ChromePolicyRepairStatus> {
     if !context.manage_chrome_policy {
         return Ok(ChromePolicyRepairStatus::SkippedDisabled);
+    }
+    if context.defer_chrome_policy_repair_until_heartbeat
+        && !has_extension_heartbeat(context, CHROME_EXTENSION_HEARTBEAT_COMPONENT)?
+    {
+        return Ok(ChromePolicyRepairStatus::SkippedDeferred);
     }
     context.chrome_policy()?.verify_and_repair()
 }
@@ -490,6 +545,38 @@ fn remove_chrome_policy_from_context(context: &RpcContext) -> Result<ChromePolic
         return Ok(ChromePolicyRepairStatus::SkippedDisabled);
     }
     context.chrome_policy()?.remove_policy()
+}
+
+fn has_extension_heartbeat(context: &RpcContext, component: &str) -> Result<bool> {
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    Ok(core.database().heartbeat(component)?.is_some())
+}
+
+fn repair_deferred_policy_after_heartbeat(context: &RpcContext, component: &str) -> Result<Value> {
+    {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        if !enforcement_active_from_core(&core)? {
+            return Ok(json!({ "skipped": "enforcement_stopped" }));
+        }
+    }
+
+    match component {
+        FIREFOX_EXTENSION_HEARTBEAT_COMPONENT
+            if context.manage_firefox_policy
+                && context.defer_firefox_policy_repair_until_heartbeat =>
+        {
+            let status = context.firefox_policy()?.verify_and_repair()?;
+            Ok(json!({ "firefox_policy": format!("{status:?}") }))
+        }
+        CHROME_EXTENSION_HEARTBEAT_COMPONENT
+            if context.manage_chrome_policy
+                && context.defer_chrome_policy_repair_until_heartbeat =>
+        {
+            let status = context.chrome_policy()?.verify_and_repair()?;
+            Ok(json!({ "chrome_policy": format!("{status:?}") }))
+        }
+        _ => Ok(json!({})),
+    }
 }
 
 fn config_snapshot(context: &RpcContext) -> Result<Value> {
@@ -971,7 +1058,10 @@ fn extension_heartbeat_method(
         Some(&details.to_string()),
         now.with_timezone(&Utc),
     )?;
-    Ok(json!({ "status": "ok" }))
+    drop(core);
+
+    let policy_repair = repair_deferred_policy_after_heartbeat(context, component)?;
+    Ok(json!({ "status": "ok", "policy_repair": policy_repair }))
 }
 
 fn extension_status_method(context: &RpcContext, params: ExtensionStatusParams) -> Result<Value> {
@@ -1781,6 +1871,94 @@ mod tests {
             .path()
             .join("chrome/policies/managed/blockuntu.json")
             .exists());
+    }
+
+    #[test]
+    fn deferred_browser_policy_repair_waits_for_first_heartbeat() {
+        let (temp, context) = rpc_context_with_enforcement_managers(true);
+        let context = context.with_deferred_browser_policy_repair(true, true);
+        let status_request = json!({
+            "jsonrpc": "2.0",
+            "id": 72,
+            "method": "enforcement_status",
+            "params": {}
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&status_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(
+            response["result"]["firefox_policy"]["deferred_until_heartbeat"],
+            true
+        );
+        assert_eq!(
+            response["result"]["firefox_policy"]["active_after_heartbeat"],
+            false
+        );
+        assert_eq!(
+            response["result"]["chrome_policy"]["deferred_until_heartbeat"],
+            true
+        );
+        assert_eq!(
+            response["result"]["chrome_policy"]["active_after_heartbeat"],
+            false
+        );
+        assert!(!temp.path().join("firefox/policies.json").exists());
+        assert!(!temp
+            .path()
+            .join("chrome/policies/managed/blockuntu.json")
+            .exists());
+
+        let firefox_heartbeat = json!({
+            "jsonrpc": "2.0",
+            "id": 73,
+            "method": "extension_heartbeat",
+            "params": {
+                "component": "firefox_extension",
+                "browser": "firefox",
+                "extension_id": "blockuntu-poc@example.local",
+                "extension_version": "0.1.0"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&firefox_heartbeat).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert!(temp.path().join("firefox/policies.json").exists());
+        assert!(!temp
+            .path()
+            .join("chrome/policies/managed/blockuntu.json")
+            .exists());
+
+        let chrome_heartbeat = json!({
+            "jsonrpc": "2.0",
+            "id": 74,
+            "method": "extension_heartbeat",
+            "params": {
+                "component": "chrome_extension",
+                "browser": "chrome",
+                "extension_id": "odedgejjcdilkoibeljkeohekonmdfea",
+                "extension_version": "0.2.1"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&chrome_heartbeat).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert!(temp
+            .path()
+            .join("chrome/policies/managed/blockuntu.json")
+            .exists());
+        assert!(temp.path().join("chrome-extension-updates.xml").exists());
     }
 
     #[test]

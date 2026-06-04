@@ -420,7 +420,7 @@ Build the GUI:
 ```bash
 cd focus-gui
 npm install
-npm run tauri -- build
+npm run tauri -- build --no-bundle
 ```
 
 ## Production Manual Install Target
@@ -443,7 +443,7 @@ Install binaries and configuration:
 ```bash
 sudo install -Dm755 focusd/target/release/blockuntud /usr/local/bin/blockuntud
 sudo install -Dm755 native-host/target/release/blockuntu-native /usr/local/bin/blockuntu-native
-sudo install -Dm644 examples/blockuntu.toml /etc/blockuntu/config.toml
+sudo install -Dm644 packaging/deb/blockuntu.toml /etc/blockuntu/config.toml
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.json /usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json /etc/opt/chrome/native-messaging-hosts/blockuntu_native.json
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json /etc/chromium/native-messaging-hosts/blockuntu_native.json
@@ -489,9 +489,11 @@ systemctl status blockuntu-watchdog.service
 systemctl status blockuntu-hosts.path
 ```
 
-The daemon repairs the Firefox policy and hosts file on startup and periodically
-afterwards. The expected Firefox policy force-installs the extension ID
-`blockuntu-poc@example.local` from:
+The current production installer and `.deb` flow defer Firefox and Chrome policy
+repair until the matching extension sends its first heartbeat. After that, the
+daemon repairs the browser policy and hosts file periodically. The expected
+Firefox policy force-installs the extension ID `blockuntu-poc@example.local`
+from:
 
 ```text
 /home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi
@@ -530,11 +532,8 @@ native host manifests.
 Before calling production complete, the following items should be finished and
 tested end to end:
 
-- Add a real installer that performs all privileged file installation steps
-  consistently.
-- Extend the deliberate uninstall/disable path into a full privileged installer
-  flow for systemd units, Firefox policy, browser Native Messaging manifests,
-  and managed hosts entries.
+- Test `scripts/install-production.sh`, `scripts/uninstall-production.sh`, and
+  `scripts/package-deb.sh` on clean disposable VMs.
 - Re-run `systemd-analyze verify` on installed units and test the mutual
   watchdog behavior on a disposable machine.
 - Confirm the target Firefox channel accepts the force-installed local XPI or

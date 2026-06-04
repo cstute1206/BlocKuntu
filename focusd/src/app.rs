@@ -38,6 +38,8 @@ pub struct DaemonApp {
     hosts: HostsManager,
     manage_firefox_policy: bool,
     manage_chrome_policy: bool,
+    defer_firefox_policy_repair_until_heartbeat: bool,
+    defer_chrome_policy_repair_until_heartbeat: bool,
     process_scan_interval: Duration,
     policy_repair_interval: Duration,
 }
@@ -78,6 +80,10 @@ impl DaemonApp {
             .with_browser_policy_management(
                 args.manage_firefox_policy(),
                 args.manage_chrome_policy(),
+            )
+            .with_deferred_browser_policy_repair(
+                args.defer_firefox_policy_repair_until_heartbeat(),
+                args.defer_chrome_policy_repair_until_heartbeat(),
             );
 
         Ok(Self {
@@ -88,6 +94,10 @@ impl DaemonApp {
             hosts,
             manage_firefox_policy: args.manage_firefox_policy(),
             manage_chrome_policy: args.manage_chrome_policy(),
+            defer_firefox_policy_repair_until_heartbeat: args
+                .defer_firefox_policy_repair_until_heartbeat(),
+            defer_chrome_policy_repair_until_heartbeat: args
+                .defer_chrome_policy_repair_until_heartbeat(),
             process_scan_interval: Duration::from_secs(args.process_scan_interval_seconds),
             policy_repair_interval: Duration::from_secs(args.policy_repair_interval_seconds),
         })
@@ -105,6 +115,11 @@ impl DaemonApp {
         if !self.manage_firefox_policy {
             return Ok(RepairStatus::SkippedDisabled);
         }
+        if self.defer_firefox_policy_repair_until_heartbeat
+            && !self.has_extension_heartbeat(FIREFOX_EXTENSION_HEARTBEAT_COMPONENT)?
+        {
+            return Ok(RepairStatus::SkippedDeferred);
+        }
         if !self.enforcement_is_active()? {
             return Ok(RepairStatus::SkippedStopped);
         }
@@ -114,6 +129,11 @@ impl DaemonApp {
     pub fn repair_chrome_policy(&self) -> Result<ChromePolicyRepairStatus> {
         if !self.manage_chrome_policy {
             return Ok(ChromePolicyRepairStatus::SkippedDisabled);
+        }
+        if self.defer_chrome_policy_repair_until_heartbeat
+            && !self.has_extension_heartbeat(CHROME_EXTENSION_HEARTBEAT_COMPONENT)?
+        {
+            return Ok(ChromePolicyRepairStatus::SkippedDeferred);
         }
         if !self.enforcement_is_active()? {
             return Ok(ChromePolicyRepairStatus::SkippedStopped);
@@ -210,9 +230,23 @@ impl DaemonApp {
                 }
             }
 
+            let mut strict_mode = core.config().strict_mode.clone();
+            if self.defer_firefox_policy_repair_until_heartbeat
+                && !self
+                    .has_extension_heartbeat_locked(&core, FIREFOX_EXTENSION_HEARTBEAT_COMPONENT)?
+            {
+                strict_mode.require_firefox_extension = false;
+            }
+            if self.defer_chrome_policy_repair_until_heartbeat
+                && !self
+                    .has_extension_heartbeat_locked(&core, CHROME_EXTENSION_HEARTBEAT_COMPONENT)?
+            {
+                strict_mode.require_chrome_extension = false;
+            }
+
             for (pid, detail) in strict_browser_kill_details(
                 &processes,
-                core.config().strict_mode.clone(),
+                strict_mode,
                 core.database(),
                 chrono::Utc::now(),
             )? {
@@ -273,6 +307,15 @@ impl DaemonApp {
             )?;
         }
         Ok(())
+    }
+
+    fn has_extension_heartbeat(&self, component: &str) -> Result<bool> {
+        let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        self.has_extension_heartbeat_locked(&core, component)
+    }
+
+    fn has_extension_heartbeat_locked(&self, core: &FocusCore, component: &str) -> Result<bool> {
+        Ok(core.database().heartbeat(component)?.is_some())
     }
 
     fn enforcement_is_active(&self) -> Result<bool> {

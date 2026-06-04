@@ -22,14 +22,14 @@ Options:
   --no-start          Install files but do not enable/start systemd units.
   --skip-prereqs     Do not install missing build/runtime prerequisites.
   --skip-gui          Do not build or install the Tauri GUI.
-  --overwrite-config  Replace /etc/blockuntu/config.toml with examples/blockuntu.toml.
+  --overwrite-config  Replace /etc/blockuntu/config.toml with the minimal production config.
   --user USER         Desktop user to add to the blockuntu socket group.
   -h, --help          Show this help.
 
 Browser extensions are not installed or force-installed by this script.
 It installs Native Messaging manifests and starts blockuntud with
---no-browser-policy-repair, so the user must install and enable the browser
-extensions manually.
+--defer-browser-policy-repair-until-heartbeat, so the user must install and
+enable the browser extensions manually before managed policy is written.
 USAGE
 }
 
@@ -224,6 +224,12 @@ install_prerequisites() {
 }
 
 warn_browser_prerequisites() {
+  if has_cmd snap && snap list firefox >/dev/null 2>&1; then
+    log "warning: Firefox is installed as a Snap; normal host policy/native-messaging paths may not work"
+  fi
+  if has_cmd flatpak && flatpak info org.mozilla.firefox >/dev/null 2>&1; then
+    log "warning: Firefox is installed as a Flatpak; normal host policy/native-messaging paths may not work"
+  fi
   if ! has_cmd firefox; then
     log "warning: firefox was not found on PATH; install a system Firefox package before using the Firefox extension"
   fi
@@ -304,7 +310,7 @@ if [[ "${BUILD}" -eq 1 ]]; then
     (
       cd focus-gui
       npm ci
-      npm run tauri -- build
+      npm run tauri -- build --no-bundle
     )
   fi
 else
@@ -325,9 +331,25 @@ log "installing daemon and native host binaries"
 sudo install -Dm755 focusd/target/release/blockuntud /usr/local/bin/blockuntud
 sudo install -Dm755 native-host/target/release/blockuntu-native /usr/local/bin/blockuntu-native
 
+if [[ -f browser-extension-firefox/BlocKuntu-Signed.xpi ]]; then
+  log "installing Firefox extension artifact for deferred managed policy"
+  sudo install -Dm644 browser-extension-firefox/BlocKuntu-Signed.xpi \
+    /usr/local/share/blockuntu/BlocKuntu-Signed.xpi
+else
+  log "warning: browser-extension-firefox/BlocKuntu-Signed.xpi is missing; deferred Firefox policy cannot force-install a local XPI"
+fi
+
+chrome_crx_url="https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download"
+if [[ -f browser-extension-chrome/browser-extension-chrome.crx ]]; then
+  log "installing Chrome extension artifact for deferred managed policy"
+  sudo install -Dm644 browser-extension-chrome/browser-extension-chrome.crx \
+    /usr/local/share/blockuntu/browser-extension-chrome.crx
+  chrome_crx_url="file:///usr/local/share/blockuntu/browser-extension-chrome.crx"
+fi
+
 if [[ "${OVERWRITE_CONFIG}" -eq 1 || ! -f /etc/blockuntu/config.toml ]]; then
   log "installing /etc/blockuntu/config.toml"
-  sudo install -Dm644 examples/blockuntu.toml /etc/blockuntu/config.toml
+  sudo install -Dm644 packaging/deb/blockuntu.toml /etc/blockuntu/config.toml
 else
   log "preserving existing /etc/blockuntu/config.toml"
 fi
@@ -360,12 +382,14 @@ trap cleanup EXIT
 cat >"${override_file}" <<'OVERRIDE'
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/blockuntud --no-browser-policy-repair serve
+OVERRIDE
+cat >>"${override_file}" <<OVERRIDE
+ExecStart=/usr/local/bin/blockuntud --extension-xpi /usr/local/share/blockuntu/BlocKuntu-Signed.xpi --chrome-extension-crx-url ${chrome_crx_url} --defer-browser-policy-repair-until-heartbeat serve
 OVERRIDE
 
-log "installing manual-browser-extension service override"
+log "installing deferred browser-policy service override"
 sudo install -Dm644 "${override_file}" \
-  /etc/systemd/system/blockuntu.service.d/90-manual-browser-extensions.conf
+  /etc/systemd/system/blockuntu.service.d/90-defer-browser-policy.conf
 
 if [[ -f /etc/firefox/policies/policies.json ]]; then
   log "leaving existing /etc/firefox/policies/policies.json untouched"
@@ -438,8 +462,11 @@ Important next steps:
   3. Restart the browser after installing the extension.
   4. Start the GUI from the app launcher or run: blockuntu-gui
 
-Browser policy repair is disabled in:
-  /etc/systemd/system/blockuntu.service.d/90-manual-browser-extensions.conf
+Browser policy repair is deferred until the first extension heartbeat in:
+  /etc/systemd/system/blockuntu.service.d/90-defer-browser-policy.conf
+
+No Firefox or Chrome policies.json file is created until the matching browser
+extension sends its first heartbeat.
 
 Native Messaging manifests were installed, so the manually installed extension
 can reach /run/blockuntu/blockuntud.sock through blockuntu-native.
