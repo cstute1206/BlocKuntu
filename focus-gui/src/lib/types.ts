@@ -60,8 +60,20 @@ export interface UnlockPolicy {
   max_unlocks_per_hour: number;
 }
 
+export type ScheduleDay =
+  | "everyday"
+  | "workdays"
+  | "weekend"
+  | "mon"
+  | "tue"
+  | "wed"
+  | "thu"
+  | "fri"
+  | "sat"
+  | "sun";
+
 export interface ScheduleWindow {
-  weekday: "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+  weekday: ScheduleDay;
   start: string;
   end: string;
 }
@@ -194,6 +206,16 @@ export interface UnlockResult {
   reason: string;
   started_at: string;
   expires_at: string;
+}
+
+export interface Tier1EditKey {
+  key: string;
+}
+
+export interface Tier1EditStatus {
+  active: boolean;
+  expires_at?: string | null;
+  remaining_seconds?: number | null;
 }
 
 export interface UninstallConfirmation {

@@ -7,6 +7,7 @@
   "permissions": [
     "alarms",
     "nativeMessaging",
+    "storage",
     "tabs",
     "webNavigation"
   ],

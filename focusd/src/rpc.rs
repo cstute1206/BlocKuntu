@@ -1,11 +1,12 @@
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelike, Utc};
 use focus_core::{
     evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
     AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision,
-    EvaluationContext, FocusCore, HeartbeatState, RuleConfig, ScheduleConfig, UnlockState,
-    VisitState, Weekday,
+    EvaluationContext, FocusCore, HeartbeatState, RuleConfig, RuleTier, ScheduleConfig,
+    UnlockState, VisitState, Weekday,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -22,6 +23,13 @@ const CHROME_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS: u64 = 75;
 const ENFORCEMENT_STATE_KEY: &str = "enforcement_state";
 const ENFORCEMENT_ACTIVE: &str = "active";
 const ENFORCEMENT_STOPPED: &str = "stopped";
+const BROWSER_EXTENSION_MODE_KEY: &str = "browser_extension_mode";
+const BROWSER_EXTENSION_MODE_ACTIVE: &str = "active";
+const BROWSER_EXTENSION_MODE_DISABLED: &str = "disabled";
+const BROWSER_EXTENSION_MODE_UNINSTALLING: &str = "uninstalling";
+const TIER1_EDIT_KEY_PATH: &str = "/etc/blockuntu/tier1-edit-key.txt";
+const TIER1_EDIT_UNLOCK_UNTIL_KEY: &str = "tier1_edit_unlocked_until";
+const TIER1_EDIT_UNLOCK_MINUTES: i64 = 5;
 
 #[derive(Clone)]
 pub struct RpcContext {
@@ -34,6 +42,7 @@ pub struct RpcContext {
     manage_chrome_policy: bool,
     defer_firefox_policy_repair_until_heartbeat: bool,
     defer_chrome_policy_repair_until_heartbeat: bool,
+    tier1_edit_key_path: PathBuf,
 }
 
 impl RpcContext {
@@ -48,6 +57,7 @@ impl RpcContext {
             manage_chrome_policy: true,
             defer_firefox_policy_repair_until_heartbeat: false,
             defer_chrome_policy_repair_until_heartbeat: false,
+            tier1_edit_key_path: PathBuf::from(TIER1_EDIT_KEY_PATH),
         }
     }
 
@@ -87,6 +97,11 @@ impl RpcContext {
             defer_firefox_policy_repair_until_heartbeat;
         self.defer_chrome_policy_repair_until_heartbeat =
             defer_chrome_policy_repair_until_heartbeat;
+        self
+    }
+
+    pub fn with_tier1_edit_key_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.tier1_edit_key_path = path.into();
         self
     }
 
@@ -142,6 +157,19 @@ struct RequestUnlockParams {
     target: String,
     minutes: u32,
     reason: String,
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Tier1EditUnlockParams {
+    phrase: String,
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Tier1EditStatusParams {
     #[serde(default)]
     now: Option<String>,
 }
@@ -286,6 +314,7 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
         "enforcement_status" => enforcement_status(context),
         "start_enforcement" => start_enforcement(context),
         "stop_enforcement" => stop_enforcement(context),
+        "prepare_uninstall" => prepare_uninstall(context),
         "config_snapshot" => config_snapshot(context),
         "upsert_site_list" => {
             let params = parse_params::<UpsertSiteListParams>(params)?;
@@ -330,6 +359,14 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
         "request_unlock" => {
             let params = parse_params::<RequestUnlockParams>(params)?;
             request_unlock_method(context, params)
+        }
+        "unlock_tier1_edit" => {
+            let params = parse_params::<Tier1EditUnlockParams>(params)?;
+            unlock_tier1_edit_method(context, params)
+        }
+        "tier1_edit_status" => {
+            let params = parse_params::<Tier1EditStatusParams>(params)?;
+            tier1_edit_status_method(context, params)
         }
         "record_visit_start" => {
             let params = parse_params::<RecordVisitStartParams>(params)?;
@@ -392,6 +429,11 @@ fn start_enforcement(context: &RpcContext) -> Result<Value> {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
         core.database()
             .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_ACTIVE, now)?;
+        core.database().set_service_state(
+            BROWSER_EXTENSION_MODE_KEY,
+            BROWSER_EXTENSION_MODE_ACTIVE,
+            now,
+        )?;
     }
 
     let firefox_policy_repair = repair_firefox_policy_from_context(context)?;
@@ -425,6 +467,11 @@ fn stop_enforcement(context: &RpcContext) -> Result<Value> {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
         core.database()
             .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_STOPPED, now)?;
+        core.database().set_service_state(
+            BROWSER_EXTENSION_MODE_KEY,
+            BROWSER_EXTENSION_MODE_DISABLED,
+            now,
+        )?;
     }
 
     let firefox_policy_repair = remove_firefox_policy_from_context(context)?;
@@ -445,6 +492,45 @@ fn stop_enforcement(context: &RpcContext) -> Result<Value> {
     }
 
     Ok(status)
+}
+
+fn prepare_uninstall(context: &RpcContext) -> Result<Value> {
+    let hosts = context.hosts()?;
+    let now = Utc::now();
+
+    {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        core.database()
+            .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_STOPPED, now)?;
+        core.database().set_service_state(
+            BROWSER_EXTENSION_MODE_KEY,
+            BROWSER_EXTENSION_MODE_UNINSTALLING,
+            now,
+        )?;
+    }
+
+    let firefox_policy_repair = remove_firefox_policy_from_context(context)?;
+    let chrome_policy_repair = remove_chrome_policy_from_context(context)?;
+    let hosts_repair = hosts.remove_managed_block()?;
+    let enforcement = enforcement_status(context)?;
+
+    {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        core.database().record_event(
+            "uninstall_prepared",
+            Some("system"),
+            Some(&format!(
+                "browser_extension_mode={BROWSER_EXTENSION_MODE_UNINSTALLING};firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}"
+            )),
+            now,
+        )?;
+    }
+
+    Ok(json!({
+        "status": "ok",
+        "browser_extension_mode": BROWSER_EXTENSION_MODE_UNINSTALLING,
+        "enforcement": enforcement
+    }))
 }
 
 fn firefox_policy_status_json(context: &RpcContext) -> Result<Value> {
@@ -603,7 +689,10 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
     {
         Some(index) => {
             let current_rule = &next.rules[index];
-            if current_rule != &params.rule && rule_is_active_at(current_rule, core.config(), now) {
+            if current_rule != &params.rule
+                && rule_is_active_at(current_rule, core.config(), now)
+                && !active_tier1_site_list_edit_allowed(&core, current_rule, now)?
+            {
                 return Err(active_site_list_edit_error(&current_rule.id));
             }
             next.rules[index] = params.rule;
@@ -656,7 +745,9 @@ fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -
         )));
     };
     let current_rule = &next.rules[index];
-    if rule_is_active_at(current_rule, core.config(), now) {
+    if rule_is_active_at(current_rule, core.config(), now)
+        && !active_tier1_site_list_edit_allowed(&core, current_rule, now)?
+    {
         return Err(active_site_list_edit_error(&current_rule.id));
     }
     let removed = next.rules.remove(index);
@@ -1010,6 +1101,44 @@ fn request_unlock_method(context: &RpcContext, params: RequestUnlockParams) -> R
     Ok(unlock_to_json(&unlock))
 }
 
+fn unlock_tier1_edit_method(context: &RpcContext, params: Tier1EditUnlockParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let now_utc = now.with_timezone(&Utc);
+    let phrase = params.phrase.trim();
+    if phrase.is_empty() {
+        return Err(DaemonError::InvalidRequest(
+            "Tier 1 edit key is required".to_string(),
+        ));
+    }
+    if !tier1_edit_key_matches(&context.tier1_edit_key_path, phrase)? {
+        return Err(DaemonError::InvalidRequest(
+            "Tier 1 edit key does not match".to_string(),
+        ));
+    }
+
+    let expires_at = now_utc + Duration::minutes(TIER1_EDIT_UNLOCK_MINUTES);
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    core.database().set_service_state(
+        TIER1_EDIT_UNLOCK_UNTIL_KEY,
+        &expires_at.to_rfc3339(),
+        now_utc,
+    )?;
+    core.database().record_event(
+        "tier1_edit_unlocked",
+        Some("site_lists"),
+        Some("Tier 1 site-list edits unlocked for 5 minutes"),
+        now_utc,
+    )?;
+
+    tier1_edit_status_json(&core, now)
+}
+
+fn tier1_edit_status_method(context: &RpcContext, params: Tier1EditStatusParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    tier1_edit_status_json(&core, now)
+}
+
 fn record_visit_start_method(
     context: &RpcContext,
     params: RecordVisitStartParams,
@@ -1052,16 +1181,26 @@ fn extension_heartbeat_method(
         "extension_id": params.extension_id,
         "extension_version": params.extension_version
     });
-    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    core.database().upsert_heartbeat(
-        component,
-        Some(&details.to_string()),
-        now.with_timezone(&Utc),
-    )?;
-    drop(core);
+    let (enforcement_state, browser_extension_mode) = {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        core.database().upsert_heartbeat(
+            component,
+            Some(&details.to_string()),
+            now.with_timezone(&Utc),
+        )?;
+        (
+            enforcement_state_from_core(&core)?,
+            browser_extension_mode_from_core(&core)?,
+        )
+    };
 
     let policy_repair = repair_deferred_policy_after_heartbeat(context, component)?;
-    Ok(json!({ "status": "ok", "policy_repair": policy_repair }))
+    Ok(json!({
+        "status": "ok",
+        "enforcement_state": enforcement_state,
+        "browser_extension_mode": browser_extension_mode,
+        "policy_repair": policy_repair
+    }))
 }
 
 fn extension_status_method(context: &RpcContext, params: ExtensionStatusParams) -> Result<Value> {
@@ -1457,17 +1596,20 @@ fn window_active_until(
     let end = window.end.minutes_after_midnight();
 
     if start < end {
-        if window.weekday == current_weekday && current_minute >= start && current_minute < end {
+        if window.weekday.includes(current_weekday)
+            && current_minute >= start
+            && current_minute < end
+        {
             return Some(datetime_at_minute(now, 0, end));
         }
         return None;
     }
 
-    if window.weekday == current_weekday && current_minute >= start {
+    if window.weekday.includes(current_weekday) && current_minute >= start {
         return Some(datetime_at_minute(now, 1, end));
     }
 
-    if window.weekday == current_weekday.previous() && current_minute < end {
+    if window.weekday.includes(current_weekday.previous()) && current_minute < end {
         return Some(datetime_at_minute(now, 0, end));
     }
 
@@ -1550,8 +1692,75 @@ fn enforcement_state_from_core(core: &FocusCore) -> Result<String> {
     )
 }
 
+fn browser_extension_mode_from_core(core: &FocusCore) -> Result<String> {
+    Ok(
+        match core.database().service_state(BROWSER_EXTENSION_MODE_KEY)? {
+            Some(mode)
+                if mode == BROWSER_EXTENSION_MODE_DISABLED
+                    || mode == BROWSER_EXTENSION_MODE_UNINSTALLING =>
+            {
+                mode
+            }
+            _ => BROWSER_EXTENSION_MODE_ACTIVE.to_string(),
+        },
+    )
+}
+
 fn enforcement_active_from_core(core: &FocusCore) -> Result<bool> {
     Ok(enforcement_state_from_core(core)? == ENFORCEMENT_ACTIVE)
+}
+
+fn active_tier1_site_list_edit_allowed(
+    core: &FocusCore,
+    current_rule: &RuleConfig,
+    now: DateTime<FixedOffset>,
+) -> Result<bool> {
+    Ok(current_rule.tier == RuleTier::Hard && tier1_edit_window_active(core, now)?)
+}
+
+fn tier1_edit_window_active(core: &FocusCore, now: DateTime<FixedOffset>) -> Result<bool> {
+    Ok(tier1_edit_unlocked_until(core)?
+        .map(|expires_at| expires_at > now.with_timezone(&Utc))
+        .unwrap_or(false))
+}
+
+fn tier1_edit_unlocked_until(core: &FocusCore) -> Result<Option<DateTime<Utc>>> {
+    let Some(value) = core.database().service_state(TIER1_EDIT_UNLOCK_UNTIL_KEY)? else {
+        return Ok(None);
+    };
+    Ok(DateTime::parse_from_rfc3339(&value)
+        .ok()
+        .map(|expires_at| expires_at.with_timezone(&Utc)))
+}
+
+fn tier1_edit_status_json(core: &FocusCore, now: DateTime<FixedOffset>) -> Result<Value> {
+    let now_utc = now.with_timezone(&Utc);
+    let expires_at = tier1_edit_unlocked_until(core)?;
+    let active = expires_at
+        .map(|expires_at| expires_at > now_utc)
+        .unwrap_or(false);
+    let remaining_seconds = expires_at
+        .filter(|expires_at| *expires_at > now_utc)
+        .map(|expires_at| (expires_at - now_utc).num_seconds());
+
+    Ok(json!({
+        "active": active,
+        "expires_at": expires_at,
+        "remaining_seconds": remaining_seconds
+    }))
+}
+
+fn tier1_edit_key_matches(path: &Path, candidate: &str) -> Result<bool> {
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        DaemonError::InvalidRequest(format!(
+            "Tier 1 edit key is unavailable at {}: {err}",
+            path.display()
+        ))
+    })?;
+    Ok(contents
+        .lines()
+        .map(str::trim)
+        .any(|phrase| !phrase.is_empty() && phrase == candidate))
 }
 
 fn repair_hosts_after_policy_change(
@@ -1680,10 +1889,12 @@ fn schedule_is_active_at(schedule: &ScheduleConfig, now: DateTime<FixedOffset>) 
         let end = window.end.minutes_after_midnight();
 
         if start < end {
-            window.weekday == current_weekday && current_minute >= start && current_minute < end
+            window.weekday.includes(current_weekday)
+                && current_minute >= start
+                && current_minute < end
         } else {
-            (window.weekday == current_weekday && current_minute >= start)
-                || (window.weekday == current_weekday.previous() && current_minute < end)
+            (window.weekday.includes(current_weekday) && current_minute >= start)
+                || (window.weekday.includes(current_weekday.previous()) && current_minute < end)
         }
     })
 }
@@ -1769,6 +1980,14 @@ mod tests {
         let database = Database::in_memory().expect("database should initialize");
         let core = FocusCore::new(config, database).expect("core should initialize");
         RpcContext::new(Arc::new(Mutex::new(core)))
+    }
+
+    fn rpc_context_with_tier1_edit_key(context: RpcContext) -> (tempfile::TempDir, RpcContext) {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let key_path = temp.path().join("tier1-edit-key.txt");
+        std::fs::write(&key_path, "BLOCKUNTU-TIER1-EDIT-TEST\n")
+            .expect("tier 1 edit key should write");
+        (temp, context.with_tier1_edit_key_path(key_path))
     }
 
     fn rpc_context_with_enforcement_managers(
@@ -2040,6 +2259,62 @@ mod tests {
     }
 
     #[test]
+    fn includes_grouped_schedule_details_for_controlled_blocks() {
+        let local_inside_window = Local
+            .with_ymd_and_hms(2026, 5, 22, 10, 30, 0)
+            .single()
+            .expect("local test timestamp should be unambiguous");
+        let browser_now = local_inside_window.with_timezone(&Utc).to_rfc3339();
+        let local_window_end = Local
+            .with_ymd_and_hms(2026, 5, 22, 17, 0, 0)
+            .single()
+            .expect("local test timestamp should be unambiguous")
+            .fixed_offset()
+            .to_rfc3339();
+        let context = rpc_context_with_config_toml(
+            r#"
+            [[schedules]]
+            id = "workday-hours"
+            name = "Workday hours"
+
+            [[schedules.windows]]
+            weekday = "workdays"
+            start = "09:00"
+            end = "17:00"
+
+            [[rules]]
+            id = "controlled"
+            name = "Controlled"
+            tier = "controlled_access"
+            schedule_ids = ["workday-hours"]
+            patterns = [
+              { kind = "domain", value = "controlled.example", match_subdomains = true }
+            ]
+            "#,
+        );
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 19,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://controlled.example/",
+                "now": browser_now
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        let reason = &response["result"]["reason"];
+        assert_eq!(response["result"]["decision"], "block");
+        assert_eq!(reason["blocked_by"], "schedule");
+        assert_eq!(reason["active_schedules"][0]["id"], "workday-hours");
+        assert_eq!(reason["free_at"], local_window_end);
+    }
+
+    #[test]
     fn handles_legacy_url_request_for_native_host_compatibility() {
         let context = rpc_context();
         let request = json!({ "url": "https://blocked.example/" });
@@ -2262,6 +2537,143 @@ mod tests {
     }
 
     #[test]
+    fn rejects_active_tier1_site_list_edits_without_unlock() {
+        let context = rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 111,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "hard",
+                    "name": "Hard edited",
+                    "tier": "hard",
+                    "enabled": true,
+                    "patterns": [
+                        { "kind": "domain", "value": "edited.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": []
+                }
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("site list 'hard' is currently active"));
+    }
+
+    #[test]
+    fn tier1_edit_unlock_allows_active_tier1_site_list_edits() {
+        let (_temp, context) = rpc_context_with_tier1_edit_key(rpc_context());
+        let unlock_request = json!({
+            "jsonrpc": "2.0",
+            "id": 112,
+            "method": "unlock_tier1_edit",
+            "params": {
+                "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
+                "now": "2026-05-22T10:00:00Z"
+            }
+        });
+        let unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&unlock_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(unlock_response.get("error").is_none(), "{unlock_response}");
+        assert_eq!(unlock_response["result"]["active"], true);
+
+        let edit_request = json!({
+            "jsonrpc": "2.0",
+            "id": 113,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T10:04:00Z",
+                "rule": {
+                    "id": "hard",
+                    "name": "Hard edited",
+                    "tier": "hard",
+                    "enabled": true,
+                    "patterns": [
+                        { "kind": "domain", "value": "edited.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": []
+                }
+            }
+        });
+        let edit_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&edit_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(edit_response.get("error").is_none(), "{edit_response}");
+        assert!(edit_response["result"]["config"]["rules"]
+            .as_array()
+            .expect("rules should be an array")
+            .iter()
+            .any(|rule| rule["id"] == "hard" && rule["name"] == "Hard edited"));
+    }
+
+    #[test]
+    fn tier1_edit_unlock_does_not_allow_active_tier2_site_list_edits() {
+        let (_temp, context) = rpc_context_with_tier1_edit_key(active_scheduled_rpc_context());
+        let unlock_request = json!({
+            "jsonrpc": "2.0",
+            "id": 114,
+            "method": "unlock_tier1_edit",
+            "params": {
+                "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
+                "now": "2026-05-22T10:00:00Z"
+            }
+        });
+        let unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&unlock_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(unlock_response.get("error").is_none(), "{unlock_response}");
+
+        let edit_request = json!({
+            "jsonrpc": "2.0",
+            "id": 115,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T10:01:00Z",
+                "rule": {
+                    "id": "controlled",
+                    "name": "Controlled edited",
+                    "tier": "controlled_access",
+                    "enabled": true,
+                    "patterns": [
+                        { "kind": "domain", "value": "different.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let edit_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&edit_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(edit_response["error"]["code"], -32602);
+        assert!(edit_response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("site list 'controlled' is currently active"));
+    }
+
+    #[test]
     fn rejects_active_schedule_edits() {
         let context = active_scheduled_rpc_context();
         let request = json!({
@@ -2355,6 +2767,83 @@ mod tests {
         );
         assert_eq!(response["result"]["extension_version"], "0.2.0");
         assert_eq!(response["result"]["age_seconds"], 5);
+    }
+
+    #[test]
+    fn heartbeat_reports_stopped_browser_extension_mode() {
+        let context = rpc_context();
+        {
+            let core = context.core.lock().expect("core lock should work");
+            core.database()
+                .set_service_state("enforcement_state", "stopped", Utc::now())
+                .expect("enforcement state should write");
+            core.database()
+                .set_service_state("browser_extension_mode", "disabled", Utc::now())
+                .expect("browser extension mode should write");
+        }
+
+        let heartbeat = json!({
+            "jsonrpc": "2.0",
+            "id": 141,
+            "method": "extension_heartbeat",
+            "params": {
+                "component": "firefox_extension",
+                "browser": "firefox",
+                "extension_id": "blockuntu-poc@example.local",
+                "extension_version": "0.2.1",
+                "now": "2026-05-22T10:00:00Z"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&heartbeat).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["result"]["status"], "ok");
+        assert_eq!(response["result"]["enforcement_state"], "stopped");
+        assert_eq!(response["result"]["browser_extension_mode"], "disabled");
+    }
+
+    #[test]
+    fn prepare_uninstall_marks_browser_extension_mode() {
+        let (_temp, context) = rpc_context_with_enforcement_managers(true);
+        let prepare = json!({
+            "jsonrpc": "2.0",
+            "id": 142,
+            "method": "prepare_uninstall",
+            "params": {}
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&prepare).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["status"], "ok");
+        assert_eq!(response["result"]["browser_extension_mode"], "uninstalling");
+
+        let heartbeat = json!({
+            "jsonrpc": "2.0",
+            "id": 143,
+            "method": "extension_heartbeat",
+            "params": {
+                "component": "firefox_extension",
+                "browser": "firefox",
+                "extension_id": "blockuntu-poc@example.local",
+                "extension_version": "0.2.1",
+                "now": "2026-05-22T10:00:05Z"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&heartbeat).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["result"]["enforcement_state"], "stopped");
+        assert_eq!(response["result"]["browser_extension_mode"], "uninstalling");
     }
 
     #[test]

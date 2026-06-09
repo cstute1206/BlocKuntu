@@ -15,7 +15,7 @@
       "strict_min_version": "142.0"
     }
   },
-  "permissions": ["nativeMessaging", "tabs", "webNavigation"],
+  "permissions": ["nativeMessaging", "storage", "tabs", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "scripts": ["dist/background.js"]

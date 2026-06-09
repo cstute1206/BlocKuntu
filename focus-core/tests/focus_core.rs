@@ -247,6 +247,91 @@ fn schedules_and_allowances_transition_between_allow_and_block() {
 }
 
 #[test]
+fn grouped_schedule_days_apply_as_single_windows() {
+    let config = Config::from_toml_str(
+        r#"
+        [[schedules]]
+        id = "workday-hours"
+        name = "Workday hours"
+
+        [[schedules.windows]]
+        weekday = "workdays"
+        start = "09:00"
+        end = "17:00"
+
+        [[schedules]]
+        id = "weekend-hours"
+        name = "Weekend hours"
+
+        [[schedules.windows]]
+        weekday = "weekend"
+        start = "09:00"
+        end = "17:00"
+
+        [[schedules]]
+        id = "daily-hours"
+        name = "Daily hours"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "09:00"
+        end = "17:00"
+
+        [[rules]]
+        id = "workday-rule"
+        name = "Workday rule"
+        tier = "hard"
+        schedule_ids = ["workday-hours"]
+        patterns = [
+          { kind = "domain", value = "workday.example", match_subdomains = true }
+        ]
+
+        [[rules]]
+        id = "weekend-rule"
+        name = "Weekend rule"
+        tier = "hard"
+        schedule_ids = ["weekend-hours"]
+        patterns = [
+          { kind = "domain", value = "weekend.example", match_subdomains = true }
+        ]
+
+        [[rules]]
+        id = "daily-rule"
+        name = "Daily rule"
+        tier = "hard"
+        schedule_ids = ["daily-hours"]
+        patterns = [
+          { kind = "domain", value = "daily.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    database
+        .replace_policy_config(&config)
+        .expect("grouped schedule config should persist");
+    let config = database
+        .load_policy_config()
+        .expect("grouped schedule config should reload");
+
+    let monday = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    assert!(evaluate_url("https://workday.example/", &monday).is_block());
+    assert_eq!(
+        evaluate_url("https://weekend.example/", &monday),
+        Decision::Allow
+    );
+    assert!(evaluate_url("https://daily.example/", &monday).is_block());
+
+    let saturday = context(&config, &database, at_utc(2026, 5, 23, 10, 0));
+    assert_eq!(
+        evaluate_url("https://workday.example/", &saturday),
+        Decision::Allow
+    );
+    assert!(evaluate_url("https://weekend.example/", &saturday).is_block());
+    assert!(evaluate_url("https://daily.example/", &saturday).is_block());
+}
+
+#[test]
 fn overlapping_rules_apply_the_strictest_active_result() {
     let config = Config::from_toml_str(
         r#"

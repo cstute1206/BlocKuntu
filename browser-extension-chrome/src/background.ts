@@ -8,8 +8,11 @@ const HEARTBEAT_INTERVAL_MS = 5_000;
 const HEARTBEAT_TIMEOUT_MS = 75_000;
 const RPC_TIMEOUT_MS = 3_000;
 const VISIT_HEARTBEAT_INTERVAL_MS = 10_000;
+const REVALIDATE_TABS_INTERVAL_MS = 5_000;
 const HEARTBEAT_ALARM = "blockuntu-heartbeat";
 const VISIT_ALARM = "blockuntu-visit-heartbeat";
+const REVALIDATE_ALARM = "blockuntu-revalidate-tabs";
+const INTEGRATION_DISABLED_STORAGE_KEY = "blockuntuIntegrationDisabled";
 
 type JsonObject = Record<string, unknown>;
 
@@ -45,12 +48,16 @@ interface BlockNavigationReason extends JsonObject {
 let nativePort: BlockuntuChromeExtension.RuntimePort | null = null;
 let nextRequestId = 1;
 let heartbeatInFlight = false;
+let heartbeatPromise: Promise<boolean> | null = null;
 let lastHeartbeatOkAt = 0;
 let backendHealthy = false;
+let blockingDisabled = false;
 
 const pendingRequests = new Map<number, PendingRequest>();
 const activeVisits = new Map<number, ActiveVisit>();
+const pendingVisitStarts = new Map<number, string>();
 const navigationTokens = new Map<number, number>();
+const settingsLoaded = loadStoredBlockingMode();
 
 function connectNativeHost(): BlockuntuChromeExtension.RuntimePort {
   if (nativePort) {
@@ -158,14 +165,14 @@ function rejectAllPending(reason: string): void {
   }
 }
 
-function sendHeartbeat(): void {
+function sendHeartbeat(): Promise<boolean> {
   refreshHealthState();
-  if (heartbeatInFlight) {
-    return;
+  if (heartbeatPromise) {
+    return heartbeatPromise;
   }
 
   heartbeatInFlight = true;
-  sendRpc(
+  heartbeatPromise = sendRpc(
     "extension_heartbeat",
     {
       browser: BROWSER_NAME,
@@ -176,19 +183,29 @@ function sendHeartbeat(): void {
     },
     Math.min(RPC_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS)
   )
-    .then(() => {
+    .then((result) => {
+      applyHeartbeatResult(result);
       lastHeartbeatOkAt = Date.now();
       backendHealthy = true;
+      return true;
     })
     .catch((error) => {
       markBackendUnhealthy(`heartbeat failed: ${errorMessage(error)}`);
+      return false;
     })
     .finally(() => {
       heartbeatInFlight = false;
+      heartbeatPromise = null;
     });
+
+  return heartbeatPromise;
 }
 
 function refreshHealthState(): boolean {
+  if (blockingDisabled) {
+    return true;
+  }
+
   if (lastHeartbeatOkAt === 0) {
     backendHealthy = false;
     return false;
@@ -214,10 +231,26 @@ function handleBeforeNavigate(details: BlockuntuChromeExtension.NavigationDetail
     return;
   }
 
-  const token = nextNavigationToken(details.tabId);
-  void endVisitForTab(details.tabId);
+  void handleNavigation(details);
+}
 
-  if (!refreshHealthState()) {
+async function handleNavigation(details: BlockuntuChromeExtension.NavigationDetails): Promise<void> {
+  const token = nextNavigationToken(details.tabId);
+
+  await settingsLoaded;
+  if (blockingDisabled) {
+    void endVisitForTab(details.tabId);
+    return;
+  }
+
+  const backendReady = await ensureBackendReady();
+  if (blockingDisabled) {
+    void endVisitForTab(details.tabId);
+    return;
+  }
+
+  if (!backendReady) {
+    activeVisits.delete(details.tabId);
     redirectToBlocked(
       details,
       backendBlockReason("backend_unhealthy", "BlocKuntu daemon heartbeat is not healthy")
@@ -225,9 +258,7 @@ function handleBeforeNavigate(details: BlockuntuChromeExtension.NavigationDetail
     return;
   }
 
-  if (!isWebUrl(details.url)) {
-    return;
-  }
+  void endVisitForTab(details.tabId);
 
   sendRpc("evaluate_url", {
     url: details.url,
@@ -260,6 +291,7 @@ function shouldHandleNavigation(details: BlockuntuChromeExtension.NavigationDeta
   return (
     details.frameId === 0 &&
     details.tabId >= 0 &&
+    isWebUrl(details.url) &&
     !isOwnBlockedPage(details.url) &&
     !isExtensionUrl(details.url)
   );
@@ -308,26 +340,11 @@ function startVisitForNavigation(
   details: BlockuntuChromeExtension.NavigationDetails,
   token: number
 ): Promise<void> {
-  return sendRpc("record_visit_start", {
-    url: details.url,
-    tab_id: `chrome:${details.tabId}`,
-    now: new Date().toISOString(),
-  })
-    .then((result) => {
+  return startVisitForTab(details.tabId, details.url)
+    .then(() => {
       if (!isCurrentNavigation(details.tabId, token)) {
-        return;
+        void endVisitForTab(details.tabId);
       }
-
-      const visitId = visitIdFromResult(result);
-      if (visitId === null) {
-        throw new Error("record_visit_start response did not include an id");
-      }
-
-      activeVisits.set(details.tabId, {
-        visitId,
-        tabId: details.tabId,
-        url: details.url,
-      });
     })
     .catch((error) => {
       markBackendUnhealthy(`visit start failed: ${errorMessage(error)}`);
@@ -340,7 +357,43 @@ function startVisitForNavigation(
     });
 }
 
+function startVisitForTab(tabId: number, url: string): Promise<void> {
+  const activeVisit = activeVisits.get(tabId);
+  if (activeVisit?.url === url || pendingVisitStarts.get(tabId) === url) {
+    return Promise.resolve();
+  }
+
+  pendingVisitStarts.set(tabId, url);
+  return sendRpc("record_visit_start", {
+    url,
+    tab_id: `chrome:${tabId}`,
+    now: new Date().toISOString(),
+  })
+    .then((result) => {
+      if (pendingVisitStarts.get(tabId) !== url) {
+        return;
+      }
+
+      const visitId = visitIdFromResult(result);
+      if (visitId === null) {
+        throw new Error("record_visit_start response did not include an id");
+      }
+
+      activeVisits.set(tabId, {
+        visitId,
+        tabId,
+        url,
+      });
+    })
+    .finally(() => {
+      if (pendingVisitStarts.get(tabId) === url) {
+        pendingVisitStarts.delete(tabId);
+      }
+    });
+}
+
 function endVisitForTab(tabId: number): Promise<void> {
+  pendingVisitStarts.delete(tabId);
   const visit = activeVisits.get(tabId);
   if (!visit) {
     return Promise.resolve();
@@ -358,6 +411,10 @@ function endVisitForTab(tabId: number): Promise<void> {
 }
 
 function heartbeatActiveVisits(): void {
+  if (blockingDisabled) {
+    return;
+  }
+
   if (!refreshHealthState()) {
     return;
   }
@@ -384,6 +441,157 @@ function isCurrentNavigation(tabId: number, token: number): boolean {
 
 function isBlockDecision(result: unknown): boolean {
   return isObject(result) && result.decision === "block";
+}
+
+async function ensureBackendReady(): Promise<boolean> {
+  await settingsLoaded;
+  if (blockingDisabled) {
+    return true;
+  }
+  if (refreshHealthState()) {
+    return true;
+  }
+  return sendHeartbeat();
+}
+
+function applyHeartbeatResult(result: unknown): void {
+  if (!isObject(result)) {
+    return;
+  }
+
+  const enforcementState = stringField(result, "enforcement_state");
+  const extensionMode = stringField(result, "browser_extension_mode");
+
+  if (extensionMode === "uninstalling" || enforcementState === "stopped") {
+    setBlockingDisabled(true);
+    return;
+  }
+
+  if (extensionMode === "active" || enforcementState === "active") {
+    setBlockingDisabled(false);
+  }
+}
+
+function setBlockingDisabled(disabled: boolean): void {
+  if (blockingDisabled === disabled) {
+    return;
+  }
+
+  blockingDisabled = disabled;
+  chrome.storage.local.set({ [INTEGRATION_DISABLED_STORAGE_KEY]: disabled }, () => {
+    const error = chrome.runtime.lastError;
+    if (error?.message) {
+      console.warn(`BlocKuntu failed to persist integration state: ${error.message}`);
+    }
+  });
+
+  if (disabled) {
+    for (const tabId of activeVisits.keys()) {
+      void endVisitForTab(tabId);
+    }
+  }
+}
+
+function loadStoredBlockingMode(): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([INTEGRATION_DISABLED_STORAGE_KEY], (items) => {
+      const error = chrome.runtime.lastError;
+      if (error?.message) {
+        console.warn(`BlocKuntu failed to load integration state: ${error.message}`);
+      } else {
+        blockingDisabled = items[INTEGRATION_DISABLED_STORAGE_KEY] === true;
+      }
+      resolve();
+    });
+  });
+}
+
+function queryWebTabs(): Promise<BlockuntuChromeExtension.Tab[]> {
+  return new Promise((resolve) => {
+    chrome.tabs.query({ url: ["http://*/*", "https://*/*"] }, (tabs) => {
+      const error = chrome.runtime.lastError;
+      if (error?.message) {
+        console.warn(`BlocKuntu failed to query tabs for revalidation: ${error.message}`);
+        resolve([]);
+        return;
+      }
+      resolve(tabs);
+    });
+  });
+}
+
+function revalidateOpenTabs(): void {
+  void revalidateOpenTabsAsync();
+}
+
+async function revalidateOpenTabsAsync(): Promise<void> {
+  await settingsLoaded;
+  if (blockingDisabled) {
+    return;
+  }
+
+  const tabs = await queryWebTabs();
+  for (const tab of tabs) {
+    if (typeof tab.id !== "number" || typeof tab.url !== "string") {
+      continue;
+    }
+    void revalidateTab(tab.id, tab.url);
+  }
+}
+
+async function revalidateTab(tabId: number, url: string): Promise<void> {
+  if (!isWebUrl(url) || isOwnBlockedPage(url) || isExtensionUrl(url)) {
+    return;
+  }
+
+  const details = { tabId, frameId: 0, url };
+  const backendReady = await ensureBackendReady();
+  if (blockingDisabled) {
+    void endVisitForTab(tabId);
+    return;
+  }
+
+  if (!backendReady) {
+    activeVisits.delete(tabId);
+    redirectToBlocked(
+      details,
+      backendBlockReason("backend_unhealthy", "BlocKuntu daemon heartbeat is not healthy")
+    );
+    return;
+  }
+
+  try {
+    const result = await sendRpc("evaluate_url", {
+      url,
+      now: new Date().toISOString(),
+    });
+
+    if (isBlockDecision(result)) {
+      void endVisitForTab(tabId);
+      redirectToBlocked(details, blockReasonFromResult(result));
+      return;
+    }
+
+    const activeVisit = activeVisits.get(tabId);
+    if (!activeVisit) {
+      void startVisitForTab(tabId, url).catch((error) => {
+        markBackendUnhealthy(`visit start failed: ${errorMessage(error)}`);
+      });
+    } else if (activeVisit.url !== url) {
+      void endVisitForTab(tabId).then(() =>
+        startVisitForTab(tabId, url).catch((error) => {
+          markBackendUnhealthy(`visit start failed: ${errorMessage(error)}`);
+        })
+      );
+    }
+  } catch (error) {
+    markBackendUnhealthy(`tab revalidation failed: ${errorMessage(error)}`);
+    activeVisits.delete(tabId);
+    redirectToBlocked(
+      details,
+      backendBlockReason("backend_unavailable", "BlocKuntu daemon did not revalidate the tab")
+    );
+  }
 }
 
 function blockReasonFromResult(result: unknown): BlockNavigationReason {
@@ -473,6 +681,7 @@ function errorMessage(error: unknown): string {
 }
 
 chrome.webNavigation.onBeforeNavigate.addListener(handleBeforeNavigate);
+chrome.webNavigation.onHistoryStateUpdated.addListener(handleBeforeNavigate);
 chrome.tabs.onRemoved.addListener((tabId: number) => {
   navigationTokens.delete(tabId);
   void endVisitForTab(tabId);
@@ -484,11 +693,16 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === VISIT_ALARM) {
     heartbeatActiveVisits();
   }
+  if (alarm.name === REVALIDATE_ALARM) {
+    revalidateOpenTabs();
+  }
 });
 chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 1 });
 chrome.alarms.create(VISIT_ALARM, { periodInMinutes: 1 });
+chrome.alarms.create(REVALIDATE_ALARM, { periodInMinutes: 1 });
 
 sendHeartbeat();
 globalThis.setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
 globalThis.setInterval(refreshHealthState, 1_000);
 globalThis.setInterval(heartbeatActiveVisits, VISIT_HEARTBEAT_INTERVAL_MS);
+globalThis.setInterval(revalidateOpenTabs, REVALIDATE_TABS_INTERVAL_MS);

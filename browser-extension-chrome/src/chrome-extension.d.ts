@@ -1,4 +1,6 @@
 declare namespace BlockuntuChromeExtension {
+  type StorageItems = Record<string, unknown>;
+
   interface ExtensionEvent<TListener extends (...args: never[]) => void> {
     addListener(listener: TListener): void;
     removeListener(listener: TListener): void;
@@ -31,9 +33,19 @@ declare namespace BlockuntuChromeExtension {
 
   interface WebNavigationApi {
     onBeforeNavigate: ExtensionEvent<(details: NavigationDetails) => void>;
+    onHistoryStateUpdated: ExtensionEvent<(details: NavigationDetails) => void>;
+  }
+
+  interface Tab {
+    id?: number;
+    url?: string;
   }
 
   interface TabsApi {
+    query(
+      queryInfo: { url?: string | string[] },
+      callback: (tabs: Tab[]) => void
+    ): void;
     update(
       tabId: number,
       updateProperties: { url?: string },
@@ -51,9 +63,19 @@ declare namespace BlockuntuChromeExtension {
     onAlarm: ExtensionEvent<(alarm: Alarm) => void>;
   }
 
+  interface StorageArea {
+    get(keys: string | string[] | StorageItems | null, callback: (items: StorageItems) => void): void;
+    set(items: StorageItems, callback?: () => void): void;
+  }
+
+  interface StorageApi {
+    local: StorageArea;
+  }
+
   interface ChromeApi {
     alarms: AlarmsApi;
     runtime: RuntimeApi;
+    storage: StorageApi;
     tabs: TabsApi;
     webNavigation: WebNavigationApi;
   }

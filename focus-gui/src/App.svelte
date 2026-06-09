@@ -1,32 +1,24 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
-    Activity,
     AlertTriangle,
     BarChart3,
     CalendarDays,
     CheckCircle2,
-    Gauge,
     Gamepad2,
     LayoutDashboard,
     ListChecks,
     LockKeyhole,
-    Play,
-    Power,
-    PowerOff,
-    Plus,
     RefreshCw,
-    Save,
-    Search,
-    Server,
     Settings,
-    Shield,
-    Terminal,
-    Trash2,
-    Unlock,
-    Wrench,
     XCircle
   } from "@lucide/svelte";
+  import AdminView from "./components/views/AdminView.svelte";
+  import AppRulesView from "./components/views/AppRulesView.svelte";
+  import OverviewView from "./components/views/OverviewView.svelte";
+  import SchedulesView from "./components/views/SchedulesView.svelte";
+  import SiteListsView from "./components/views/SiteListsView.svelte";
+  import StatisticsView from "./components/views/StatisticsView.svelte";
   import {
     configSnapshot,
     daemonRpc,
@@ -41,27 +33,42 @@
     startEnforcement,
     stopEnforcement,
     systemHealth,
+    tier1EditKey,
+    tier1EditStatus,
     uninstallBlockuntu,
     uninstallConfirmationPhrase,
+    unlockTier1Edit,
     upsertAllowance,
     upsertAppRule,
     upsertSchedule,
     upsertSiteList
   } from "./lib/api";
+  import {
+    cloneAllowance,
+    cloneAllowanceForRule,
+    cloneAppRule,
+    cloneRule,
+    cloneSchedule,
+    defaultAllowanceForRule,
+    firstRunOverviewDismissed,
+    formatError,
+    markFirstRunOverviewDismissed,
+    nextAvailableIndexedId,
+    normalizeAllowanceDraft,
+    normalizeAppRuleDraft,
+    normalizeRuleDraft,
+    normalizeScheduleDraft
+  } from "./lib/ui";
   import type {
     Allowance,
-    AppMatcher,
     AppRule,
     ConfigSnapshot,
     DaemonStatus,
     DecisionResult,
     EnforcementStatus,
-    HealthCheck,
     RecentEvent,
     Rule,
-    RulePattern,
     Schedule,
-    ScheduleWindow,
     SystemHealth,
     UninstallResult,
     UnlockResult,
@@ -69,7 +76,6 @@
   } from "./lib/types";
 
   type Icon = typeof LayoutDashboard;
-  type BrowserSetupState = "ok" | "warn" | "error" | "unknown";
 
   const navItems: Array<{ id: ViewId; label: string; icon: Icon }> = [
     { id: "overview", label: "Dashboard", icon: LayoutDashboard },
@@ -79,34 +85,6 @@
     { id: "statistics", label: "Statistics", icon: BarChart3 },
     { id: "admin", label: "Admin", icon: Settings }
   ];
-
-  const weekdays = [
-    { id: "mon", label: "Mon" },
-    { id: "tue", label: "Tue" },
-    { id: "wed", label: "Wed" },
-    { id: "thu", label: "Thu" },
-    { id: "fri", label: "Fri" },
-    { id: "sat", label: "Sat" },
-    { id: "sun", label: "Sun" }
-  ] as const;
-
-  const patternKinds: Array<{ id: RulePattern["kind"]; label: string }> = [
-    { id: "domain", label: "Domain" },
-    { id: "exact_url", label: "Exact URL" },
-    { id: "url_prefix", label: "URL prefix" },
-    { id: "path_prefix", label: "Path prefix" }
-  ];
-
-  const appMatcherKinds: Array<{ id: AppMatcher["kind"]; label: string }> = [
-    { id: "command_name", label: "Command" },
-    { id: "executable_basename", label: "Binary" },
-    { id: "executable_path", label: "Path" },
-    { id: "desktop_id", label: "Desktop ID" },
-    { id: "window_title_contains", label: "Title contains" },
-    { id: "window_title_exact", label: "Title exact" }
-  ];
-
-  const defaultDailyAllowanceMinutes = 30;
 
   let activeView: ViewId = $state("overview");
   let socketPath = $state("");
@@ -136,18 +114,22 @@
   let ruleAllowanceDraft = $state<Allowance | null>(null);
   let ruleSaving = $state(false);
   let ruleMessage: string | null = $state(null);
+
   let selectedAppRuleId = $state<string | null>(null);
   let appRuleDraft = $state<AppRule | null>(null);
   let appRuleSaving = $state(false);
   let appRuleMessage: string | null = $state(null);
+
   let selectedScheduleId = $state<string | null>(null);
   let scheduleDraft = $state<Schedule | null>(null);
   let scheduleSaving = $state(false);
   let scheduleMessage: string | null = $state(null);
+
   let rawMethod = $state("status");
   let rawParams = $state("{}");
   let rawResult = $state("");
   let rawRunning = $state(false);
+
   let uninstallPhrase: string | null = $state(null);
   let uninstallPhraseLoading = $state(false);
   let uninstallPhraseError: string | null = $state(null);
@@ -155,98 +137,35 @@
   let uninstallRunning = $state(false);
   let uninstallResult: UninstallResult | null = $state(null);
 
-  let hardRules = $derived(config?.rules.filter((rule) => rule.tier === "hard") ?? []);
-  let controlledRules = $derived(
-    config?.rules.filter((rule) => rule.tier === "controlled_access") ?? []
-  );
-  let hardAppRules = $derived(config?.app_rules.filter((rule) => rule.tier === "hard") ?? []);
-  let controlledAppRules = $derived(
-    config?.app_rules.filter((rule) => rule.tier === "controlled_access") ?? []
-  );
-  let hardBlockCount = $derived(hardRules.length + hardAppRules.length);
-  let controlledBlockCount = $derived(controlledRules.length + controlledAppRules.length);
-  let selectedRule = $derived(
-    config?.rules.find((rule) => rule.id === selectedRuleId) ?? config?.rules[0] ?? null
-  );
-  let selectedRuleIsActive = $derived(selectedRule ? ruleIsActive(selectedRule) : false);
-  let ruleDraftIsExisting = $derived(
-    Boolean(ruleDraft && config?.rules.some((rule) => rule.id === ruleDraft?.id))
-  );
-  let ruleDraftLocked = $derived(Boolean(ruleDraft && ruleDraftIsExisting && selectedRuleIsActive));
-  let selectedAppRule = $derived(
-    config?.app_rules.find((rule) => rule.id === selectedAppRuleId) ??
-      config?.app_rules[0] ??
-      null
-  );
-  let selectedAppRuleIsActive = $derived(
-    selectedAppRule ? appRuleIsActive(selectedAppRule) : false
-  );
-  let appRuleDraftIsExisting = $derived(
-    Boolean(appRuleDraft && config?.app_rules.some((rule) => rule.id === appRuleDraft?.id))
-  );
-  let appRuleDraftLocked = $derived(
-    Boolean(appRuleDraft && appRuleDraftIsExisting && selectedAppRuleIsActive)
-  );
-  let selectedSchedule = $derived(
-    config?.schedules.find((schedule) => schedule.id === selectedScheduleId) ??
-      config?.schedules[0] ??
-      null
-  );
-  let selectedScheduleIsActive = $derived(
-    selectedSchedule ? scheduleIsActive(selectedSchedule) : false
-  );
-  let scheduleDraftIsExisting = $derived(
-    Boolean(scheduleDraft && config?.schedules.some((schedule) => schedule.id === scheduleDraft?.id))
-  );
-  let scheduleDraftLocked = $derived(
-    Boolean(scheduleDraft && scheduleDraftIsExisting && selectedScheduleIsActive)
-  );
-  let eventBuckets = $derived.by(() => {
-    const counts: Record<string, number> = {};
-    for (const event of events) {
-      counts[event.kind] = (counts[event.kind] ?? 0) + 1;
-    }
-    return Object.entries(counts).map(([kind, count]) => ({ kind, count })).sort(
-      (a, b) => b.count - a.count
-    );
-  });
-  let maxEventCount = $derived(Math.max(1, ...eventBuckets.map((bucket) => bucket.count)));
+  let tier1EditKeyValue: string | null = $state(null);
+  let tier1EditKeyLoading = $state(false);
+  let tier1EditKeyError: string | null = $state(null);
+  let tier1EditPhraseInput = $state("");
+  let tier1EditUnlocking = $state(false);
+  let tier1EditUnlockedUntil: string | null = $state(null);
+  let tier1EditMessage: string | null = $state(null);
+  let nowMs = $state(Date.now());
+
   let daemonOnline = $derived(status?.status === "ok");
-  let currentEnforcementState = $derived(
-    enforcement?.enforcement_state ?? status?.enforcement_state ?? "unknown"
+  let activeViewTitle = $derived(
+    navItems.find((item) => item.id === activeView)?.label ?? "Dashboard"
   );
-  let enforcementActive = $derived(currentEnforcementState === "active");
-  let failingChecks = $derived(
-    health?.checks.filter((check) => check.state === "error" || check.state === "warn") ?? []
+  let tier1EditUnlocked = $derived(
+    Boolean(tier1EditUnlockedUntil && Date.parse(tier1EditUnlockedUntil) > nowMs)
   );
-  let firefoxExtensionCheck = $derived(
-    health?.checks.find((check) => check.key === "firefox_extension") ?? null
-  );
-  let chromeExtensionCheck = $derived(
-    health?.checks.find((check) => check.key === "chrome_extension") ?? null
-  );
-  let firefoxSetupState = $derived(browserSetupState(firefoxExtensionCheck));
-  let chromeSetupState = $derived(browserSetupState(chromeExtensionCheck));
-  let firefoxPolicyPending = $derived(
-    Boolean(
-      enforcement?.firefox_policy.deferred_until_heartbeat &&
-        !enforcement.firefox_policy.active_after_heartbeat
-    )
-  );
-  let chromePolicyPending = $derived(
-    Boolean(
-      enforcement?.chrome_policy.deferred_until_heartbeat &&
-        !enforcement.chrome_policy.active_after_heartbeat
-    )
-  );
-  let uninstallPhraseMatches = $derived(
-    Boolean(uninstallPhrase && uninstallPhraseInput.trim() === uninstallPhrase)
+  let tier1EditRemainingSeconds = $derived(
+    tier1EditUnlockedUntil ? Math.max(0, Math.ceil((Date.parse(tier1EditUnlockedUntil) - nowMs) / 1000)) : 0
   );
 
   onMount(() => {
+    const interval = window.setInterval(() => {
+      nowMs = Date.now();
+    }, 1000);
     showFirstRunOverview = !firstRunOverviewDismissed();
     void loadUninstallPhrase();
+    void loadTier1EditKey();
     void refreshAll();
+    return () => window.clearInterval(interval);
   });
 
   function socketArg(): string | undefined {
@@ -258,14 +177,22 @@
     loading = true;
     lastError = null;
 
-    const [statusResult, enforcementResult, configResult, eventsResult, healthResult] =
+    const [
+      statusResult,
+      enforcementResult,
+      configResult,
+      eventsResult,
+      healthResult,
+      tier1EditStatusResult
+    ] =
       await Promise.allSettled([
-      daemonStatus(socketArg()),
-      enforcementStatus(socketArg()),
-      configSnapshot(socketArg()),
-      recentEvents(80, socketArg()),
-      systemHealth(socketArg())
-    ]);
+        daemonStatus(socketArg()),
+        enforcementStatus(socketArg()),
+        configSnapshot(socketArg()),
+        recentEvents(80, socketArg()),
+        systemHealth(socketArg()),
+        tier1EditStatus(socketArg())
+      ]);
 
     if (statusResult.status === "fulfilled") {
       status = statusResult.value;
@@ -293,6 +220,12 @@
       health = healthResult.value;
     }
 
+    if (tier1EditStatusResult.status === "fulfilled") {
+      tier1EditUnlockedUntil = tier1EditStatusResult.value.active
+        ? (tier1EditStatusResult.value.expires_at ?? null)
+        : null;
+    }
+
     lastRefresh = new Date().toLocaleTimeString();
     loading = false;
   }
@@ -300,32 +233,29 @@
   function syncConfigSelection(snapshot: ConfigSnapshot): void {
     const selectedRuleSnapshot =
       snapshot.rules.find((rule) => rule.id === selectedRuleId) ?? null;
-    const selectedRuleStillExists = Boolean(selectedRuleSnapshot);
-    if (!selectedRuleStillExists) {
+    if (!selectedRuleSnapshot) {
       selectedRuleId = snapshot.rules[0]?.id ?? null;
       setRuleDraft(snapshot.rules[0] ?? null, snapshot);
-    } else if (!ruleDraft && selectedRuleSnapshot) {
+    } else if (!ruleDraft) {
       setRuleDraft(selectedRuleSnapshot, snapshot);
     }
 
-    const selectedAppRuleStillExists = snapshot.app_rules.some(
-      (rule) => rule.id === selectedAppRuleId
-    );
-    if (!selectedAppRuleStillExists) {
+    const selectedAppRuleSnapshot =
+      snapshot.app_rules.find((rule) => rule.id === selectedAppRuleId) ?? null;
+    if (!selectedAppRuleSnapshot) {
       selectedAppRuleId = snapshot.app_rules[0]?.id ?? null;
       appRuleDraft = snapshot.app_rules[0] ? cloneAppRule(snapshot.app_rules[0]) : null;
-    } else if (!appRuleDraft && selectedAppRule) {
-      appRuleDraft = cloneAppRule(selectedAppRule);
+    } else if (!appRuleDraft) {
+      appRuleDraft = cloneAppRule(selectedAppRuleSnapshot);
     }
 
-    const selectedScheduleStillExists = snapshot.schedules.some(
-      (schedule) => schedule.id === selectedScheduleId
-    );
-    if (!selectedScheduleStillExists) {
+    const selectedScheduleSnapshot =
+      snapshot.schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
+    if (!selectedScheduleSnapshot) {
       selectedScheduleId = snapshot.schedules[0]?.id ?? null;
       scheduleDraft = snapshot.schedules[0] ? cloneSchedule(snapshot.schedules[0]) : null;
-    } else if (!scheduleDraft && selectedSchedule) {
-      scheduleDraft = cloneSchedule(selectedSchedule);
+    } else if (!scheduleDraft) {
+      scheduleDraft = cloneSchedule(selectedScheduleSnapshot);
     }
   }
 
@@ -424,8 +354,41 @@
     }
   }
 
+  async function loadTier1EditKey(): Promise<void> {
+    tier1EditKeyLoading = true;
+    tier1EditKeyError = null;
+    try {
+      tier1EditKeyValue = (await tier1EditKey()).key;
+    } catch (error) {
+      tier1EditKeyValue = null;
+      tier1EditKeyError = formatError(error);
+    } finally {
+      tier1EditKeyLoading = false;
+    }
+  }
+
+  async function runUnlockTier1Edit(): Promise<void> {
+    if (!tier1EditPhraseInput.trim()) return;
+    tier1EditUnlocking = true;
+    tier1EditMessage = null;
+    lastError = null;
+    try {
+      const result = await unlockTier1Edit(tier1EditPhraseInput, socketArg());
+      tier1EditUnlockedUntil = result.active ? (result.expires_at ?? null) : null;
+      tier1EditMessage = tier1EditUnlockedUntil
+        ? `Unlocked until ${new Date(tier1EditUnlockedUntil).toLocaleTimeString()}.`
+        : "Tier 1 edit window is not active.";
+      tier1EditPhraseInput = "";
+    } catch (error) {
+      tier1EditMessage = null;
+      lastError = formatError(error);
+    } finally {
+      tier1EditUnlocking = false;
+    }
+  }
+
   async function runUninstallBlockuntu(): Promise<void> {
-    if (!uninstallPhraseMatches) return;
+    if (!uninstallPhrase || !uninstallPhraseInput.trim()) return;
     uninstallRunning = true;
     uninstallResult = null;
     lastError = null;
@@ -509,7 +472,7 @@
   }
 
   async function removeRuleDraft(): Promise<void> {
-    if (!ruleDraft || !ruleDraftIsExisting) return;
+    if (!ruleDraft || !config?.rules.some((rule) => rule.id === ruleDraft?.id)) return;
     ruleSaving = true;
     lastError = null;
     ruleMessage = null;
@@ -575,7 +538,7 @@
   }
 
   async function removeAppRuleDraft(): Promise<void> {
-    if (!appRuleDraft || !appRuleDraftIsExisting) return;
+    if (!appRuleDraft || !config?.app_rules.some((rule) => rule.id === appRuleDraft?.id)) return;
     appRuleSaving = true;
     lastError = null;
     appRuleMessage = null;
@@ -600,12 +563,15 @@
   }
 
   function startNewSchedule(): void {
-    const index = (config?.schedules.length ?? 0) + 1;
+    const { id, index } = nextAvailableIndexedId(
+      config?.schedules.map((schedule) => schedule.id) ?? [],
+      "schedule"
+    );
     selectedScheduleId = null;
     scheduleDraft = {
-      id: `schedule-${index}`,
+      id,
       name: `Schedule ${index}`,
-      windows: [{ weekday: "mon", start: "09:00", end: "17:00" }]
+      windows: [{ weekday: "workdays", start: "09:00", end: "17:00" }]
     };
     scheduleMessage = null;
   }
@@ -633,7 +599,9 @@
   }
 
   async function removeScheduleDraft(): Promise<void> {
-    if (!scheduleDraft || !scheduleDraftIsExisting) return;
+    if (!scheduleDraft || !config?.schedules.some((schedule) => schedule.id === scheduleDraft?.id)) {
+      return;
+    }
     scheduleSaving = true;
     lastError = null;
     scheduleMessage = null;
@@ -651,316 +619,9 @@
     }
   }
 
-  function cloneRule(rule: Rule): Rule {
-    return {
-      ...rule,
-      patterns: rule.patterns.map((pattern) => ({ ...pattern })),
-      schedule_ids: [...rule.schedule_ids],
-      allowance_id: rule.allowance_id ?? null,
-      unlock_policy: rule.unlock_policy ? { ...rule.unlock_policy } : null
-    };
-  }
-
-  function cloneAllowance(allowance: Allowance): Allowance {
-    return {
-      ...allowance,
-      name: allowance.name ?? ""
-    };
-  }
-
-  function defaultAllowanceForRule(rule: Rule): Allowance {
-    return {
-      id: linkedAllowanceIdForRule(rule),
-      name: allowanceNameForRule(rule),
-      daily_minutes: defaultDailyAllowanceMinutes
-    };
-  }
-
-  function linkedAllowanceIdForRule(rule: Rule): string {
-    return `${rule.id.trim()}-daily`;
-  }
-
-  function allowanceNameForRule(rule: Rule): string {
-    const name = rule.name.trim() || rule.id.trim() || "Site list";
-    return `${name} daily allowance`;
-  }
-
-  function cloneAllowanceForRule(
-    rule: Rule,
-    snapshot: ConfigSnapshot | null = config
-  ): Allowance | null {
-    if (rule.tier !== "controlled_access") return null;
-
-    const linkedId = linkedAllowanceIdForRule(rule);
-    const allowance = snapshot?.allowances.find(
-      (candidate) => candidate.id === rule.allowance_id
-    ) ?? snapshot?.allowances.find((candidate) => candidate.id === linkedId);
-
-    return allowance
-      ? {
-          ...cloneAllowance(allowance),
-          id: linkedId,
-          name: allowanceNameForRule(rule)
-        }
-      : defaultAllowanceForRule(rule);
-  }
-
-  function cloneAppRule(rule: AppRule): AppRule {
-    return {
-      ...rule,
-      matchers: rule.matchers.map((matcher) => ({ ...matcher })),
-      schedule_ids: [...rule.schedule_ids],
-      allowance_id: rule.allowance_id ?? null,
-      unlock_policy: rule.unlock_policy ? { ...rule.unlock_policy } : null
-    };
-  }
-
-  function cloneSchedule(schedule: Schedule): Schedule {
-    return {
-      ...schedule,
-      name: schedule.name ?? "",
-      windows: schedule.windows.map((window) => ({ ...window }))
-    };
-  }
-
-  function normalizeRuleDraft(rule: Rule): Rule {
-    return {
-      ...rule,
-      id: rule.id.trim(),
-      name: rule.name.trim(),
-      allowance_id:
-        rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
-      unlock_policy: null,
-      patterns: rule.patterns.map((pattern) => ({
-        ...pattern,
-        value: pattern.value.trim(),
-        match_subdomains: pattern.kind === "domain" ? pattern.match_subdomains : false
-      })),
-      schedule_ids: [...rule.schedule_ids]
-    };
-  }
-
-  function normalizeAllowanceDraft(allowance: Allowance, rule: Rule): Allowance {
-    return {
-      ...allowance,
-      id: linkedAllowanceIdForRule(rule),
-      name: allowanceNameForRule(rule),
-      daily_minutes: Math.max(1, Math.round(Number(allowance.daily_minutes) || 1))
-    };
-  }
-
-  function normalizeAppRuleDraft(rule: AppRule): AppRule {
-    return {
-      ...rule,
-      id: rule.id.trim(),
-      name: rule.name.trim(),
-      allowance_id: null,
-      unlock_policy: null,
-      matchers: rule.matchers.map((matcher) => ({
-        ...matcher,
-        value: matcher.value.trim()
-      })),
-      schedule_ids: [...rule.schedule_ids]
-    };
-  }
-
-  function normalizeScheduleDraft(schedule: Schedule): Schedule {
-    return {
-      ...schedule,
-      id: schedule.id.trim(),
-      name: schedule.name?.trim() || null,
-      windows: schedule.windows.map((window) => ({ ...window }))
-    };
-  }
-
-  function addPattern(): void {
-    if (!ruleDraft) return;
-    ruleDraft.patterns = [
-      ...ruleDraft.patterns,
-      { kind: "domain", value: "", match_subdomains: true }
-    ];
-  }
-
-  function removePattern(index: number): void {
-    if (!ruleDraft || ruleDraft.patterns.length <= 1) return;
-    ruleDraft.patterns = ruleDraft.patterns.filter((_, patternIndex) => patternIndex !== index);
-  }
-
-  function addAppMatcher(): void {
-    if (!appRuleDraft) return;
-    appRuleDraft.matchers = [...appRuleDraft.matchers, { kind: "command_name", value: "" }];
-  }
-
-  function removeAppMatcher(index: number): void {
-    if (!appRuleDraft || appRuleDraft.matchers.length <= 1) return;
-    appRuleDraft.matchers = appRuleDraft.matchers.filter(
-      (_, matcherIndex) => matcherIndex !== index
-    );
-  }
-
-  function setRuleTier(tier: Rule["tier"]): void {
-    if (!ruleDraft) return;
-    ruleDraft.tier = tier;
-    if (tier === "hard") {
-      ruleDraft.allowance_id = null;
-      ruleAllowanceDraft = null;
-      ruleDraft.unlock_policy = null;
-    } else if (!ruleAllowanceDraft) {
-      ruleAllowanceDraft = defaultAllowanceForRule(ruleDraft);
-    }
-  }
-
-  function setAppRuleTier(tier: AppRule["tier"]): void {
-    if (!appRuleDraft) return;
-    appRuleDraft.tier = tier;
-    if (tier === "hard") {
-      appRuleDraft.allowance_id = null;
-      appRuleDraft.unlock_policy = null;
-    }
-  }
-
-  function toggleDraftSchedule(scheduleId: string): void {
-    if (!ruleDraft) return;
-    if (ruleDraft.schedule_ids.includes(scheduleId)) {
-      ruleDraft.schedule_ids = ruleDraft.schedule_ids.filter((id) => id !== scheduleId);
-    } else {
-      ruleDraft.schedule_ids = [...ruleDraft.schedule_ids, scheduleId];
-    }
-  }
-
-  function toggleAppRuleSchedule(scheduleId: string): void {
-    if (!appRuleDraft) return;
-    if (appRuleDraft.schedule_ids.includes(scheduleId)) {
-      appRuleDraft.schedule_ids = appRuleDraft.schedule_ids.filter((id) => id !== scheduleId);
-    } else {
-      appRuleDraft.schedule_ids = [...appRuleDraft.schedule_ids, scheduleId];
-    }
-  }
-
-  function addScheduleWindow(): void {
-    if (!scheduleDraft) return;
-    scheduleDraft.windows = [
-      ...scheduleDraft.windows,
-      { weekday: "mon", start: "09:00", end: "17:00" }
-    ];
-  }
-
-  function removeScheduleWindow(index: number): void {
-    if (!scheduleDraft) return;
-    scheduleDraft.windows = scheduleDraft.windows.filter((_, windowIndex) => windowIndex !== index);
-  }
-
-  function ruleIsActive(rule: Rule): boolean {
-    if (!rule.enabled) return false;
-    if (rule.schedule_ids.length === 0) return true;
-
-    return rule.schedule_ids.some((scheduleId) => {
-      const schedule = config?.schedules.find((candidate) => candidate.id === scheduleId);
-      return schedule ? scheduleIsActive(schedule) : true;
-    });
-  }
-
-  function appRuleIsActive(rule: AppRule): boolean {
-    if (!rule.enabled) return false;
-    if (rule.schedule_ids.length === 0) return true;
-
-    return rule.schedule_ids.some((scheduleId) => {
-      const schedule = config?.schedules.find((candidate) => candidate.id === scheduleId);
-      return schedule ? scheduleIsActive(schedule) : true;
-    });
-  }
-
-  function scheduleIsActive(schedule: Schedule): boolean {
-    return schedule.windows.some((window) => windowIsActive(window));
-  }
-
-  function windowIsActive(window: ScheduleWindow): boolean {
-    const now = new Date();
-    const today = weekdays[(now.getDay() + 6) % 7].id;
-    const yesterday = weekdays[(now.getDay() + 5) % 7].id;
-    const currentMinute = now.getHours() * 60 + now.getMinutes();
-    const start = minutesAfterMidnight(window.start);
-    const end = minutesAfterMidnight(window.end);
-
-    if (start < end) {
-      return window.weekday === today && currentMinute >= start && currentMinute < end;
-    }
-
-    return (
-      (window.weekday === today && currentMinute >= start) ||
-      (window.weekday === yesterday && currentMinute < end)
-    );
-  }
-
-  function minutesAfterMidnight(value: string): number {
-    const [hours, minutes] = value.split(":").map(Number);
-    return hours * 60 + minutes;
-  }
-
-  function formatError(error: unknown): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
-    return String(error);
-  }
-
-  function firstRunOverviewDismissed(): boolean {
-    try {
-      return window.localStorage.getItem("blockuntu.firstRunOverviewDismissed") === "true";
-    } catch {
-      return false;
-    }
-  }
-
   function dismissFirstRunOverview(): void {
     showFirstRunOverview = false;
-    try {
-      window.localStorage.setItem("blockuntu.firstRunOverviewDismissed", "true");
-    } catch {
-      // localStorage can be unavailable in restricted WebView profiles.
-    }
-  }
-
-  function browserSetupState(check: HealthCheck | null): BrowserSetupState {
-    if (!check) return "unknown";
-    return check.state;
-  }
-
-  function setupStateLabel(state: BrowserSetupState): string {
-    if (state === "ok") return "Connected";
-    if (state === "error") return "Needs attention";
-    if (state === "warn") return "Install extension";
-    return "Checking";
-  }
-
-  function checkIcon(check: HealthCheck): Icon {
-    if (check.state === "ok") return CheckCircle2;
-    if (check.state === "error") return XCircle;
-    if (check.state === "warn") return AlertTriangle;
-    return Activity;
-  }
-
-  function eventPercent(count: number): number {
-    return Math.max(4, Math.round((count / maxEventCount) * 100));
-  }
-
-  function windowsFor(schedule: Schedule, weekday: string): string {
-    const windows = schedule.windows.filter((window) => window.weekday === weekday);
-    return windows.map((window) => `${window.start}-${window.end}`).join(", ");
-  }
-
-  function nextAvailableIndexedId(
-    existingIds: string[],
-    prefix: string
-  ): { id: string; index: number } {
-    const existing = new Set(existingIds);
-    let index = 1;
-    let id = `${prefix}-${index}`;
-    while (existing.has(id)) {
-      index += 1;
-      id = `${prefix}-${index}`;
-    }
-    return { id, index };
+    markFirstRunOverviewDismissed();
   }
 </script>
 
@@ -1003,7 +664,7 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">Local enforcement</p>
-        <h1>{navItems.find((item) => item.id === activeView)?.label}</h1>
+        <h1>{activeViewTitle}</h1>
       </div>
       <div class="topbar-actions">
         <label class="socket-field">
@@ -1030,845 +691,95 @@
     {/if}
 
     {#if activeView === "overview"}
-      {#if showFirstRunOverview}
-        <section class="setup-panel" aria-label="First run setup">
-          <div class="setup-panel-header">
-            <div class="panel-title">
-              <Shield size={18} aria-hidden="true" />
-              <h2>First Run</h2>
-            </div>
-            <button
-              class="icon-button"
-              title="Dismiss"
-              onclick={dismissFirstRunOverview}
-              disabled={!uninstallPhrase}
-            >
-              <XCircle size={17} aria-hidden="true" />
-            </button>
-          </div>
-          <div class="setup-grid">
-            <div class="setup-row" data-state={firefoxSetupState}>
-              {#if firefoxSetupState === "ok"}
-                <CheckCircle2 size={18} aria-hidden="true" />
-              {:else if firefoxSetupState === "error"}
-                <XCircle size={18} aria-hidden="true" />
-              {:else}
-                <AlertTriangle size={18} aria-hidden="true" />
-              {/if}
-              <span>Firefox extension</span>
-              <strong>{setupStateLabel(firefoxSetupState)}</strong>
-              <small>
-                {firefoxExtensionCheck?.detail ??
-                  "No heartbeat yet. Install and enable the BlocKuntu Firefox extension."}
-              </small>
-            </div>
-
-            <div class="setup-row" data-state={chromeSetupState}>
-              {#if chromeSetupState === "ok"}
-                <CheckCircle2 size={18} aria-hidden="true" />
-              {:else if chromeSetupState === "error"}
-                <XCircle size={18} aria-hidden="true" />
-              {:else}
-                <AlertTriangle size={18} aria-hidden="true" />
-              {/if}
-              <span>Chrome extension</span>
-              <strong>{setupStateLabel(chromeSetupState)}</strong>
-              <small>
-                {chromeExtensionCheck?.detail ??
-                  "No heartbeat yet. Install and enable the BlocKuntu Chrome extension."}
-              </small>
-            </div>
-
-            <div class="setup-row" data-state={firefoxPolicyPending ? "warn" : "ok"}>
-              {#if firefoxPolicyPending}
-                <AlertTriangle size={18} aria-hidden="true" />
-              {:else}
-                <CheckCircle2 size={18} aria-hidden="true" />
-              {/if}
-              <span>Firefox policy</span>
-              <strong>{firefoxPolicyPending ? "Deferred" : "Ready"}</strong>
-              <small>
-                {firefoxPolicyPending
-                  ? "Managed policy will be written after the first Firefox extension heartbeat."
-                  : (enforcement?.firefox_policy.detail ?? "Waiting for daemon status.")}
-              </small>
-            </div>
-
-            <div class="setup-row" data-state={chromePolicyPending ? "warn" : "ok"}>
-              {#if chromePolicyPending}
-                <AlertTriangle size={18} aria-hidden="true" />
-              {:else}
-                <CheckCircle2 size={18} aria-hidden="true" />
-              {/if}
-              <span>Chrome policy</span>
-              <strong>{chromePolicyPending ? "Deferred" : "Ready"}</strong>
-              <small>
-                {chromePolicyPending
-                  ? "Managed policy will be written after the first Chrome extension heartbeat."
-                  : (enforcement?.chrome_policy.detail ?? "Waiting for daemon status.")}
-              </small>
-            </div>
-
-            <div class="setup-row setup-row-wide" data-state={uninstallPhrase ? "ok" : "warn"}>
-              {#if uninstallPhrase}
-                <CheckCircle2 size={18} aria-hidden="true" />
-              {:else}
-                <AlertTriangle size={18} aria-hidden="true" />
-              {/if}
-              <span>Uninstall phrase</span>
-              <strong>{uninstallPhrase ? "Created" : "Unavailable"}</strong>
-              <small>
-                {#if uninstallPhrase}
-                  <code class="phrase-code">{uninstallPhrase}</code>
-                {:else if uninstallPhraseLoading}
-                  Creating confirmation phrase.
-                {:else}
-                  {uninstallPhraseError ?? "Confirmation phrase could not be created."}
-                {/if}
-              </small>
-            </div>
-          </div>
-        </section>
-      {/if}
-
-      <section class="dashboard-grid">
-        <article class="panel metric-panel">
-          <div class="panel-title">
-            <Server size={18} aria-hidden="true" />
-            <h2>Daemon</h2>
-          </div>
-          <div class="metric-line">
-            <span class="metric-value">{status?.rules ?? "?"}</span>
-            <span>site lists</span>
-          </div>
-          <div class="metric-line">
-            <span class="metric-value">{status?.app_rules ?? "?"}</span>
-            <span>app rules</span>
-          </div>
-          <div class="metric-line">
-            <span class="metric-value">{status?.schedules ?? "?"}</span>
-            <span>schedules</span>
-          </div>
-          <div class="metric-line">
-            <span class="metric-value">{status?.allowances ?? "?"}</span>
-            <span>allowances</span>
-          </div>
-        </article>
-
-        <article class="panel metric-panel">
-          <div class="panel-title">
-            <Shield size={18} aria-hidden="true" />
-            <h2>Block Tiers</h2>
-          </div>
-          <div class="metric-line">
-            <span class="metric-value danger">{hardBlockCount}</span>
-            <span>hard blocks</span>
-          </div>
-          <div class="metric-line">
-            <span class="metric-value accent">{controlledBlockCount}</span>
-            <span>controlled</span>
-          </div>
-        </article>
-
-        <article class="panel metric-panel">
-          <div class="panel-title">
-            <Wrench size={18} aria-hidden="true" />
-            <h2>System</h2>
-          </div>
-          <div class="metric-line">
-            <span class="metric-value">{health?.checks.length ?? "?"}</span>
-            <span>checks</span>
-          </div>
-          <div class="metric-line">
-            <span class="metric-value warn">{failingChecks.length}</span>
-            <span>warnings</span>
-          </div>
-        </article>
-      </section>
-
-      <section class="content-grid">
-        <article class="panel">
-          <div class="panel-title">
-            <Search size={18} aria-hidden="true" />
-            <h2>URL Probe</h2>
-          </div>
-          <div class="input-row">
-            <input bind:value={testUrl} placeholder="https://example.com/" />
-            <button class="primary" onclick={runUrlCheck} disabled={urlChecking}>
-              <Play size={17} aria-hidden="true" />
-              <span>Check</span>
-            </button>
-          </div>
-          {#if urlDecision}
-            <div class:blocked={urlDecision.decision === "block"} class="decision-row">
-              {#if urlDecision.decision === "block"}
-                <XCircle size={18} aria-hidden="true" />
-                <span>{urlDecision.reason?.kind ?? "blocked"}</span>
-              {:else}
-                <CheckCircle2 size={18} aria-hidden="true" />
-                <span>allowed</span>
-              {/if}
-            </div>
-          {/if}
-        </article>
-
-        <article class="panel">
-          <div class="panel-title">
-            <Unlock size={18} aria-hidden="true" />
-            <h2>Manual Unlock</h2>
-          </div>
-          <div class="unlock-grid">
-            <label>
-              <span>Target</span>
-              <input bind:value={unlockTarget} />
-            </label>
-            <label class="reason-field">
-              <span>Reason</span>
-              <input bind:value={unlockReason} />
-            </label>
-            <button class="primary" onclick={runUnlock} disabled={unlocking}>
-              <Unlock size={17} aria-hidden="true" />
-              <span>Unlock</span>
-            </button>
-          </div>
-          {#if unlockResult}
-            <p class="result-text">
-              Active until {new Date(unlockResult.expires_at).toLocaleTimeString()} for
-              {unlockResult.target}
-            </p>
-          {/if}
-        </article>
-      </section>
+      <OverviewView
+        {status}
+        {enforcement}
+        {health}
+        {config}
+        {showFirstRunOverview}
+        bind:testUrl
+        {urlDecision}
+        {urlChecking}
+        bind:unlockTarget
+        bind:unlockReason
+        {unlockResult}
+        {unlocking}
+        {uninstallPhrase}
+        {uninstallPhraseLoading}
+        {uninstallPhraseError}
+        tier1EditKey={tier1EditKeyValue}
+        {tier1EditKeyLoading}
+        {tier1EditKeyError}
+        onDismissFirstRunOverview={dismissFirstRunOverview}
+        onRunUrlCheck={runUrlCheck}
+        onRunUnlock={runUnlock}
+      />
     {:else if activeView === "blocks"}
-      <section class="split-view">
-        <article class="panel list-panel">
-          <div class="panel-title">
-            <ListChecks size={18} aria-hidden="true" />
-            <h2>Site Lists</h2>
-          </div>
-          <button class="secondary wide-button" onclick={startNewRule}>
-            <Plus size={17} aria-hidden="true" />
-            <span>New list</span>
-          </button>
-          <div class="rule-list">
-            {#each config?.rules ?? [] as rule (rule.id)}
-              <button
-                class:active={ruleDraft?.id === rule.id}
-                onclick={() => selectRule(rule)}
-              >
-                <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
-                <span>{rule.name}</span>
-                <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
-              </button>
-            {:else}
-              <p class="empty-state">No lists reported by the daemon.</p>
-            {/each}
-          </div>
-        </article>
-
-        <article class="panel detail-panel">
-          <div class="panel-title">
-            <Shield size={18} aria-hidden="true" />
-            <h2>{ruleDraft?.name || "Site list"}</h2>
-          </div>
-          {#if ruleDraft}
-            {#if ruleDraftLocked}
-              <section class="inline-warning">
-                <AlertTriangle size={17} aria-hidden="true" />
-                <span>This list is active right now.</span>
-              </section>
-            {/if}
-            <div class="form-grid">
-              <label>
-                <span>Name</span>
-                <input bind:value={ruleDraft.name} disabled={ruleDraftLocked} />
-              </label>
-              <label>
-                <span>Tier</span>
-                <select
-                  value={ruleDraft.tier}
-                  disabled={ruleDraftLocked}
-                  onchange={(event) =>
-                    setRuleTier(event.currentTarget.value as Rule["tier"])}
-                >
-                  <option value="controlled_access">Tier 2</option>
-                  <option value="hard">Tier 1</option>
-                </select>
-              </label>
-            </div>
-
-            <label class="check-row">
-              <input type="checkbox" bind:checked={ruleDraft.enabled} disabled={ruleDraftLocked} />
-              <span>Enabled</span>
-            </label>
-
-            {#if ruleDraft.tier === "controlled_access"}
-              <div class="section-label">Daily allowance</div>
-              <div class="allowance-editor">
-                {#if ruleAllowanceDraft}
-                  <label>
-                    <span>Daily minutes</span>
-                    <input
-                      type="number"
-                      min="1"
-                      max="1440"
-                      bind:value={ruleAllowanceDraft.daily_minutes}
-                      disabled={ruleDraftLocked}
-                    />
-                  </label>
-                {/if}
-              </div>
-
-            {/if}
-
-            <div class="section-label">Schedules</div>
-            <div class="chip-grid">
-              {#each config?.schedules ?? [] as schedule (schedule.id)}
-                <label class="chip-check">
-                  <input
-                    type="checkbox"
-                    checked={ruleDraft.schedule_ids.includes(schedule.id)}
-                    disabled={ruleDraftLocked}
-                    onchange={() => toggleDraftSchedule(schedule.id)}
-                  />
-                  <span>{schedule.name ?? schedule.id}</span>
-                </label>
-              {:else}
-                <p class="empty-state">No schedules available.</p>
-              {/each}
-            </div>
-
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Type</th>
-                    <th>Pattern</th>
-                    <th>Subdomains</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each ruleDraft.patterns as pattern, index (pattern)}
-                    <tr>
-                      <td>
-                        <select bind:value={pattern.kind} disabled={ruleDraftLocked}>
-                          {#each patternKinds as kind (kind.id)}
-                            <option value={kind.id}>{kind.label}</option>
-                          {/each}
-                        </select>
-                      </td>
-                      <td>
-                        <input bind:value={pattern.value} disabled={ruleDraftLocked} />
-                      </td>
-                      <td>
-                        <input
-                          type="checkbox"
-                          bind:checked={pattern.match_subdomains}
-                          disabled={ruleDraftLocked || pattern.kind !== "domain"}
-                        />
-                      </td>
-                      <td>
-                        <button
-                          class="icon-button"
-                          title="Remove pattern"
-                          onclick={() => removePattern(index)}
-                          disabled={ruleDraftLocked || ruleDraft.patterns.length <= 1}
-                        >
-                          <Trash2 size={16} aria-hidden="true" />
-                        </button>
-                      </td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-
-            <div class="button-row">
-              <button class="secondary" onclick={addPattern} disabled={ruleDraftLocked}>
-                <Plus size={17} aria-hidden="true" />
-                <span>Pattern</span>
-              </button>
-              <button
-                class="secondary"
-                onclick={removeRuleDraft}
-                disabled={ruleSaving || ruleDraftLocked || !ruleDraftIsExisting}
-              >
-                <Trash2 size={17} aria-hidden="true" />
-                <span>Delete</span>
-              </button>
-              <button
-                class="primary"
-                onclick={saveRuleDraft}
-                disabled={ruleSaving || ruleDraftLocked}
-              >
-                <Save size={17} aria-hidden="true" />
-                <span>Save</span>
-              </button>
-            </div>
-            {#if ruleMessage}
-              <p class="result-text">{ruleMessage}</p>
-            {/if}
-          {/if}
-        </article>
-      </section>
+      <SiteListsView
+        {config}
+        bind:ruleDraft
+        bind:ruleAllowanceDraft
+        {ruleSaving}
+        {ruleMessage}
+        {tier1EditUnlocked}
+        onSelectRule={selectRule}
+        onStartNewRule={startNewRule}
+        onSaveRuleDraft={saveRuleDraft}
+        onRemoveRuleDraft={removeRuleDraft}
+      />
     {:else if activeView === "apps"}
-      <section class="split-view">
-        <article class="panel list-panel">
-          <div class="panel-title">
-            <Gamepad2 size={18} aria-hidden="true" />
-            <h2>App Rules</h2>
-          </div>
-          <button class="secondary wide-button" onclick={startNewAppRule}>
-            <Plus size={17} aria-hidden="true" />
-            <span>New app</span>
-          </button>
-          <div class="rule-list">
-            {#each config?.app_rules ?? [] as rule (rule.id)}
-              <button
-                class:active={appRuleDraft?.id === rule.id}
-                onclick={() => selectAppRule(rule)}
-              >
-                <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
-                <span>{rule.name}</span>
-                <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
-              </button>
-            {:else}
-              <p class="empty-state">No app rules reported by the daemon.</p>
-            {/each}
-          </div>
-        </article>
-
-        <article class="panel detail-panel">
-          <div class="panel-title">
-            <Gamepad2 size={18} aria-hidden="true" />
-            <h2>{appRuleDraft?.name || "App rule"}</h2>
-          </div>
-          {#if appRuleDraft}
-            {#if appRuleDraftLocked}
-              <section class="inline-warning">
-                <AlertTriangle size={17} aria-hidden="true" />
-                <span>This app rule is active right now.</span>
-              </section>
-            {/if}
-            <div class="form-grid">
-              <label>
-                <span>Name</span>
-                <input bind:value={appRuleDraft.name} disabled={appRuleDraftLocked} />
-              </label>
-              <label>
-                <span>Tier</span>
-                <select
-                  value={appRuleDraft.tier}
-                  disabled={appRuleDraftLocked}
-                  onchange={(event) =>
-                    setAppRuleTier(event.currentTarget.value as AppRule["tier"])}
-                >
-                  <option value="hard">Tier 1</option>
-                  <option value="controlled_access">Tier 2</option>
-                </select>
-              </label>
-            </div>
-
-            <label class="check-row">
-              <input type="checkbox" bind:checked={appRuleDraft.enabled} disabled={appRuleDraftLocked} />
-              <span>Enabled</span>
-            </label>
-
-            <div class="section-label">Schedules</div>
-            <div class="chip-grid">
-              {#each config?.schedules ?? [] as schedule (schedule.id)}
-                <label class="chip-check">
-                  <input
-                    type="checkbox"
-                    checked={appRuleDraft.schedule_ids.includes(schedule.id)}
-                    disabled={appRuleDraftLocked}
-                    onchange={() => toggleAppRuleSchedule(schedule.id)}
-                  />
-                  <span>{schedule.name ?? schedule.id}</span>
-                </label>
-              {:else}
-                <p class="empty-state">No schedules available.</p>
-              {/each}
-            </div>
-
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Matcher</th>
-                    <th>Value</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each appRuleDraft.matchers as matcher, index (matcher)}
-                    <tr>
-                      <td>
-                        <select bind:value={matcher.kind} disabled={appRuleDraftLocked}>
-                          {#each appMatcherKinds as kind (kind.id)}
-                            <option value={kind.id}>{kind.label}</option>
-                          {/each}
-                        </select>
-                      </td>
-                      <td>
-                        <input bind:value={matcher.value} disabled={appRuleDraftLocked} />
-                      </td>
-                      <td>
-                        <button
-                          class="icon-button"
-                          title="Remove matcher"
-                          onclick={() => removeAppMatcher(index)}
-                          disabled={appRuleDraftLocked || appRuleDraft.matchers.length <= 1}
-                        >
-                          <Trash2 size={16} aria-hidden="true" />
-                        </button>
-                      </td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-
-            <div class="button-row">
-              <button class="secondary" onclick={addAppMatcher} disabled={appRuleDraftLocked}>
-                <Plus size={17} aria-hidden="true" />
-                <span>Matcher</span>
-              </button>
-              <button
-                class="secondary"
-                onclick={removeAppRuleDraft}
-                disabled={appRuleSaving || appRuleDraftLocked || !appRuleDraftIsExisting}
-              >
-                <Trash2 size={17} aria-hidden="true" />
-                <span>Delete</span>
-              </button>
-              <button
-                class="primary"
-                onclick={saveAppRuleDraft}
-                disabled={appRuleSaving || appRuleDraftLocked}
-              >
-                <Save size={17} aria-hidden="true" />
-                <span>Save</span>
-              </button>
-            </div>
-            {#if appRuleMessage}
-              <p class="result-text">{appRuleMessage}</p>
-            {/if}
-          {/if}
-        </article>
-      </section>
+      <AppRulesView
+        {config}
+        bind:appRuleDraft
+        {appRuleSaving}
+        {appRuleMessage}
+        onSelectAppRule={selectAppRule}
+        onStartNewAppRule={startNewAppRule}
+        onSaveAppRuleDraft={saveAppRuleDraft}
+        onRemoveAppRuleDraft={removeAppRuleDraft}
+      />
     {:else if activeView === "schedule"}
-      <section class="split-view">
-        <article class="panel list-panel">
-          <div class="panel-title">
-            <CalendarDays size={18} aria-hidden="true" />
-            <h2>Schedules</h2>
-          </div>
-          <button class="secondary wide-button" onclick={startNewSchedule}>
-            <Plus size={17} aria-hidden="true" />
-            <span>New schedule</span>
-          </button>
-          <div class="rule-list">
-            {#each config?.schedules ?? [] as schedule (schedule.id)}
-              <button
-                class:active={scheduleDraft?.id === schedule.id}
-                onclick={() => selectSchedule(schedule)}
-              >
-                <span class:hard={scheduleIsActive(schedule)} class="tier-dot"></span>
-                <span>{schedule.name ?? schedule.id}</span>
-                <em>{scheduleIsActive(schedule) ? "Active" : "Idle"}</em>
-              </button>
-            {:else}
-              <p class="empty-state">No schedules reported by the daemon.</p>
-            {/each}
-          </div>
-        </article>
-
-        <article class="panel detail-panel">
-          <div class="panel-title">
-            <CalendarDays size={18} aria-hidden="true" />
-            <h2>{scheduleDraft?.name || "Schedule"}</h2>
-          </div>
-          {#if scheduleDraft}
-            {#if scheduleDraftLocked}
-              <section class="inline-warning">
-                <AlertTriangle size={17} aria-hidden="true" />
-                <span>This schedule is active right now.</span>
-              </section>
-            {/if}
-            <div class="form-grid">
-              <label>
-                <span>Schedule ID</span>
-                <input
-                  bind:value={scheduleDraft.id}
-                  readonly={scheduleDraftIsExisting}
-                  disabled={scheduleDraftLocked}
-                />
-              </label>
-              <label>
-                <span>Name</span>
-                <input bind:value={scheduleDraft.name} disabled={scheduleDraftLocked} />
-              </label>
-            </div>
-
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Weekday</th>
-                    <th>Start</th>
-                    <th>End</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each scheduleDraft.windows as window, index (window)}
-                    <tr>
-                      <td>
-                        <select bind:value={window.weekday} disabled={scheduleDraftLocked}>
-                          {#each weekdays as day (day.id)}
-                            <option value={day.id}>{day.label}</option>
-                          {/each}
-                        </select>
-                      </td>
-                      <td>
-                        <input type="time" bind:value={window.start} disabled={scheduleDraftLocked} />
-                      </td>
-                      <td>
-                        <input type="time" bind:value={window.end} disabled={scheduleDraftLocked} />
-                      </td>
-                      <td>
-                        <button
-                          class="icon-button"
-                          title="Remove window"
-                          onclick={() => removeScheduleWindow(index)}
-                          disabled={scheduleDraftLocked}
-                        >
-                          <Trash2 size={16} aria-hidden="true" />
-                        </button>
-                      </td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-
-            <div class="button-row">
-              <button class="secondary" onclick={addScheduleWindow} disabled={scheduleDraftLocked}>
-                <Plus size={17} aria-hidden="true" />
-                <span>Window</span>
-              </button>
-              <button
-                class="secondary"
-                onclick={removeScheduleDraft}
-                disabled={scheduleSaving || scheduleDraftLocked || !scheduleDraftIsExisting}
-              >
-                <Trash2 size={17} aria-hidden="true" />
-                <span>Delete</span>
-              </button>
-              <button
-                class="primary"
-                onclick={saveScheduleDraft}
-                disabled={scheduleSaving || scheduleDraftLocked}
-              >
-                <Save size={17} aria-hidden="true" />
-                <span>Save</span>
-              </button>
-            </div>
-            {#if scheduleMessage}
-              <p class="result-text">{scheduleMessage}</p>
-            {/if}
-          {/if}
-        </article>
-
-        <article class="panel wide-panel">
-          <div class="panel-title">
-            <CalendarDays size={18} aria-hidden="true" />
-            <h2>Weekly Grid</h2>
-          </div>
-          <div class="schedule-grid">
-            <div class="schedule-head">Schedule</div>
-            {#each weekdays as day}
-              <div class="schedule-head">{day.label}</div>
-            {/each}
-            {#each config?.schedules ?? [] as schedule (schedule.id)}
-              <div class="schedule-name">{schedule.name ?? schedule.id}</div>
-              {#each weekdays as day}
-                <div class:filled={windowsFor(schedule, day.id)} class="schedule-cell">
-                  {windowsFor(schedule, day.id) || "-"}
-                </div>
-              {/each}
-            {:else}
-              <p class="empty-state">No schedules reported by the daemon.</p>
-            {/each}
-          </div>
-        </article>
-      </section>
+      <SchedulesView
+        {config}
+        bind:scheduleDraft
+        {scheduleSaving}
+        {scheduleMessage}
+        onSelectSchedule={selectSchedule}
+        onStartNewSchedule={startNewSchedule}
+        onSaveScheduleDraft={saveScheduleDraft}
+        onRemoveScheduleDraft={removeScheduleDraft}
+      />
     {:else if activeView === "statistics"}
-      <section class="content-grid">
-        <article class="panel">
-          <div class="panel-title">
-            <BarChart3 size={18} aria-hidden="true" />
-            <h2>Event Mix</h2>
-          </div>
-          <div class="bar-list">
-            {#each eventBuckets as bucket (bucket.kind)}
-              <div class="bar-row">
-                <span>{bucket.kind}</span>
-                <div class="bar-track">
-                  <div class="bar-fill" style={`width: ${eventPercent(bucket.count)}%`}></div>
-                </div>
-                <strong>{bucket.count}</strong>
-              </div>
-            {:else}
-              <p class="empty-state">No events recorded yet.</p>
-            {/each}
-          </div>
-        </article>
-
-        <article class="panel">
-          <div class="panel-title">
-            <Activity size={18} aria-hidden="true" />
-            <h2>Recent Events</h2>
-          </div>
-          <div class="event-list">
-            {#each events.slice(0, 12) as event (event.id)}
-              <div class="event-row">
-                <span>{event.kind}</span>
-                <strong>{event.target ?? "system"}</strong>
-                <time>{new Date(event.created_at).toLocaleTimeString()}</time>
-              </div>
-            {:else}
-              <p class="empty-state">No events recorded yet.</p>
-            {/each}
-          </div>
-        </article>
-      </section>
+      <StatisticsView {events} />
     {:else if activeView === "admin"}
-      <section class="content-grid admin-grid">
-        <article class="panel">
-          <div class="panel-title">
-            <Gauge size={18} aria-hidden="true" />
-            <h2>Health</h2>
-          </div>
-          <div class="health-list">
-            {#each health?.checks ?? [] as check (check.key)}
-              {@const HealthIcon = checkIcon(check)}
-              <div class="health-row" data-state={check.state}>
-                <HealthIcon size={18} aria-hidden="true" />
-                <span>{check.label}</span>
-                <strong>{check.state}</strong>
-                <small>{check.detail}</small>
-              </div>
-            {:else}
-              <p class="empty-state">No health checks available.</p>
-            {/each}
-          </div>
-        </article>
-
-        <article class="panel">
-          <div class="panel-title">
-            <Shield size={18} aria-hidden="true" />
-            <h2>Enforcement</h2>
-          </div>
-          <div class="status-list">
-            <div class="status-row">
-              <span>Mode</span>
-              <strong data-state={currentEnforcementState}>{currentEnforcementState}</strong>
-            </div>
-            <div class="status-row">
-              <span>Firefox policy</span>
-              <small>{enforcement?.firefox_policy.path ?? "unknown"}</small>
-            </div>
-            <div class="status-row">
-              <span>Chrome policy</span>
-              <small>{enforcement?.chrome_policy.path ?? "unknown"}</small>
-            </div>
-            <div class="status-row">
-              <span>Hosts file</span>
-              <small>{enforcement?.hosts_file.path ?? "unknown"}</small>
-            </div>
-          </div>
-          <div class="button-row enforcement-actions">
-            <button
-              class="primary"
-              onclick={runStartEnforcement}
-              disabled={enforcementChanging || enforcementActive}
-            >
-              <Power size={17} aria-hidden="true" />
-              <span>Start</span>
-            </button>
-            <button
-              class="secondary danger-action"
-              onclick={runStopEnforcement}
-              disabled={enforcementChanging || !enforcementActive}
-            >
-              <PowerOff size={17} aria-hidden="true" />
-              <span>Stop</span>
-            </button>
-          </div>
-          {#if enforcementMessage}
-            <p class="result-text">{enforcementMessage}</p>
-          {/if}
-        </article>
-
-        <article class="panel">
-          <div class="panel-title">
-            <Terminal size={18} aria-hidden="true" />
-            <h2>JSON-RPC</h2>
-          </div>
-          <div class="rpc-form">
-            <label>
-              <span>Method</span>
-              <input bind:value={rawMethod} />
-            </label>
-            <label>
-              <span>Params</span>
-              <textarea bind:value={rawParams} spellcheck="false"></textarea>
-            </label>
-            <button class="primary" onclick={runRawRpc} disabled={rawRunning}>
-              <Play size={17} aria-hidden="true" />
-              <span>Run</span>
-            </button>
-          </div>
-          {#if rawResult}
-            <pre>{rawResult}</pre>
-          {/if}
-        </article>
-
-        <article class="panel">
-          <div class="panel-title">
-            <Trash2 size={18} aria-hidden="true" />
-            <h2>Uninstall</h2>
-          </div>
-          <div class="uninstall-form">
-            <label>
-              <span>Confirmation phrase</span>
-              <input
-                bind:value={uninstallPhraseInput}
-                autocomplete="off"
-                placeholder="Type the first-run uninstall phrase"
-                spellcheck="false"
-              />
-            </label>
-            <button
-              class="secondary danger-action"
-              onclick={runUninstallBlockuntu}
-              disabled={uninstallRunning || !uninstallPhraseMatches}
-            >
-              <Trash2 size={17} aria-hidden="true" />
-              <span>{uninstallRunning ? "Removing" : "Uninstall"}</span>
-            </button>
-          </div>
-          {#if uninstallPhraseError}
-            <p class="result-text danger-text">{uninstallPhraseError}</p>
-          {/if}
-          {#if uninstallResult}
-            <p class="result-text">{uninstallResult.detail}</p>
-          {/if}
-        </article>
-      </section>
+      <AdminView
+        {status}
+        {enforcement}
+        {health}
+        {enforcementChanging}
+        {enforcementMessage}
+        bind:rawMethod
+        bind:rawParams
+        {rawResult}
+        {rawRunning}
+        {uninstallPhrase}
+        bind:uninstallPhraseInput
+        {uninstallRunning}
+        {uninstallResult}
+        {uninstallPhraseError}
+        bind:tier1EditPhraseInput
+        {tier1EditUnlocking}
+        {tier1EditUnlocked}
+        {tier1EditUnlockedUntil}
+        {tier1EditRemainingSeconds}
+        {tier1EditMessage}
+        {tier1EditKeyError}
+        onStartEnforcement={runStartEnforcement}
+        onStopEnforcement={runStopEnforcement}
+        onRunRawRpc={runRawRpc}
+        onRunUninstallBlockuntu={runUninstallBlockuntu}
+        onUnlockTier1Edit={runUnlockTier1Edit}
+      />
     {/if}
 
     <footer class="footer-line">
@@ -1877,793 +788,3 @@
     </footer>
   </main>
 </div>
-
-<style>
-  .app-shell {
-    display: grid;
-    grid-template-columns: 236px minmax(0, 1fr);
-    min-height: 100vh;
-    background: #eef2ee;
-  }
-
-  .sidebar {
-    background: #171b1d;
-    color: #f4f7f5;
-    display: flex;
-    flex-direction: column;
-    min-height: 100vh;
-    padding: 18px 14px;
-  }
-
-  .brand {
-    align-items: center;
-    display: flex;
-    gap: 12px;
-    min-height: 54px;
-    padding: 0 8px 16px;
-  }
-
-  .brand-mark {
-    align-items: center;
-    background: #2fb67d;
-    border-radius: 8px;
-    color: #07110d;
-    display: grid;
-    height: 40px;
-    justify-content: center;
-    width: 40px;
-  }
-
-  .brand strong,
-  .brand span {
-    display: block;
-  }
-
-  .brand span {
-    color: #aab6b0;
-    font-size: 0.82rem;
-  }
-
-  .nav-list {
-    display: grid;
-    gap: 4px;
-    margin-top: 8px;
-  }
-
-  .nav-list button {
-    align-items: center;
-    background: transparent;
-    border: 0;
-    border-radius: 8px;
-    color: #dce5df;
-    display: flex;
-    gap: 10px;
-    min-height: 42px;
-    padding: 0 10px;
-    text-align: left;
-  }
-
-  .nav-list button.active,
-  .nav-list button:hover {
-    background: #27302d;
-    color: #ffffff;
-  }
-
-  .daemon-strip {
-    align-items: center;
-    background: #20342c;
-    border-radius: 8px;
-    color: #c9f3df;
-    display: flex;
-    gap: 10px;
-    margin-top: auto;
-    min-height: 44px;
-    padding: 0 10px;
-  }
-
-  .daemon-strip.offline {
-    background: #3c2425;
-    color: #ffd4d4;
-  }
-
-  .workspace {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    max-height: 100vh;
-    overflow: auto;
-    padding: 22px;
-  }
-
-  .topbar {
-    align-items: center;
-    display: flex;
-    gap: 18px;
-    justify-content: space-between;
-    margin-bottom: 16px;
-  }
-
-  .eyebrow {
-    color: #62706a;
-    font-size: 0.78rem;
-    font-weight: 700;
-    letter-spacing: 0;
-    margin: 0 0 2px;
-    text-transform: uppercase;
-  }
-
-  h1,
-  h2,
-  p {
-    margin: 0;
-  }
-
-  h1 {
-    font-size: 2rem;
-    letter-spacing: 0;
-    line-height: 1.1;
-  }
-
-  h2 {
-    font-size: 1rem;
-    letter-spacing: 0;
-  }
-
-  .topbar-actions {
-    align-items: end;
-    display: flex;
-    gap: 10px;
-  }
-
-  .socket-field {
-    display: grid;
-    gap: 4px;
-    min-width: min(44vw, 420px);
-  }
-
-  label span,
-  .socket-field span {
-    color: #63716b;
-    font-size: 0.78rem;
-    font-weight: 700;
-  }
-
-  input,
-  select,
-  textarea {
-    background: #ffffff;
-    border: 1px solid #cdd7d1;
-    border-radius: 8px;
-    color: #1d2522;
-    min-height: 40px;
-    min-width: 0;
-    padding: 0 10px;
-    width: 100%;
-  }
-
-  input[type="checkbox"] {
-    min-height: auto;
-    width: 16px;
-  }
-
-  select {
-    appearance: auto;
-  }
-
-  textarea {
-    min-height: 124px;
-    padding: 10px;
-    resize: vertical;
-  }
-
-  .icon-button,
-  .primary,
-  .secondary {
-    align-items: center;
-    border: 0;
-    border-radius: 8px;
-    display: inline-flex;
-    gap: 8px;
-    justify-content: center;
-    min-height: 40px;
-    padding: 0 12px;
-    white-space: nowrap;
-  }
-
-  .icon-button {
-    background: #ffffff;
-    border: 1px solid #cdd7d1;
-    color: #1d2522;
-    width: 42px;
-  }
-
-  .primary {
-    background: #1f8f68;
-    color: #ffffff;
-  }
-
-  .secondary {
-    background: #dde5df;
-    color: #34413b;
-  }
-
-  button:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
-
-  .spin {
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  .alert-row,
-  .decision-row {
-    align-items: center;
-    background: #fff4d8;
-    border: 1px solid #e5bc5c;
-    border-radius: 8px;
-    color: #5b4410;
-    display: flex;
-    gap: 10px;
-    margin-bottom: 14px;
-    min-height: 42px;
-    padding: 0 12px;
-  }
-
-  .decision-row {
-    background: #e6f6ee;
-    border-color: #8bd3ad;
-    color: #145c3d;
-    margin: 12px 0 0;
-  }
-
-  .decision-row.blocked {
-    background: #ffe5e5;
-    border-color: #ee9d9d;
-    color: #8b1d1d;
-  }
-
-  .dashboard-grid,
-  .content-grid {
-    display: grid;
-    gap: 14px;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    margin-bottom: 14px;
-  }
-
-  .content-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .admin-grid {
-    align-items: start;
-  }
-
-  .panel {
-    background: #ffffff;
-    border: 1px solid #d5ddd8;
-    border-radius: 8px;
-    min-width: 0;
-    padding: 16px;
-  }
-
-  .panel-title {
-    align-items: center;
-    color: #29332f;
-    display: flex;
-    gap: 8px;
-    margin-bottom: 14px;
-  }
-
-  .setup-panel {
-    background: #ffffff;
-    border: 1px solid #d5ddd8;
-    border-radius: 8px;
-    margin-bottom: 14px;
-    min-width: 0;
-    padding: 16px;
-  }
-
-  .setup-panel-header {
-    align-items: start;
-    display: flex;
-    gap: 12px;
-    justify-content: space-between;
-  }
-
-  .setup-grid {
-    display: grid;
-    gap: 8px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .setup-row {
-    align-items: center;
-    background: #f6f8f6;
-    border: 1px solid #dfe6e1;
-    border-radius: 8px;
-    display: grid;
-    gap: 8px 10px;
-    grid-template-columns: 22px minmax(120px, 0.45fr) max-content;
-    min-height: 78px;
-    padding: 10px;
-  }
-
-  .setup-row-wide {
-    grid-column: 1 / -1;
-  }
-
-  .setup-row span {
-    color: #2a342f;
-    font-weight: 800;
-  }
-
-  .setup-row strong {
-    justify-self: end;
-    white-space: nowrap;
-  }
-
-  .setup-row small {
-    color: #68766f;
-    grid-column: 2 / -1;
-    line-height: 1.35;
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-
-  .phrase-code {
-    background: #e8eee9;
-    border-radius: 6px;
-    color: #17211d;
-    display: block;
-    font-size: 0.86rem;
-    font-weight: 800;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-    padding: 6px 8px;
-  }
-
-  .setup-row[data-state="ok"] :global(svg),
-  .setup-row[data-state="ok"] strong {
-    color: #1f8f68;
-  }
-
-  .setup-row[data-state="warn"] :global(svg),
-  .setup-row[data-state="warn"] strong,
-  .setup-row[data-state="unknown"] :global(svg),
-  .setup-row[data-state="unknown"] strong {
-    color: #b87912;
-  }
-
-  .setup-row[data-state="error"] :global(svg),
-  .setup-row[data-state="error"] strong {
-    color: #c94f4f;
-  }
-
-  .metric-panel {
-    display: grid;
-    gap: 8px;
-  }
-
-  .metric-line {
-    align-items: baseline;
-    display: flex;
-    gap: 10px;
-    justify-content: space-between;
-  }
-
-  .metric-line span:last-child {
-    color: #64736c;
-  }
-
-  .metric-value {
-    color: #1f8f68;
-    font-size: 2rem;
-    font-weight: 800;
-    letter-spacing: 0;
-  }
-
-  .metric-value.danger {
-    color: #c94f4f;
-  }
-
-  .metric-value.warn {
-    color: #b87912;
-  }
-
-  .metric-value.accent {
-    color: #386dc0;
-  }
-
-  .input-row,
-  .button-row {
-    display: flex;
-    gap: 10px;
-  }
-
-  .unlock-grid,
-  .form-grid,
-  .rpc-form {
-    display: grid;
-    gap: 12px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .reason-field,
-  .rpc-form label:nth-child(2) {
-    grid-column: 1 / -1;
-  }
-
-  .result-text {
-    color: #145c3d;
-    margin-top: 12px;
-  }
-
-  .danger-text {
-    color: #8b1d1d;
-  }
-
-  .split-view {
-    display: grid;
-    gap: 14px;
-    grid-template-columns: minmax(280px, 0.34fr) minmax(0, 1fr);
-  }
-
-  .wide-panel {
-    grid-column: 1 / -1;
-  }
-
-  .wide-button {
-    margin-bottom: 12px;
-    width: 100%;
-  }
-
-  .inline-warning {
-    align-items: center;
-    background: #fff4d8;
-    border: 1px solid #e5bc5c;
-    border-radius: 8px;
-    color: #5b4410;
-    display: flex;
-    gap: 10px;
-    margin-bottom: 12px;
-    min-height: 38px;
-    padding: 0 10px;
-  }
-
-  .section-label {
-    color: #63716b;
-    font-size: 0.78rem;
-    font-weight: 800;
-    margin: 14px 0 8px;
-    text-transform: uppercase;
-  }
-
-  .check-row,
-  .chip-check {
-    align-items: center;
-    display: flex;
-    gap: 8px;
-  }
-
-  .check-row {
-    margin-top: 12px;
-  }
-
-  .chip-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .allowance-editor {
-    align-items: end;
-    display: grid;
-    gap: 10px;
-    grid-template-columns: minmax(180px, 260px);
-  }
-
-  .chip-check {
-    background: #f5f7f5;
-    border: 1px solid #dfe6e1;
-    border-radius: 8px;
-    min-height: 36px;
-    padding: 0 10px;
-  }
-
-  .rule-list {
-    display: grid;
-    gap: 6px;
-  }
-
-  .rule-list button {
-    align-items: center;
-    background: #f5f7f5;
-    border: 1px solid #dfe6e1;
-    border-radius: 8px;
-    color: #26312c;
-    display: grid;
-    gap: 8px;
-    grid-template-columns: 10px minmax(0, 1fr) max-content;
-    min-height: 42px;
-    padding: 0 10px;
-    text-align: left;
-  }
-
-  .rule-list button.active {
-    border-color: #1f8f68;
-    box-shadow: inset 3px 0 0 #1f8f68;
-  }
-
-  .rule-list em {
-    color: #65746d;
-    font-size: 0.76rem;
-    font-style: normal;
-  }
-
-  .tier-dot {
-    background: #386dc0;
-    border-radius: 999px;
-    height: 10px;
-    width: 10px;
-  }
-
-  .tier-dot.hard {
-    background: #c94f4f;
-  }
-
-  .table-wrap {
-    margin-top: 14px;
-    overflow-x: auto;
-  }
-
-  table {
-    border-collapse: collapse;
-    min-width: 100%;
-  }
-
-  th,
-  td {
-    border-bottom: 1px solid #e2e8e4;
-    padding: 10px 8px;
-    text-align: left;
-  }
-
-  th {
-    color: #62706a;
-    font-size: 0.78rem;
-    text-transform: uppercase;
-  }
-
-  .schedule-grid {
-    display: grid;
-    gap: 1px;
-    grid-template-columns: 180px repeat(7, minmax(92px, 1fr));
-    overflow-x: auto;
-  }
-
-  .schedule-head,
-  .schedule-name,
-  .schedule-cell {
-    background: #f6f8f6;
-    min-height: 42px;
-    padding: 10px;
-  }
-
-  .schedule-head {
-    color: #62706a;
-    font-size: 0.78rem;
-    font-weight: 800;
-    text-transform: uppercase;
-  }
-
-  .schedule-name {
-    font-weight: 700;
-  }
-
-  .schedule-cell {
-    color: #68766f;
-    font-size: 0.9rem;
-  }
-
-  .schedule-cell.filled {
-    background: #e2f3ea;
-    color: #145c3d;
-    font-weight: 700;
-  }
-
-  .bar-list,
-  .event-list,
-  .health-list {
-    display: grid;
-    gap: 8px;
-  }
-
-  .bar-row,
-  .event-row,
-  .health-row {
-    align-items: center;
-    display: grid;
-    gap: 10px;
-    min-height: 36px;
-  }
-
-  .bar-row {
-    grid-template-columns: 140px minmax(0, 1fr) 42px;
-  }
-
-  .bar-track {
-    background: #e4ebe6;
-    border-radius: 999px;
-    height: 10px;
-    overflow: hidden;
-  }
-
-  .bar-fill {
-    background: #386dc0;
-    height: 100%;
-  }
-
-  .event-row {
-    grid-template-columns: 150px minmax(0, 1fr) max-content;
-  }
-
-  .event-row span,
-  .event-row time {
-    color: #68766f;
-    font-size: 0.88rem;
-  }
-
-  .status-list {
-    display: grid;
-    gap: 10px;
-  }
-
-  .status-row {
-    align-items: center;
-    border-bottom: 1px solid #e2e8e4;
-    display: grid;
-    gap: 10px;
-    grid-template-columns: 132px minmax(0, 1fr);
-    min-height: 34px;
-    padding-bottom: 8px;
-  }
-
-  .status-row span {
-    color: #63716b;
-    font-size: 0.78rem;
-    font-weight: 800;
-    text-transform: uppercase;
-  }
-
-  .status-row strong {
-    justify-self: start;
-  }
-
-  .status-row strong[data-state="active"] {
-    color: #1f8f68;
-  }
-
-  .status-row strong[data-state="stopped"] {
-    color: #b87912;
-  }
-
-  .status-row small {
-    color: #68766f;
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-
-  .enforcement-actions {
-    margin-top: 14px;
-  }
-
-  .danger-action {
-    color: #7b2727;
-  }
-
-  .uninstall-form {
-    align-items: end;
-    display: grid;
-    gap: 12px;
-    grid-template-columns: minmax(0, 1fr) max-content;
-  }
-
-  .health-row {
-    border-bottom: 1px solid #e2e8e4;
-    grid-template-columns: 22px 170px 70px minmax(0, 1fr);
-    padding-bottom: 8px;
-  }
-
-  .health-row[data-state="ok"] {
-    --health-color: #1f8f68;
-  }
-
-  .health-row[data-state="warn"] {
-    --health-color: #b87912;
-  }
-
-  .health-row[data-state="error"] {
-    --health-color: #c94f4f;
-  }
-
-  .health-row :global(svg) {
-    color: var(--health-color, #64736c);
-  }
-
-  .health-row small {
-    color: #68766f;
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-
-  pre {
-    background: #18201d;
-    border-radius: 8px;
-    color: #dcf4e8;
-    font-size: 0.85rem;
-    margin: 14px 0 0;
-    max-height: 340px;
-    overflow: auto;
-    padding: 12px;
-  }
-
-  .empty-state {
-    color: #66756e;
-    padding: 12px 0;
-  }
-
-  .footer-line {
-    color: #65736d;
-    display: flex;
-    font-size: 0.82rem;
-    gap: 18px;
-    justify-content: space-between;
-    margin-top: auto;
-    min-height: 32px;
-    padding-top: 12px;
-  }
-
-  @media (max-width: 980px) {
-    .app-shell {
-      grid-template-columns: 1fr;
-    }
-
-    .sidebar {
-      min-height: auto;
-    }
-
-    .nav-list {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-
-    .workspace {
-      max-height: none;
-    }
-
-    .dashboard-grid,
-    .content-grid,
-    .split-view,
-    .setup-grid,
-    .allowance-editor,
-    .uninstall-form {
-      grid-template-columns: 1fr;
-    }
-
-    .topbar,
-    .topbar-actions {
-      align-items: stretch;
-      flex-direction: column;
-    }
-
-    .socket-field {
-      min-width: 0;
-    }
-  }
-</style>

@@ -10,6 +10,97 @@ This is not yet a polished installer. Read the commands before running them:
 they write to `/usr/local`, `/etc`, `/var/lib`, `/run`, and browser managed
 policy locations.
 
+## Quick Current-Code Debian Package Guide
+
+Use this path when you changed the repository and want a new `.deb` that
+contains the current daemon, native host, Tauri GUI, browser artifacts, systemd
+units, and packaging metadata from this checkout.
+
+Run from the repository root on the build machine:
+
+```bash
+./scripts/package-deb.sh
+```
+
+Do not pass `--no-build` when you want the package to include current source
+changes. The default build path compiles:
+
+- `focusd/target/release/blockuntud`
+- `native-host/target/release/blockuntu-native`
+- `focus-gui/src-tauri/target/release/blockuntu-gui`
+
+The GUI build goes through `npm run tauri -- build --no-bundle`, which embeds
+the current frontend assets. That is what prevents a packaged GUI from opening
+the development URL at `http://localhost:1420`.
+
+The current default Debian package version is `0.1.0-5`, and the artifact is:
+
+```bash
+target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
+```
+
+Inspect the package before copying it to a target machine:
+
+```bash
+dpkg-deb -I target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
+dpkg-deb -c target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb | less
+```
+
+Install the package on the target Ubuntu/Debian machine with `apt`, not raw
+`dpkg -i`:
+
+```bash
+sudo apt install ./target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
+sudo usermod -aG blockuntu "$USER"
+```
+
+Log out and back in after the `usermod` command so the GUI, browsers, and
+shells receive the `blockuntu` socket-group membership.
+
+For Debian-package installs, uninstall through the GUI Admin tab when possible:
+type the first-run uninstall phrase or the system recovery phrase exactly and
+run the uninstall action. The Debian package creates the recovery phrase at
+`/etc/blockuntu/uninstall-recovery.txt` with `root:blockuntu` ownership and
+`0640` permissions. The GUI uses `pkexec` to execute the package purge. The
+equivalent terminal command is:
+
+```bash
+sudo dpkg --purge blockuntu
+```
+
+Package purge stops and disables the BlocKuntu services, removes the managed
+`/etc/hosts` block, removes BlocKuntu-owned browser policies, and removes
+`/etc/blockuntu`, `/var/lib/blockuntu`, and `/run/blockuntu`.
+
+See [UNINSTALL.md](UNINSTALL.md) for the full uninstall phrase and cleanup
+behavior.
+
+The Debian package also creates a Tier 1 edit key at
+`/etc/blockuntu/tier1-edit-key.txt` with `root:blockuntu` ownership and `0640`
+permissions. The GUI shows this key in the first-run panel. Enter it in the
+Admin tab to unlock currently active Tier 1 site-list edits for five minutes.
+
+The runtime layout table below describes the scripted/manual production install
+under `/usr/local`. The Debian package uses Debian package paths instead,
+including `/usr/bin/blockuntud`, `/usr/bin/blockuntu-native`, and
+`/usr/bin/blockuntu-gui`.
+
+If you used `./scripts/install-production.sh` instead of the `.deb`, use the
+scripted uninstaller:
+
+```bash
+./scripts/uninstall-production.sh
+```
+
+Use destructive cleanup flags only when you intentionally want to remove data,
+browser policies, or the system group:
+
+```bash
+./scripts/uninstall-production.sh --purge-data
+./scripts/uninstall-production.sh --remove-browser-policies
+./scripts/uninstall-production.sh --remove-group
+```
+
 ## Target System
 
 Expected environment:
@@ -197,13 +288,13 @@ Build a complete Debian package from the repository root:
 The package is written to `target/debian`, for example:
 
 ```bash
-target/debian/blockuntu_0.1.0-3_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
 ```
 
 On a target Ubuntu/Debian machine, install it with:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-3_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
 ```
 
 Use `apt install ./...deb`, not `dpkg -i`, for normal installs. `dpkg -i`
@@ -225,6 +316,8 @@ The `.deb` installs:
 - Native Messaging manifests
 - the GUI desktop launcher and icons
 - a minimal config with only strict browser enforcement enabled
+- a system recovery uninstall phrase at `/etc/blockuntu/uninstall-recovery.txt`
+- a Tier 1 edit key at `/etc/blockuntu/tier1-edit-key.txt`
 - local extension artifacts used later as managed-policy install sources
 
 It does not install or enable browser extensions inside Firefox or Chrome, and
@@ -236,9 +329,12 @@ sudo usermod -aG blockuntu "$USER"
 ```
 
 Then log out and back in, open the GUI once for the first-run overview, and
-store the uninstall phrase shown there. Install and enable the browser
-extension manually, then restart the browser. The daemon writes the matching
-managed policy after the first heartbeat.
+store the uninstall phrase shown there. The package also keeps a system recovery
+phrase at `/etc/blockuntu/uninstall-recovery.txt`; either phrase can be typed
+into the GUI Admin uninstall field. Also store the Tier 1 edit key shown there;
+the Admin tab can use it to unlock active Tier 1 site-list edits for five
+minutes. Install and enable the browser extension manually, then restart the
+browser. The daemon writes the matching managed policy after the first heartbeat.
 
 ## Manual Build And Install
 
@@ -518,8 +614,10 @@ If policies or manifests changed, restart the affected browser.
 
 ## Uninstall
 
-For a Debian package install, use the GUI Admin uninstall action and type the
-first-run uninstall phrase exactly. The GUI uses `pkexec` to run:
+For a Debian package install, use the GUI Admin uninstall action and type either
+the first-run uninstall phrase or the system recovery phrase exactly. The
+recovery phrase is stored at `/etc/blockuntu/uninstall-recovery.txt`. The GUI
+uses `pkexec` to run:
 
 ```bash
 dpkg --purge blockuntu
@@ -528,6 +626,9 @@ dpkg --purge blockuntu
 Package removal stops the BlocKuntu systemd units, removes the managed
 `/etc/hosts` block, removes BlocKuntu-owned browser policies, and purges the
 package config/data paths.
+
+See [UNINSTALL.md](UNINSTALL.md) for exact phrase storage, validation, and
+cleanup details.
 
 The scripted uninstall removes the production-style system install:
 

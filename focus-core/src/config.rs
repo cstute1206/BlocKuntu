@@ -378,7 +378,7 @@ pub struct ScheduleConfig {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScheduleWindow {
-    pub weekday: Weekday,
+    pub weekday: ScheduleDay,
     pub start: TimeOfDay,
     pub end: TimeOfDay,
 }
@@ -423,6 +423,21 @@ pub enum Weekday {
     Sun,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ScheduleDay {
+    Everyday,
+    Workdays,
+    Weekend,
+    Mon,
+    Tue,
+    Wed,
+    Thu,
+    Fri,
+    Sat,
+    Sun,
+}
+
 impl From<chrono::Weekday> for Weekday {
     fn from(value: chrono::Weekday) -> Self {
         match value {
@@ -433,6 +448,26 @@ impl From<chrono::Weekday> for Weekday {
             chrono::Weekday::Fri => Self::Fri,
             chrono::Weekday::Sat => Self::Sat,
             chrono::Weekday::Sun => Self::Sun,
+        }
+    }
+}
+
+impl ScheduleDay {
+    pub fn includes(self, weekday: Weekday) -> bool {
+        match self {
+            Self::Everyday => true,
+            Self::Workdays => matches!(
+                weekday,
+                Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu | Weekday::Fri
+            ),
+            Self::Weekend => matches!(weekday, Weekday::Sat | Weekday::Sun),
+            Self::Mon => weekday == Weekday::Mon,
+            Self::Tue => weekday == Weekday::Tue,
+            Self::Wed => weekday == Weekday::Wed,
+            Self::Thu => weekday == Weekday::Thu,
+            Self::Fri => weekday == Weekday::Fri,
+            Self::Sat => weekday == Weekday::Sat,
+            Self::Sun => weekday == Weekday::Sun,
         }
     }
 }

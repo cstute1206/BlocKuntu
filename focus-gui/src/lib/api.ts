@@ -11,6 +11,8 @@ import type {
   Rule,
   Schedule,
   SystemHealth,
+  Tier1EditKey,
+  Tier1EditStatus,
   UninstallConfirmation,
   UninstallResult,
   UnlockResult
@@ -131,6 +133,29 @@ export function requestUnlock(
     request: { target, minutes, reason },
     socketPath
   });
+}
+
+export function tier1EditKey(): Promise<Tier1EditKey> {
+  return invoke("tier1_edit_key");
+}
+
+export function tier1EditStatus(socketPath?: string): Promise<Tier1EditStatus> {
+  return daemonRpc(
+    "tier1_edit_status",
+    { now: new Date().toISOString() },
+    socketPath
+  ) as Promise<Tier1EditStatus>;
+}
+
+export function unlockTier1Edit(
+  phrase: string,
+  socketPath?: string
+): Promise<Tier1EditStatus> {
+  return daemonRpc(
+    "unlock_tier1_edit",
+    { phrase, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<Tier1EditStatus>;
 }
 
 export function uninstallConfirmationPhrase(): Promise<UninstallConfirmation> {

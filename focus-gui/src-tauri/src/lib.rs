@@ -31,7 +31,10 @@ const CHROMIUM_SYSTEM_NATIVE_HOST_MANIFEST: &str =
     "/etc/chromium/native-messaging-hosts/blockuntu_native.json";
 const UNSUPPORTED_BROWSER_RULE_ID: &str = "unsupported-browsers-hard";
 const UNINSTALL_PHRASE_FILE: &str = "uninstall-confirmation.txt";
+const SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE: &str = "/etc/blockuntu/uninstall-recovery.txt";
+const TIER1_EDIT_KEY_FILE: &str = "/etc/blockuntu/tier1-edit-key.txt";
 const DEBIAN_PACKAGE_NAME: &str = "blockuntu";
+const BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS: u64 = 6;
 
 #[derive(Debug, Error)]
 enum GuiError {
@@ -106,6 +109,11 @@ struct UnlockRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UninstallConfirmation {
     phrase: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Tier1EditKey {
+    key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,9 +197,25 @@ fn uninstall_confirmation_phrase() -> Result<UninstallConfirmation, GuiError> {
 }
 
 #[tauri::command]
+fn tier1_edit_key() -> Result<Tier1EditKey, GuiError> {
+    let key = fs::read_to_string(TIER1_EDIT_KEY_FILE)?
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    if key.is_empty() {
+        return Err(GuiError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Tier 1 edit key is empty: {TIER1_EDIT_KEY_FILE}"),
+        )));
+    }
+    Ok(Tier1EditKey { key })
+}
+
+#[tauri::command]
 fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
-    let expected = load_or_create_uninstall_phrase()?;
-    if phrase.trim() != expected {
+    if !uninstall_phrase_matches(phrase.trim())? {
         return Err(GuiError::InvalidUninstallPhrase);
     }
 
@@ -199,6 +223,10 @@ fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
         return Err(GuiError::UninstallCommand(
             "Debian package blockuntu is not installed on this system".to_string(),
         ));
+    }
+
+    if notify_browser_extensions_before_uninstall() {
+        std::thread::sleep(Duration::from_secs(BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS));
     }
 
     let pkexec =
@@ -296,6 +324,11 @@ fn resolve_socket_path(socket_path: Option<&str>) -> String {
     }
 }
 
+fn notify_browser_extensions_before_uninstall() -> bool {
+    let socket = resolve_socket_path(None);
+    call_daemon(&socket, "prepare_uninstall", json!({})).is_ok()
+}
+
 fn load_or_create_uninstall_phrase() -> Result<String, GuiError> {
     let path = uninstall_phrase_path()?;
     match fs::read_to_string(&path) {
@@ -310,6 +343,52 @@ fn load_or_create_uninstall_phrase() -> Result<String, GuiError> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => write_uninstall_phrase(&path),
         Err(err) => Err(err.into()),
     }
+}
+
+fn uninstall_phrase_matches(candidate: &str) -> Result<bool, GuiError> {
+    if candidate.is_empty() {
+        return Ok(false);
+    }
+
+    let primary_phrase = load_or_create_uninstall_phrase()?;
+    uninstall_phrase_matches_with_recovery(
+        candidate,
+        &primary_phrase,
+        Path::new(SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE),
+    )
+}
+
+fn uninstall_phrase_matches_with_recovery(
+    candidate: &str,
+    primary_phrase: &str,
+    recovery_phrase_path: &Path,
+) -> Result<bool, GuiError> {
+    if candidate.is_empty() {
+        return Ok(false);
+    }
+    if candidate == primary_phrase.trim() {
+        return Ok(true);
+    }
+
+    match fs::read_to_string(recovery_phrase_path) {
+        Ok(contents) => Ok(phrase_contents_match(candidate, &contents)),
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn phrase_contents_match(candidate: &str, contents: &str) -> bool {
+    contents
+        .lines()
+        .map(str::trim)
+        .any(|phrase| !phrase.is_empty() && candidate == phrase)
 }
 
 fn write_uninstall_phrase(path: &Path) -> Result<String, GuiError> {
@@ -924,9 +1003,64 @@ pub fn run() {
             evaluate_url,
             request_unlock,
             uninstall_confirmation_phrase,
+            tier1_edit_key,
             uninstall_blockuntu,
             system_health
         ])
         .run(tauri::generate_context!())
         .expect("error while running BlocKuntu GUI");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_recovery_path(name: &str) -> PathBuf {
+        let unique = format!(
+            "blockuntu-gui-{name}-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        std::env::temp_dir().join(unique)
+    }
+
+    #[test]
+    fn uninstall_phrase_accepts_primary_phrase() {
+        let path = temp_recovery_path("primary");
+        let result = uninstall_phrase_matches_with_recovery("primary", "primary", &path)
+            .expect("phrase check should succeed");
+
+        assert!(result);
+    }
+
+    #[test]
+    fn uninstall_phrase_accepts_recovery_phrase() {
+        let path = temp_recovery_path("recovery");
+        fs::write(&path, "BLOCKUNTU-UNINSTALL-RECOVERY-AAAA\n").expect("write recovery phrase");
+
+        let result = uninstall_phrase_matches_with_recovery(
+            "BLOCKUNTU-UNINSTALL-RECOVERY-AAAA",
+            "primary",
+            &path,
+        )
+        .expect("phrase check should succeed");
+
+        let _ = fs::remove_file(&path);
+        assert!(result);
+    }
+
+    #[test]
+    fn uninstall_phrase_rejects_empty_or_unknown_phrase() {
+        let path = temp_recovery_path("unknown");
+        fs::write(&path, "BLOCKUNTU-UNINSTALL-RECOVERY-AAAA\n").expect("write recovery phrase");
+
+        let empty = uninstall_phrase_matches_with_recovery("", "primary", &path)
+            .expect("empty phrase check should succeed");
+        let unknown = uninstall_phrase_matches_with_recovery("unknown", "primary", &path)
+            .expect("unknown phrase check should succeed");
+
+        let _ = fs::remove_file(&path);
+        assert!(!empty);
+        assert!(!unknown);
+    }
 }

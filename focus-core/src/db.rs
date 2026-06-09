@@ -7,8 +7,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::{
     AllowanceConfig, AppMatcherConfig, AppMatcherKind, AppRuleConfig, Config, ConfigError,
     DefaultsConfig, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
-    ScheduleConfig, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockPolicyConfig, UnlockState,
-    VisitState, Weekday,
+    ScheduleConfig, ScheduleDay, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockPolicyConfig,
+    UnlockState, VisitState,
 };
 
 pub struct Database {
@@ -226,7 +226,7 @@ impl Database {
                     "#,
                     params![
                         &schedule.id,
-                        weekday_to_str(window.weekday),
+                        schedule_day_to_str(window.weekday),
                         window.start.to_string(),
                         window.end.to_string(),
                         position as i64,
@@ -523,7 +523,7 @@ impl Database {
         for row in rows {
             let (weekday, start, end) = row?;
             windows.push(ScheduleWindow {
-                weekday: weekday_from_str(&weekday)?,
+                weekday: schedule_day_from_str(&weekday)?,
                 start: TimeOfDay::from_str(&start).map_err(|err| ConfigError::Validation(err))?,
                 end: TimeOfDay::from_str(&end).map_err(|err| ConfigError::Validation(err))?,
             });
@@ -1155,7 +1155,7 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
         CREATE TABLE IF NOT EXISTS policy_schedule_windows (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             schedule_id TEXT NOT NULL,
-            weekday TEXT NOT NULL CHECK (weekday IN ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')),
+            weekday TEXT NOT NULL CHECK (weekday IN ('everyday', 'workdays', 'weekend', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')),
             start_time TEXT NOT NULL,
             end_time TEXT NOT NULL,
             position INTEGER NOT NULL DEFAULT 0,
@@ -1240,6 +1240,73 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
         );
         "#,
     )?;
+    migrate_policy_schedule_windows_day_groups(conn)?;
+    Ok(())
+}
+
+fn migrate_policy_schedule_windows_day_groups(conn: &Connection) -> Result<(), Error> {
+    let table_sql: Option<String> = conn
+        .query_row(
+            r#"
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'policy_schedule_windows'
+            "#,
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let Some(table_sql) = table_sql else {
+        return Ok(());
+    };
+
+    if table_sql.contains("'everyday'") {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = OFF;
+
+        ALTER TABLE policy_schedule_windows RENAME TO policy_schedule_windows_old;
+
+        CREATE TABLE policy_schedule_windows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            schedule_id TEXT NOT NULL,
+            weekday TEXT NOT NULL CHECK (weekday IN ('everyday', 'workdays', 'weekend', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')),
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(schedule_id) REFERENCES policy_schedules(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO policy_schedule_windows (
+            id,
+            schedule_id,
+            weekday,
+            start_time,
+            end_time,
+            position
+        )
+        SELECT
+            id,
+            schedule_id,
+            weekday,
+            start_time,
+            end_time,
+            position
+        FROM policy_schedule_windows_old;
+
+        DROP TABLE policy_schedule_windows_old;
+
+        CREATE INDEX IF NOT EXISTS idx_policy_schedule_windows_schedule
+            ON policy_schedule_windows(schedule_id, position);
+
+        PRAGMA foreign_keys = ON;
+        "#,
+    )?;
+
     Ok(())
 }
 
@@ -1352,28 +1419,34 @@ fn app_matcher_kind_from_str(value: &str) -> Result<AppMatcherKind, Error> {
     }
 }
 
-fn weekday_to_str(value: Weekday) -> &'static str {
+fn schedule_day_to_str(value: ScheduleDay) -> &'static str {
     match value {
-        Weekday::Mon => "mon",
-        Weekday::Tue => "tue",
-        Weekday::Wed => "wed",
-        Weekday::Thu => "thu",
-        Weekday::Fri => "fri",
-        Weekday::Sat => "sat",
-        Weekday::Sun => "sun",
+        ScheduleDay::Everyday => "everyday",
+        ScheduleDay::Workdays => "workdays",
+        ScheduleDay::Weekend => "weekend",
+        ScheduleDay::Mon => "mon",
+        ScheduleDay::Tue => "tue",
+        ScheduleDay::Wed => "wed",
+        ScheduleDay::Thu => "thu",
+        ScheduleDay::Fri => "fri",
+        ScheduleDay::Sat => "sat",
+        ScheduleDay::Sun => "sun",
     }
 }
 
-fn weekday_from_str(value: &str) -> Result<Weekday, Error> {
+fn schedule_day_from_str(value: &str) -> Result<ScheduleDay, Error> {
     match value {
-        "mon" => Ok(Weekday::Mon),
-        "tue" => Ok(Weekday::Tue),
-        "wed" => Ok(Weekday::Wed),
-        "thu" => Ok(Weekday::Thu),
-        "fri" => Ok(Weekday::Fri),
-        "sat" => Ok(Weekday::Sat),
-        "sun" => Ok(Weekday::Sun),
-        _ => Err(ConfigError::Validation(format!("unknown schedule weekday '{value}'")).into()),
+        "everyday" => Ok(ScheduleDay::Everyday),
+        "workdays" => Ok(ScheduleDay::Workdays),
+        "weekend" => Ok(ScheduleDay::Weekend),
+        "mon" => Ok(ScheduleDay::Mon),
+        "tue" => Ok(ScheduleDay::Tue),
+        "wed" => Ok(ScheduleDay::Wed),
+        "thu" => Ok(ScheduleDay::Thu),
+        "fri" => Ok(ScheduleDay::Fri),
+        "sat" => Ok(ScheduleDay::Sat),
+        "sun" => Ok(ScheduleDay::Sun),
+        _ => Err(ConfigError::Validation(format!("unknown schedule day '{value}'")).into()),
     }
 }
 

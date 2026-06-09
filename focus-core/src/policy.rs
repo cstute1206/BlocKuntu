@@ -557,10 +557,12 @@ fn schedule_is_active(schedule: &ScheduleConfig, context: &EvaluationContext<'_>
         let end = window.end.minutes_after_midnight();
 
         if start < end {
-            window.weekday == current_weekday && current_minute >= start && current_minute < end
+            window.weekday.includes(current_weekday)
+                && current_minute >= start
+                && current_minute < end
         } else {
-            (window.weekday == current_weekday && current_minute >= start)
-                || (window.weekday == current_weekday.previous() && current_minute < end)
+            (window.weekday.includes(current_weekday) && current_minute >= start)
+                || (window.weekday.includes(current_weekday.previous()) && current_minute < end)
         }
     })
 }

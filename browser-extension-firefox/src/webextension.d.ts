@@ -1,4 +1,6 @@
 declare namespace BlockuntuWebExtension {
+  type StorageItems = Record<string, unknown>;
+
   interface RuntimePort {
     postMessage(message: unknown): void;
     disconnect(): void;
@@ -31,15 +33,32 @@ declare namespace BlockuntuWebExtension {
 
   interface WebNavigationApi {
     onBeforeNavigate: ExtensionEvent<(details: NavigationDetails) => void>;
+    onHistoryStateUpdated: ExtensionEvent<(details: NavigationDetails) => void>;
+  }
+
+  interface Tab {
+    id?: number;
+    url?: string;
   }
 
   interface TabsApi {
+    query(queryInfo: { url?: string | string[] }): Promise<Tab[]>;
     update(tabId: number, updateProperties: { url?: string }): Promise<unknown>;
     onRemoved: ExtensionEvent<(tabId: number) => void>;
   }
 
+  interface StorageArea {
+    get(keys?: string | string[] | StorageItems | null): Promise<StorageItems>;
+    set(items: StorageItems): Promise<void>;
+  }
+
+  interface StorageApi {
+    local: StorageArea;
+  }
+
   interface BrowserApi {
     runtime: RuntimeApi;
+    storage: StorageApi;
     webNavigation: WebNavigationApi;
     tabs: TabsApi;
   }

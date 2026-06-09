@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-3"
+VERSION="0.1.0-5"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
@@ -22,7 +22,7 @@ time; policy repair is deferred until the first browser-extension heartbeat.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-3.
+  --version VERSION   Package version, default 0.1.0-5.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -195,6 +195,39 @@ if ! getent group blockuntu >/dev/null 2>&1; then
   groupadd --system blockuntu
 fi
 
+create_recovery_phrase() {
+  recovery_file="/etc/blockuntu/uninstall-recovery.txt"
+  if [ -s "${recovery_file}" ]; then
+    return 0
+  fi
+
+  random_hex="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
+  temp_file="$(mktemp)"
+  printf 'BLOCKUNTU-UNINSTALL-RECOVERY-%s\n' "${chunks}" >"${temp_file}"
+  install -d -o root -g root -m 0755 /etc/blockuntu
+  install -o root -g blockuntu -m 0640 "${temp_file}" "${recovery_file}"
+  rm -f "${temp_file}"
+}
+
+create_tier1_edit_key() {
+  key_file="/etc/blockuntu/tier1-edit-key.txt"
+  if [ -s "${key_file}" ]; then
+    return 0
+  fi
+
+  random_hex="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
+  temp_file="$(mktemp)"
+  printf 'BLOCKUNTU-TIER1-EDIT-%s\n' "${chunks}" >"${temp_file}"
+  install -d -o root -g root -m 0755 /etc/blockuntu
+  install -o root -g blockuntu -m 0640 "${temp_file}" "${key_file}"
+  rm -f "${temp_file}"
+}
+
+create_recovery_phrase
+create_tier1_edit_key
+
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
   systemctl enable --now blockuntu.socket blockuntu.service blockuntu-watchdog.service blockuntu-hosts.path || true
@@ -217,7 +250,12 @@ Browser policies are deferred. Install and enable the BlocKuntu browser
 extension manually; the daemon writes managed policy after the first heartbeat.
 
 Open the GUI once after the first login and store the uninstall phrase shown
-in the First Run panel. The Admin uninstall action requires that phrase.
+in the First Run panel. The Admin uninstall action accepts that phrase or the
+system recovery phrase.
+A system recovery uninstall phrase is also stored at:
+  /etc/blockuntu/uninstall-recovery.txt
+The Tier 1 site-list edit key is stored at:
+  /etc/blockuntu/tier1-edit-key.txt
 MSG
 POSTINST
 
