@@ -577,6 +577,29 @@ sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
   /etc/chromium/native-messaging-hosts/blockuntu_native.json
 ```
 
+For Firefox Snap or Flatpak, configure the per-user confined browser profile
+after the native host exists:
+
+```bash
+./scripts/setup-confined-firefox-native-host.sh \
+  --native-host /usr/local/bin/blockuntu-native
+```
+
+For Firefox Flatpak this also writes the `org.mozilla.firefox.systemconfig`
+policy at
+`$XDG_DATA_HOME/flatpak/extension/org.mozilla.firefox.systemconfig/<arch>/stable/policies/policies.json`
+(default `~/.local/share/flatpak/extension/...`)
+and copies the signed XPI into
+`~/.var/app/org.mozilla.firefox/data/blockuntu/BlocKuntu-Signed.xpi`. Inside the
+Flatpak sandbox the policy is visible as
+`/app/etc/firefox/policies/policies.json`.
+
+Packaged installs expose the same helper as:
+
+```bash
+blockuntu-setup-confined-firefox
+```
+
 ## Tauri GUI Development
 
 ```bash

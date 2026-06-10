@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-5"
+VERSION="0.1.0-7"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
@@ -22,7 +22,7 @@ time; policy repair is deferred until the first browser-extension heartbeat.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-5.
+  --version VERSION   Package version, default 0.1.0-7.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -112,6 +112,13 @@ log "creating package tree ${PKG_ROOT}"
 install -Dm755 focusd/target/release/blockuntud "${PKG_ROOT}/usr/bin/blockuntud"
 install -Dm755 native-host/target/release/blockuntu-native "${PKG_ROOT}/usr/bin/blockuntu-native"
 install -Dm755 focus-gui/src-tauri/target/release/blockuntu-gui "${PKG_ROOT}/usr/bin/blockuntu-gui"
+install -Dm755 scripts/setup-confined-firefox-native-host.sh \
+  "${PKG_ROOT}/usr/lib/blockuntu/setup-confined-firefox-native-host.sh"
+cat >"${PKG_ROOT}/usr/bin/blockuntu-setup-confined-firefox" <<'SH'
+#!/bin/sh
+exec /usr/lib/blockuntu/setup-confined-firefox-native-host.sh "$@"
+SH
+chmod 0755 "${PKG_ROOT}/usr/bin/blockuntu-setup-confined-firefox"
 
 install -Dm644 packaging/deb/blockuntu.toml "${PKG_ROOT}/etc/blockuntu/config.toml"
 install -Dm644 browser-extension-firefox/BlocKuntu-Signed.xpi \
@@ -246,8 +253,12 @@ BlocKuntu installed.
 Add the desktop user to the socket group, then log out and back in:
   sudo usermod -aG blockuntu "$USER"
 
-Browser policies are deferred. Install and enable the BlocKuntu browser
-extension manually; the daemon writes managed policy after the first heartbeat.
+System Firefox, Firefox Snap, and Chrome policies are deferred. Install and
+enable the BlocKuntu browser extension manually; the daemon writes managed
+policy after the first heartbeat.
+If you use Firefox Snap or Flatpak, run this as the desktop user and then
+restart that Firefox build:
+  blockuntu-setup-confined-firefox
 
 Open the GUI once after the first login and store the uninstall phrase shown
 in the First Run panel. The Admin uninstall action accepts that phrase or the

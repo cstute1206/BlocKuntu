@@ -8,6 +8,7 @@ BUILD=1
 START_SERVICES=1
 INSTALL_GUI=1
 INSTALL_PREREQS=1
+INSTALL_CONFINED_FIREFOX=1
 OVERWRITE_CONFIG=0
 TARGET_USER="${SUDO_USER:-${USER:-}}"
 
@@ -22,14 +23,18 @@ Options:
   --no-start          Install files but do not enable/start systemd units.
   --skip-prereqs     Do not install missing build/runtime prerequisites.
   --skip-gui          Do not build or install the Tauri GUI.
+  --skip-confined-firefox
+                      Do not configure Snap/Flatpak Firefox integration.
   --overwrite-config  Replace /etc/blockuntu/config.toml with the minimal production config.
   --user USER         Desktop user to add to the blockuntu socket group.
   -h, --help          Show this help.
 
-Browser extensions are not installed or force-installed by this script.
-It installs Native Messaging manifests and starts blockuntud with
---defer-browser-policy-repair-until-heartbeat, so the user must install and
-enable the browser extensions manually before managed policy is written.
+Browser extensions are not installed or force-installed for system Firefox,
+Firefox Snap, or Chrome by this script. It installs Native Messaging manifests
+and starts blockuntud with --defer-browser-policy-repair-until-heartbeat, so
+the user must install and enable those browser extensions manually before
+managed policy is written. Firefox Flatpak is configured with a per-user
+systemconfig policy because it cannot read the host /etc/firefox policy path.
 USAGE
 }
 
@@ -48,6 +53,21 @@ require_cmd() {
 
 has_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+snap_firefox_installed() {
+  if ! has_cmd snap; then
+    return 1
+  fi
+  if has_cmd timeout; then
+    timeout 5 snap list firefox >/dev/null 2>&1
+  else
+    snap list firefox >/dev/null 2>&1
+  fi
+}
+
+flatpak_firefox_installed() {
+  has_cmd flatpak && flatpak info org.mozilla.firefox >/dev/null 2>&1
 }
 
 pkg_config_has() {
@@ -224,11 +244,11 @@ install_prerequisites() {
 }
 
 warn_browser_prerequisites() {
-  if has_cmd snap && snap list firefox >/dev/null 2>&1; then
-    log "warning: Firefox is installed as a Snap; normal host policy/native-messaging paths may not work"
+  if snap_firefox_installed; then
+    log "Firefox Snap detected; confined Firefox native-host setup will be installed for ${TARGET_USER}"
   fi
-  if has_cmd flatpak && flatpak info org.mozilla.firefox >/dev/null 2>&1; then
-    log "warning: Firefox is installed as a Flatpak; normal host policy/native-messaging paths may not work"
+  if flatpak_firefox_installed; then
+    log "Firefox Flatpak detected; confined Firefox native-host and policy setup will be installed for ${TARGET_USER}"
   fi
   if ! has_cmd firefox; then
     log "warning: firefox was not found on PATH; install a system Firefox package before using the Firefox extension"
@@ -254,6 +274,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-gui)
       INSTALL_GUI=0
+      shift
+      ;;
+    --skip-confined-firefox)
+      INSTALL_CONFINED_FIREFOX=0
       shift
       ;;
     --overwrite-config)
@@ -375,6 +399,15 @@ sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
   /etc/chromium/native-messaging-hosts/blockuntu_native.json
 
+if [[ "${INSTALL_CONFINED_FIREFOX}" -eq 1 ]]; then
+  "${REPO_ROOT}/scripts/setup-confined-firefox-native-host.sh" \
+    --user "${TARGET_USER}" \
+    --native-host /usr/local/bin/blockuntu-native \
+    --targets auto
+else
+  log "skipping confined Firefox setup"
+fi
+
 log "installing systemd units"
 sudo install -Dm644 packaging/systemd/blockuntu.socket /etc/systemd/system/blockuntu.socket
 sudo install -Dm644 packaging/systemd/blockuntu.service /etc/systemd/system/blockuntu.service
@@ -481,9 +514,14 @@ The Tier 1 site-list edit key is stored at:
 Browser policy repair is deferred until the first extension heartbeat in:
   /etc/systemd/system/blockuntu.service.d/90-defer-browser-policy.conf
 
-No Firefox or Chrome policies.json file is created until the matching browser
-extension sends its first heartbeat.
+No system Firefox, Firefox Snap, or Chrome policy file is created until the
+matching browser extension sends its first heartbeat. Firefox Flatpak uses a
+per-user systemconfig policy that is written by the confined Firefox helper.
 
 Native Messaging manifests were installed, so the manually installed extension
 can reach /run/blockuntu/blockuntud.sock through blockuntu-native.
+If Firefox Snap is installed for ${TARGET_USER}, its per-user manifest and host
+copy were installed too. If Firefox Flatpak is installed, its per-user manifest,
+host copy, copied XPI, and systemconfig policy were installed. Restart those
+browsers before testing.
 SUMMARY

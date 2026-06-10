@@ -18,8 +18,19 @@ const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.json";
 const DEV_FIREFOX_POLICY_PATH: &str = "/tmp/blockuntu/firefox/policies.json";
 const DEFAULT_CHROME_POLICY_PATH: &str = "/etc/opt/chrome/policies/managed/blockuntu.json";
 const DEV_CHROME_POLICY_PATH: &str = "/tmp/blockuntu/chrome/policies/managed/blockuntu.json";
+const FIREFOX_EXTENSION_IDS: [&str; 2] = ["blockuntu@example.local", "blockuntu-poc@example.local"];
+const FIREFOX_USER_NATIVE_HOST_MANIFEST: &str =
+    ".mozilla/native-messaging-hosts/blockuntu_native.json";
 const SYSTEM_NATIVE_HOST_MANIFEST: &str =
     "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json";
+const FLATPAK_FIREFOX_APP_ROOT: &str = ".var/app/org.mozilla.firefox";
+const FLATPAK_FIREFOX_NATIVE_HOST_MANIFEST: &str =
+    ".var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts/blockuntu_native.json";
+const FLATPAK_FIREFOX_SYSTEMCONFIG_ROOT: &str =
+    "flatpak/extension/org.mozilla.firefox.systemconfig";
+const SNAP_FIREFOX_APP_ROOT: &str = "snap/firefox/common";
+const SNAP_FIREFOX_NATIVE_HOST_MANIFEST: &str =
+    "snap/firefox/common/.mozilla/native-messaging-hosts/blockuntu_native.json";
 const CHROME_EXTENSION_ID: &str = "odedgejjcdilkoibeljkeohekonmdfea";
 const CHROME_USER_NATIVE_HOST_MANIFEST: &str =
     ".config/google-chrome/NativeMessagingHosts/blockuntu_native.json";
@@ -287,6 +298,8 @@ fn system_health(socket_path: Option<String>) -> SystemHealth {
         checks.push(hosts_file_check(Path::new("/etc/hosts")));
     }
     checks.push(native_host_manifest_check());
+    checks.extend(confined_firefox_native_host_checks());
+    checks.extend(confined_firefox_policy_checks());
     checks.push(chrome_native_host_manifest_check());
     checks.push(unsupported_browser_rule_check(&socket));
     checks.push(browser_extension_runtime_check(
@@ -772,19 +785,89 @@ fn hosts_enforcement_check(status: &Value) -> HealthCheck {
 fn native_host_manifest_check() -> HealthCheck {
     let user_manifest = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|home| home.join(".mozilla/native-messaging-hosts/blockuntu_native.json"));
+        .map(|home| home.join(FIREFOX_USER_NATIVE_HOST_MANIFEST));
 
     let candidate = user_manifest
         .filter(|path| path.exists())
         .unwrap_or_else(|| PathBuf::from(SYSTEM_NATIVE_HOST_MANIFEST));
 
+    firefox_manifest_check(
+        "native_host_manifest",
+        "Firefox Native host",
+        &candidate,
+        "Install the system Native Messaging manifest.",
+    )
+}
+
+fn confined_firefox_native_host_checks() -> Vec<HealthCheck> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+
+    let mut checks = Vec::new();
+    if home.join(FLATPAK_FIREFOX_APP_ROOT).exists() {
+        checks.push(firefox_manifest_check(
+            "firefox_flatpak_native_host_manifest",
+            "Firefox Flatpak Native host",
+            &home.join(FLATPAK_FIREFOX_NATIVE_HOST_MANIFEST),
+            "Run blockuntu-setup-confined-firefox, then restart Firefox Flatpak.",
+        ));
+    }
+    if home.join(SNAP_FIREFOX_APP_ROOT).exists() {
+        checks.push(firefox_manifest_check(
+            "firefox_snap_native_host_manifest",
+            "Firefox Snap Native host",
+            &home.join(SNAP_FIREFOX_NATIVE_HOST_MANIFEST),
+            "Run blockuntu-setup-confined-firefox, then restart Firefox Snap.",
+        ));
+    }
+
+    checks
+}
+
+fn confined_firefox_policy_checks() -> Vec<HealthCheck> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    if !home.join(FLATPAK_FIREFOX_APP_ROOT).exists() {
+        return Vec::new();
+    }
+
+    vec![firefox_flatpak_policy_check(&home)]
+}
+
+fn firefox_flatpak_policy_check(home: &Path) -> HealthCheck {
+    let candidate = flatpak_firefox_policy_path(home);
     match fs::read_to_string(&candidate) {
         Ok(contents) => {
-            let valid_json = serde_json::from_str::<Value>(&contents).is_ok();
+            let parsed = serde_json::from_str::<Value>(&contents);
+            let extension_settings = parsed
+                .as_ref()
+                .ok()
+                .and_then(|value| value.get("policies"))
+                .and_then(|policies| policies.get("ExtensionSettings"))
+                .and_then(|settings| {
+                    FIREFOX_EXTENSION_IDS
+                        .iter()
+                        .find_map(|id| settings.get(*id))
+                });
+            let force_installed = extension_settings
+                .and_then(|settings| settings.get("installation_mode"))
+                .and_then(Value::as_str)
+                == Some("force_installed");
+            let install_url = extension_settings
+                .and_then(|settings| settings.get("install_url"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let xpi_exists = install_url
+                .strip_prefix("file://")
+                .map(|path| Path::new(path).exists())
+                .unwrap_or(false);
+
             HealthCheck {
-                key: "native_host_manifest".to_string(),
-                label: "Native host manifest".to_string(),
-                state: if valid_json {
+                key: "firefox_flatpak_policy".to_string(),
+                label: "Firefox Flatpak policy".to_string(),
+                state: if parsed.is_ok() && force_installed && xpi_exists {
                     HealthState::Ok
                 } else {
                     HealthState::Error
@@ -793,12 +876,98 @@ fn native_host_manifest_check() -> HealthCheck {
             }
         }
         Err(err) => HealthCheck {
-            key: "native_host_manifest".to_string(),
-            label: "Native host manifest".to_string(),
+            key: "firefox_flatpak_policy".to_string(),
+            label: "Firefox Flatpak policy".to_string(),
             state: HealthState::Warn,
-            detail: format!("{}: {err}", candidate.display()),
+            detail: format!(
+                "{}: {err}; run blockuntu-setup-confined-firefox, then restart Firefox Flatpak.",
+                candidate.display()
+            ),
         },
     }
+}
+
+fn flatpak_firefox_policy_path(home: &Path) -> PathBuf {
+    let root = xdg_data_home(home).join(FLATPAK_FIREFOX_SYSTEMCONFIG_ROOT);
+    let arch = Command::new("flatpak")
+        .arg("--default-arch")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|stdout| stdout.trim().to_string())
+        .filter(|stdout| !stdout.is_empty())
+        .unwrap_or_else(|| std::env::consts::ARCH.to_string());
+
+    root.join(arch).join("stable/policies/policies.json")
+}
+
+fn xdg_data_home(home: &Path) -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(".local/share"))
+}
+
+fn firefox_manifest_check(
+    key: &str,
+    label: &str,
+    candidate: &Path,
+    missing_detail: &str,
+) -> HealthCheck {
+    match fs::read_to_string(&candidate) {
+        Ok(contents) => {
+            let parsed = serde_json::from_str::<Value>(&contents);
+            let valid_json = parsed.is_ok();
+            let extension_allowed = parsed
+                .as_ref()
+                .ok()
+                .and_then(|value| value.get("allowed_extensions"))
+                .and_then(Value::as_array)
+                .map(|extensions| {
+                    FIREFOX_EXTENSION_IDS.iter().any(|expected| {
+                        extensions
+                            .iter()
+                            .any(|extension| extension.as_str() == Some(expected))
+                    })
+                })
+                .unwrap_or(false);
+            let host_path = parsed
+                .as_ref()
+                .ok()
+                .and_then(|value| value.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let host_executable = executable_file(Path::new(host_path));
+            let detail = if host_path.is_empty() {
+                candidate.display().to_string()
+            } else {
+                format!("{} -> {host_path}", candidate.display())
+            };
+            HealthCheck {
+                key: key.to_string(),
+                label: label.to_string(),
+                state: if valid_json && extension_allowed && host_executable {
+                    HealthState::Ok
+                } else {
+                    HealthState::Error
+                },
+                detail,
+            }
+        }
+        Err(err) => HealthCheck {
+            key: key.to_string(),
+            label: label.to_string(),
+            state: HealthState::Warn,
+            detail: format!("{}: {err}; {missing_detail}", candidate.display()),
+        },
+    }
+}
+
+fn executable_file(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 fn chrome_native_host_manifest_check() -> HealthCheck {

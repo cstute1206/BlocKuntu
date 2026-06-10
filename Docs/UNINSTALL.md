@@ -29,10 +29,10 @@ The GUI path therefore has the same cleanup behavior as a Debian package purge.
 
 The GUI accepts two generated phrases:
 
-| Phrase | Path | Owner and mode | Created by | Displayed in GUI |
-| --- | --- | --- | --- | --- |
-| First-run phrase | `$XDG_DATA_HOME/blockuntu/uninstall-confirmation.txt` or `~/.local/share/blockuntu/uninstall-confirmation.txt` | current user, `0600` | GUI on first read if missing or empty | Yes |
-| System recovery phrase | `/etc/blockuntu/uninstall-recovery.txt` | `root:blockuntu`, `0640` | Debian package `postinst` if missing or empty | No |
+| Phrase                 | Path                                                                                                           | Owner and mode           | Created by                                    | Displayed in GUI |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------ | --------------------------------------------- | ---------------- |
+| First-run phrase       | `$XDG_DATA_HOME/blockuntu/uninstall-confirmation.txt` or `~/.local/share/blockuntu/uninstall-confirmation.txt` | current user, `0600`     | GUI on first read if missing or empty         | Yes              |
+| System recovery phrase | `/etc/blockuntu/uninstall-recovery.txt`                                                                        | `root:blockuntu`, `0640` | Debian package `postinst` if missing or empty | No               |
 
 Both phrases are generated from 24 random bytes from `/dev/urandom` and formatted
 as uppercase hex chunks. The normal first-run phrase starts with
@@ -95,10 +95,10 @@ Package purge removes or cleans:
 Browser policy cleanup is also part of package removal:
 
 - Firefox: removes `/etc/firefox/policies/policies.json` only if the file exists
-  and looks BlocKuntu-owned by containing `blockuntu`.
+and looks BlocKuntu-owned by containing `blockuntu`.
 - Chrome: removes `/etc/opt/chrome/policies/managed/blockuntu.json`.
 - Chrome update manifest: removes
-  `/usr/local/share/blockuntu/chrome-extension-updates.xml` if present.
+`/usr/local/share/blockuntu/chrome-extension-updates.xml` if present.
 
 Restart Firefox or Chrome after uninstall if the browser still shows old managed
 policy state.
@@ -110,10 +110,16 @@ the first-run uninstall phrase under `~/.local/share/blockuntu` or
 `$XDG_DATA_HOME/blockuntu`.
 
 Package purge also does not remove stale development Native Messaging manifests
-from user profile locations such as:
+or confined-browser Firefox files from user profile locations such as:
 
 ```text
 ~/.mozilla/native-messaging-hosts/blockuntu_native.json
+~/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts/blockuntu_native.json
+~/.var/app/org.mozilla.firefox/data/blockuntu/blockuntu-native
+~/.var/app/org.mozilla.firefox/data/blockuntu/BlocKuntu-Signed.xpi
+$XDG_DATA_HOME/flatpak/extension/org.mozilla.firefox.systemconfig/*/stable/policies/policies.json
+~/snap/firefox/common/.mozilla/native-messaging-hosts/blockuntu_native.json
+~/snap/firefox/common/.local/share/blockuntu/blockuntu-native
 ~/.config/google-chrome/NativeMessagingHosts/blockuntu_native.json
 ~/.config/chromium/NativeMessagingHosts/blockuntu_native.json
 ```
@@ -121,14 +127,20 @@ from user profile locations such as:
 Those user-level files can still matter if a browser extension was previously
 connected to a development install.
 
+If Firefox Flatpak was configured, remove the user override with:
+
+```bash
+flatpak override --user --nofilesystem=/run/blockuntu org.mozilla.firefox
+```
+
 ## Remove Versus Purge
 
 The GUI uses `dpkg --purge`, not a plain remove. That matters:
 
 - `dpkg --remove blockuntu` removes package files but can preserve package data
-  and local files under `/etc/blockuntu`.
+and local files under `/etc/blockuntu`.
 - `dpkg --purge blockuntu` removes package files and purges `/etc/blockuntu`,
-  `/var/lib/blockuntu`, and `/run/blockuntu`.
+`/var/lib/blockuntu`, and `/run/blockuntu`.
 
 Use purge when the goal is a real package uninstall.
 
@@ -142,10 +154,12 @@ If the machine was installed with `./scripts/install-production.sh`, use:
 
 That script does not use the GUI uninstall phrases. By default it removes the
 manual `/usr/local` install, systemd units, Native Messaging manifests, runtime
-files, and the BlocKuntu-managed hosts block.
+files, current-user Firefox Snap/Flatpak helper files, and the BlocKuntu-managed
+hosts block. For Firefox Flatpak, that includes the copied XPI and the per-user
+`org.mozilla.firefox.systemconfig` policy if it looks BlocKuntu-owned.
 
-It preserves browser policy files by default. Remove them only when you
-intentionally want to delete BlocKuntu-owned browser policy state:
+It preserves system browser policy files by default. Remove them only when you
+intentionally want to delete BlocKuntu-owned system browser policy state:
 
 ```bash
 ./scripts/uninstall-production.sh --remove-browser-policies

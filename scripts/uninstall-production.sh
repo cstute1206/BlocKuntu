@@ -145,6 +145,39 @@ remove_browser_policies() {
   remove_empty_dir "/etc/opt/chrome/policies"
 }
 
+remove_confined_firefox_native_hosts() {
+  local flatpak_manifest="${HOME}/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts/blockuntu_native.json"
+  local flatpak_host="${HOME}/.var/app/org.mozilla.firefox/data/blockuntu/blockuntu-native"
+  local flatpak_xpi="${HOME}/.var/app/org.mozilla.firefox/data/blockuntu/BlocKuntu-Signed.xpi"
+  local flatpak_systemconfig="${XDG_DATA_HOME:-${HOME}/.local/share}/flatpak/extension/org.mozilla.firefox.systemconfig"
+  local snap_manifest="${HOME}/snap/firefox/common/.mozilla/native-messaging-hosts/blockuntu_native.json"
+  local snap_host="${HOME}/snap/firefox/common/.local/share/blockuntu/blockuntu-native"
+
+  remove_path "${flatpak_manifest}"
+  remove_path "${flatpak_host}"
+  remove_path "${flatpak_xpi}"
+  remove_empty_dir "${HOME}/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts"
+  remove_empty_dir "${HOME}/.var/app/org.mozilla.firefox/data/blockuntu"
+
+  if [[ -d "${flatpak_systemconfig}" ]]; then
+    while IFS= read -r -d '' policy_path; do
+      if grep -qi "blockuntu" "${policy_path}" 2>/dev/null; then
+        remove_path "${policy_path}"
+        remove_empty_dir "$(dirname -- "${policy_path}")"
+      fi
+    done < <(find "${flatpak_systemconfig}" -path '*/policies/policies.json' -type f -print0)
+  fi
+
+  remove_path "${snap_manifest}"
+  remove_path "${snap_host}"
+  remove_empty_dir "${HOME}/snap/firefox/common/.mozilla/native-messaging-hosts"
+  remove_empty_dir "${HOME}/snap/firefox/common/.local/share/blockuntu"
+
+  if has_cmd flatpak; then
+    flatpak override --user --nofilesystem=/run/blockuntu org.mozilla.firefox >/dev/null 2>&1 || true
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --purge-data)
@@ -186,6 +219,8 @@ Removed by default:
   - /usr/local/bin/blockuntu-native
   - /usr/local/bin/blockuntu-gui
   - system Native Messaging manifests
+  - current-user Firefox Snap/Flatpak Native Messaging files
+  - current-user Firefox Flatpak copied XPI and systemconfig policy
   - GUI desktop launcher/icons
   - /run/blockuntu
   - BlocKuntu managed block in /etc/hosts
@@ -268,6 +303,7 @@ remove_path "/etc/chromium/native-messaging-hosts/blockuntu_native.json"
 remove_empty_dir "/usr/lib/mozilla/native-messaging-hosts"
 remove_empty_dir "/etc/opt/chrome/native-messaging-hosts"
 remove_empty_dir "/etc/chromium/native-messaging-hosts"
+remove_confined_firefox_native_hosts
 
 remove_browser_policies
 

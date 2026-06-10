@@ -59,6 +59,8 @@ Only `focusd` is trusted to mutate system state.
 Allowed privileged side effects:
 
 - Write Firefox enterprise policy at `/etc/firefox/policies/policies.json`.
+  Firefox Flatpak uses a per-user Flatpak `org.mozilla.firefox.systemconfig`
+  extension policy instead.
 - Write Chrome managed policy at
   `/etc/opt/chrome/policies/managed/blockuntu.json` and the local Chrome
   update manifest at `/usr/local/share/blockuntu/chrome-extension-updates.xml`.
@@ -215,6 +217,18 @@ Production uses:
 
 ```text
 /etc/firefox/policies/policies.json
+```
+
+Firefox Flatpak uses:
+
+```text
+$XDG_DATA_HOME/flatpak/extension/org.mozilla.firefox.systemconfig/<arch>/stable/policies/policies.json
+```
+
+which is mounted inside the sandbox at:
+
+```text
+/app/etc/firefox/policies/policies.json
 ```
 
 Production installers can defer Firefox and Chrome policy repair until the

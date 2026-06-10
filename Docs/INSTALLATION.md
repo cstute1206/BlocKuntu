@@ -33,24 +33,24 @@ The GUI build goes through `npm run tauri -- build --no-bundle`, which embeds
 the current frontend assets. That is what prevents a packaged GUI from opening
 the development URL at `http://localhost:1420`.
 
-The current default Debian package version is `0.1.0-5`, and the artifact is:
+The current default Debian package version is `0.1.0-7`, and the artifact is:
 
 ```bash
-target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
 ```
 
 Inspect the package before copying it to a target machine:
 
 ```bash
-dpkg-deb -I target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
-dpkg-deb -c target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb | less
+dpkg-deb -I target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
+dpkg-deb -c target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb | less
 ```
 
 Install the package on the target Ubuntu/Debian machine with `apt`, not raw
 `dpkg -i`:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
 sudo usermod -aG blockuntu "$USER"
 ```
 
@@ -108,7 +108,7 @@ Expected environment:
 - Linux with systemd.
 - A normal desktop user account.
 - Root access through `sudo`.
-- Firefox installed as a normal system package, not only as Snap or Flatpak.
+- Firefox installed as a normal system package, Snap, or Flatpak.
 - Google Chrome or Chromium only if you want Chrome enforcement.
 
 On Ubuntu, check the Firefox packaging before testing browser integration:
@@ -120,10 +120,11 @@ snap list firefox 2>/dev/null || true
 flatpak info org.mozilla.firefox 2>/dev/null || true
 ```
 
-BlocKuntu's normal Firefox integration expects an unconfined Firefox that can
-read host policy and Native Messaging locations. Snap and Flatpak Firefox are
-strictly confined and may not see `/etc/firefox/policies` or
-`/usr/lib/mozilla/native-messaging-hosts` in the same way.
+BlocKuntu supports system Firefox, Firefox Snap, and Firefox Flatpak, but the
+policy locations differ. System Firefox and Firefox Snap can read the host
+`/etc/firefox/policies/policies.json` policy path. Firefox Flatpak reads policy
+through Flatpak's `org.mozilla.firefox.systemconfig` extension, so BlocKuntu
+writes a per-user policy extension under the user's Flatpak data directory.
 
 Runtime layout:
 
@@ -136,6 +137,10 @@ Runtime layout:
 | Daemon socket | `/run/blockuntu/blockuntud.sock` |
 | Hosts fallback | `/etc/hosts` |
 | Firefox Native Messaging manifest | `/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json` |
+| Firefox Flatpak Native Messaging manifest | `~/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts/blockuntu_native.json` |
+| Firefox Flatpak managed policy | `$XDG_DATA_HOME/flatpak/extension/org.mozilla.firefox.systemconfig/<arch>/stable/policies/policies.json`, defaulting to `~/.local/share/flatpak/extension/...` |
+| Firefox Flatpak copied XPI | `~/.var/app/org.mozilla.firefox/data/blockuntu/BlocKuntu-Signed.xpi` |
+| Firefox Snap Native Messaging manifest | `~/snap/firefox/common/.mozilla/native-messaging-hosts/blockuntu_native.json` |
 | Chrome Native Messaging manifest | `/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json` |
 | Chromium Native Messaging manifest | `/etc/chromium/native-messaging-hosts/blockuntu_native.json` |
 
@@ -149,15 +154,36 @@ normal system Firefox install, creating it is fine:
 sudo install -d -m 0755 /etc/firefox/policies
 ```
 
-For Flatpak or Snap Firefox, treat policy and Native Messaging support as a
-separate compatibility target. Prefer a Mozilla `.deb`/tarball or another
-unconfined system Firefox package for BlocKuntu production testing.
+For Flatpak or Snap Firefox, run the confined-browser helper after installing
+the native host. It copies `blockuntu-native` into the browser's writable app
+area and writes the matching per-user manifest. For Firefox Flatpak it also
+copies the signed Firefox XPI and writes the `org.mozilla.firefox.systemconfig`
+managed policy that force-installs and locks the extension:
+
+```bash
+./scripts/setup-confined-firefox-native-host.sh --native-host /usr/local/bin/blockuntu-native
+```
+
+The helper also applies this Flatpak override when Firefox Flatpak is present:
+
+```bash
+flatpak override --user --filesystem=/run/blockuntu org.mozilla.firefox
+```
+
+That override exposes only the BlocKuntu daemon socket directory to Firefox
+Flatpak. The Flatpak policy appears inside the Firefox sandbox at
+`/app/etc/firefox/policies/policies.json`. Firefox Snap can execute the copied
+host from `~/snap/firefox/common/.local/share/blockuntu/blockuntu-native` and
+uses the normal host `/etc/firefox/policies/policies.json` managed policy path.
 
 The scripted installer and Debian package start the daemon with
 `--defer-browser-policy-repair-until-heartbeat`. That means they do not create
-`/etc/firefox/policies/policies.json` or Chrome managed policy at install time.
-This is intentional: install and enable the browser extension manually first,
-then the first heartbeat activates managed browser policy repair.
+`/etc/firefox/policies/policies.json` or Chrome managed policy at install time
+for system Firefox, Firefox Snap, or Chrome. This is intentional: install and
+enable the browser extension manually first, then the first heartbeat activates
+managed browser policy repair. Firefox Flatpak is the exception because it
+cannot use that host policy path; the confined-browser helper writes the
+Flatpak systemconfig policy immediately when the signed XPI is available.
 
 ## Install Prerequisites
 
@@ -228,17 +254,24 @@ By default, the script:
   It contains strict browser enforcement only; site lists, schedules,
   allowances, and user app rules start empty.
 - Installs systemd units and the Native Messaging manifests.
+- Installs per-user Firefox Snap/Flatpak Native Messaging manifests when those
+  confined browser builds are present. For Firefox Flatpak, it also installs
+  the per-user systemconfig policy and copied XPI.
 - Adds the current desktop user to the `blockuntu` socket group.
 - Starts the daemon with browser policy repair deferred until the first
   extension heartbeat.
 - Enables and starts `blockuntu.socket`, `blockuntu.service`,
   `blockuntu-watchdog.service`, and `blockuntu-hosts.path`.
 
-Browser extensions are intentionally not installed or force-installed by this
-script. The user must install and enable the Firefox and/or Chrome extension
-manually. The script installs the Native Messaging manifests so the manually
-installed extension can reach `/run/blockuntu/blockuntud.sock` through
-`blockuntu-native`. Existing browser managed-policy files are left untouched.
+Browser extensions are intentionally not installed or force-installed for
+system Firefox, Firefox Snap, or Chrome by this script. The user must install
+and enable those extensions manually. The script installs the Native Messaging
+manifests so the manually installed extension can reach
+`/run/blockuntu/blockuntud.sock` through `blockuntu-native`. For Firefox
+Snap/Flatpak, the script installs per-user manifests and native-host copies for
+the selected desktop user. For Firefox Flatpak, it also writes the per-user
+systemconfig policy because Flatpak cannot consume the host
+`/etc/firefox/policies` policy file.
 
 Because browser policy repair is deferred, a missing
 `/etc/firefox/policies/policies.json` or Chrome
@@ -288,13 +321,13 @@ Build a complete Debian package from the repository root:
 The package is written to `target/debian`, for example:
 
 ```bash
-target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
 ```
 
 On a target Ubuntu/Debian machine, install it with:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-5_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
 ```
 
 Use `apt install ./...deb`, not `dpkg -i`, for normal installs. `dpkg -i`
@@ -419,6 +452,9 @@ sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
   /etc/opt/chrome/native-messaging-hosts/blockuntu_native.json
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
   /etc/chromium/native-messaging-hosts/blockuntu_native.json
+
+./scripts/setup-confined-firefox-native-host.sh \
+  --native-host /usr/local/bin/blockuntu-native
 ```
 
 Install systemd units:
@@ -536,6 +572,17 @@ sudo jq . /etc/firefox/policies/policies.json
 In Firefox, open `about:policies` and confirm that the BlocKuntu extension is
 force-installed. Restart Firefox after the policy appears.
 
+For Firefox Flatpak, verify the per-user systemconfig policy instead:
+
+```bash
+flatpak run --command=sh org.mozilla.firefox -c \
+  'test -f /app/etc/firefox/policies/policies.json && sed -n "1,120p" /app/etc/firefox/policies/policies.json'
+```
+
+In Firefox Flatpak, open `about:policies` and confirm the policy is active.
+Then restart Firefox Flatpak and confirm `about:addons` does not offer a disable
+button for BlocKuntu.
+
 After the first Chrome heartbeat, verify Chrome policy:
 
 ```bash
@@ -565,7 +612,10 @@ After the service is active and your user has re-logged in:
 2. Install and enable the BlocKuntu extension manually if it is not present.
 3. Check daemon status again and confirm the Firefox extension heartbeat becomes
    recent.
-4. Confirm `/etc/firefox/policies/policies.json` appears after that heartbeat.
+4. Confirm `/etc/firefox/policies/policies.json` appears after that heartbeat
+   for system Firefox or Firefox Snap. For Firefox Flatpak, confirm
+   `/app/etc/firefox/policies/policies.json` is visible inside the Flatpak
+   sandbox after running the confined-browser helper.
 5. Add a site list in the GUI, then navigate to a configured hard-blocked
    domain.
 
@@ -582,7 +632,9 @@ Most failures are one of:
 
 - The user has not logged out and back in after being added to `blockuntu`.
 - The Native Messaging manifest path is wrong for the installed browser build.
-- Firefox is installed as Snap or Flatpak and cannot see the system manifest.
+- Firefox Snap/Flatpak was installed after BlocKuntu and
+  `blockuntu-setup-confined-firefox` or
+  `scripts/setup-confined-firefox-native-host.sh` has not been run yet.
 - The signed Firefox XPI is missing or rejected.
 - Chrome cannot reach the configured CRX URL from the update manifest.
 
