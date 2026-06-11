@@ -5,34 +5,15 @@
     CheckCircle2,
     Gauge,
     KeyRound,
-    Play,
-    Power,
-    PowerOff,
-    Shield,
-    Terminal,
     Trash2,
     XCircle
   } from "@lucide/svelte";
-  import type {
-    DaemonStatus,
-    EnforcementStatus,
-    HealthCheck,
-    SystemHealth,
-    UninstallResult
-  } from "../../lib/types";
+  import type { HealthCheck, SystemHealth, UninstallResult } from "../../lib/types";
 
   type Icon = typeof Activity;
 
   interface Props {
-    status: DaemonStatus | null;
-    enforcement: EnforcementStatus | null;
     health: SystemHealth | null;
-    enforcementChanging: boolean;
-    enforcementMessage: string | null;
-    rawMethod?: string;
-    rawParams?: string;
-    rawResult: string;
-    rawRunning: boolean;
     uninstallPhrase: string | null;
     uninstallPhraseInput?: string;
     uninstallRunning: boolean;
@@ -45,23 +26,12 @@
     tier1EditRemainingSeconds: number;
     tier1EditMessage: string | null;
     tier1EditKeyError: string | null;
-    onStartEnforcement: () => void | Promise<void>;
-    onStopEnforcement: () => void | Promise<void>;
-    onRunRawRpc: () => void | Promise<void>;
     onRunUninstallBlockuntu: () => void | Promise<void>;
     onUnlockTier1Edit: () => void | Promise<void>;
   }
 
   let {
-    status,
-    enforcement,
     health,
-    enforcementChanging,
-    enforcementMessage,
-    rawMethod = $bindable(""),
-    rawParams = $bindable(""),
-    rawResult,
-    rawRunning,
     uninstallPhrase,
     uninstallPhraseInput = $bindable(""),
     uninstallRunning,
@@ -74,17 +44,14 @@
     tier1EditRemainingSeconds,
     tier1EditMessage,
     tier1EditKeyError,
-    onStartEnforcement,
-    onStopEnforcement,
-    onRunRawRpc,
     onRunUninstallBlockuntu,
     onUnlockTier1Edit
   }: Props = $props();
 
-  let currentEnforcementState = $derived(
-    enforcement?.enforcement_state ?? status?.enforcement_state ?? "unknown"
-  );
-  let enforcementActive = $derived(currentEnforcementState === "active");
+  let healthChecks = $derived(health?.checks ?? []);
+  let okHealthCount = $derived(healthChecks.filter((check) => check.state === "ok").length);
+  let warnHealthCount = $derived(healthChecks.filter((check) => check.state === "warn").length);
+  let errorHealthCount = $derived(healthChecks.filter((check) => check.state === "error").length);
   let canRunUninstall = $derived(Boolean(uninstallPhrase && uninstallPhraseInput.trim()));
   let canUnlockTier1Edit = $derived(Boolean(tier1EditPhraseInput.trim()));
 
@@ -97,94 +64,40 @@
 </script>
 
 <section class="content-grid admin-grid">
-  <article class="panel">
-    <div class="panel-title">
+  <article class="panel admin-health-panel">
+    <div class="panel-title admin-panel-title">
       <Gauge size={18} aria-hidden="true" />
       <h2>Health</h2>
+      <div class="health-summary" aria-label="Health summary">
+        <span class="health-count" data-state="ok">
+          <CheckCircle2 size={15} aria-hidden="true" />
+          {okHealthCount}
+        </span>
+        <span class="health-count" data-state="warn">
+          <AlertTriangle size={15} aria-hidden="true" />
+          {warnHealthCount}
+        </span>
+        <span class="health-count" data-state="error">
+          <XCircle size={15} aria-hidden="true" />
+          {errorHealthCount}
+        </span>
+      </div>
     </div>
-    <div class="health-list">
-      {#each health?.checks ?? [] as check (check.key)}
+    <div class="health-grid">
+      {#each healthChecks as check (check.key)}
         {@const HealthIcon = checkIcon(check)}
         <div class="health-row" data-state={check.state}>
           <HealthIcon size={18} aria-hidden="true" />
-          <span>{check.label}</span>
+          <div class="health-copy">
+            <span>{check.label}</span>
+            <small>{check.detail}</small>
+          </div>
           <strong>{check.state}</strong>
-          <small>{check.detail}</small>
         </div>
       {:else}
         <p class="empty-state">No health checks available.</p>
       {/each}
     </div>
-  </article>
-
-  <article class="panel">
-    <div class="panel-title">
-      <Shield size={18} aria-hidden="true" />
-      <h2>Enforcement</h2>
-    </div>
-    <div class="status-list">
-      <div class="status-row">
-        <span>Mode</span>
-        <strong data-state={currentEnforcementState}>{currentEnforcementState}</strong>
-      </div>
-      <div class="status-row">
-        <span>Firefox policy</span>
-        <small>{enforcement?.firefox_policy.path ?? "unknown"}</small>
-      </div>
-      <div class="status-row">
-        <span>Chrome policy</span>
-        <small>{enforcement?.chrome_policy.path ?? "unknown"}</small>
-      </div>
-      <div class="status-row">
-        <span>Hosts file</span>
-        <small>{enforcement?.hosts_file.path ?? "unknown"}</small>
-      </div>
-    </div>
-    <div class="button-row enforcement-actions">
-      <button
-        class="primary"
-        onclick={onStartEnforcement}
-        disabled={enforcementChanging || enforcementActive}
-      >
-        <Power size={17} aria-hidden="true" />
-        <span>Start</span>
-      </button>
-      <button
-        class="secondary danger-action"
-        onclick={onStopEnforcement}
-        disabled={enforcementChanging || !enforcementActive}
-      >
-        <PowerOff size={17} aria-hidden="true" />
-        <span>Stop</span>
-      </button>
-    </div>
-    {#if enforcementMessage}
-      <p class="result-text">{enforcementMessage}</p>
-    {/if}
-  </article>
-
-  <article class="panel">
-    <div class="panel-title">
-      <Terminal size={18} aria-hidden="true" />
-      <h2>JSON-RPC</h2>
-    </div>
-    <div class="rpc-form">
-      <label>
-        <span>Method</span>
-        <input bind:value={rawMethod} />
-      </label>
-      <label>
-        <span>Params</span>
-        <textarea bind:value={rawParams} spellcheck="false"></textarea>
-      </label>
-      <button class="primary" onclick={onRunRawRpc} disabled={rawRunning}>
-        <Play size={17} aria-hidden="true" />
-        <span>Run</span>
-      </button>
-    </div>
-    {#if rawResult}
-      <pre>{rawResult}</pre>
-    {/if}
   </article>
 
   <article class="panel">

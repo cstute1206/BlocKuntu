@@ -146,7 +146,7 @@
               <span>Daily minutes</span>
               <input
                 type="number"
-                min="1"
+                min="0"
                 max="1440"
                 bind:value={ruleAllowanceDraft.daily_minutes}
                 disabled={ruleDraftLocked}

@@ -1199,7 +1199,7 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
         CREATE TABLE IF NOT EXISTS policy_allowances (
             id TEXT PRIMARY KEY,
             name TEXT,
-            daily_minutes INTEGER NOT NULL CHECK (daily_minutes > 0)
+            daily_minutes INTEGER NOT NULL CHECK (daily_minutes >= 0)
         );
 
         CREATE TABLE IF NOT EXISTS policy_schedules (
@@ -1295,7 +1295,54 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
         );
         "#,
     )?;
+    migrate_policy_allowances_zero_minutes(conn)?;
     migrate_policy_schedule_windows_day_groups(conn)?;
+    Ok(())
+}
+
+fn migrate_policy_allowances_zero_minutes(conn: &Connection) -> Result<(), Error> {
+    let table_sql: Option<String> = conn
+        .query_row(
+            r#"
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'policy_allowances'
+            "#,
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let Some(table_sql) = table_sql else {
+        return Ok(());
+    };
+
+    if !table_sql.contains("daily_minutes > 0") {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE policy_allowances_new (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            daily_minutes INTEGER NOT NULL CHECK (daily_minutes >= 0)
+        );
+
+        INSERT INTO policy_allowances_new (id, name, daily_minutes)
+        SELECT id, name, daily_minutes
+        FROM policy_allowances;
+
+        DROP TABLE policy_allowances;
+
+        ALTER TABLE policy_allowances_new RENAME TO policy_allowances;
+
+        PRAGMA foreign_keys = ON;
+        "#,
+    )?;
+
     Ok(())
 }
 

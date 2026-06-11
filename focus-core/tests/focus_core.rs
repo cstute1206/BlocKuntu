@@ -1,9 +1,10 @@
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use focus_core::{
-    evaluate_app, evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start,
-    request_unlock, BlockReason, Config, ControlledBlockReason, Database, Decision, Error,
-    EvaluationContext, ProcessIdentity, UnlockError,
+    evaluate_app, evaluate_url, migrate_database, record_visit_end, record_visit_heartbeat,
+    record_visit_start, request_unlock, BlockReason, Config, ControlledBlockReason, Database,
+    Decision, Error, EvaluationContext, ProcessIdentity, UnlockError,
 };
+use rusqlite::Connection;
 
 fn at_utc(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<FixedOffset> {
     FixedOffset::east_opt(0)
@@ -243,6 +244,38 @@ fn schedules_and_allowances_transition_between_allow_and_block() {
     assert_eq!(
         evaluate_url("https://social.example/feed", &inactive_ctx),
         Decision::Allow
+    );
+}
+
+#[test]
+fn zero_minute_allowance_blocks_immediately() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "zero-daily"
+        daily_minutes = 0
+
+        [[rules]]
+        id = "zero-controlled"
+        name = "Zero controlled access"
+        tier = "controlled_access"
+        allowance_id = "zero-daily"
+        patterns = [
+          { kind = "domain", value = "zero.example", match_subdomains = false }
+        ]
+        "#,
+    )
+    .expect("zero-minute allowance should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+
+    assert_eq!(
+        evaluate_url("https://zero.example/", &ctx),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id: "zero-controlled".to_string(),
+            rule_name: "Zero controlled access".to_string(),
+            reason: ControlledBlockReason::AllowanceExhausted,
+        })
     );
 }
 
@@ -716,6 +749,16 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
         );
     }
 
+    let policy_allowances_sql: String = database
+        .connection()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'policy_allowances'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("policy_allowances schema should query");
+    assert!(policy_allowances_sql.contains("daily_minutes >= 0"));
+
     let now = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
     database
         .upsert_heartbeat("extension", Some("ok"), now)
@@ -730,6 +773,50 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
             .as_deref(),
         Some("enforcing")
     );
+}
+
+#[test]
+fn database_migration_relaxes_policy_allowance_zero_constraint() {
+    let conn = Connection::open_in_memory().expect("database should open");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE policy_allowances (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            daily_minutes INTEGER NOT NULL CHECK (daily_minutes > 0)
+        );
+
+        INSERT INTO policy_allowances (id, name, daily_minutes)
+        VALUES ('old-daily', 'Old daily', 15);
+        "#,
+    )
+    .expect("old policy_allowances schema should create");
+
+    migrate_database(&conn).expect("database should migrate");
+
+    let policy_allowances_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'policy_allowances'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("policy_allowances schema should query");
+    assert!(policy_allowances_sql.contains("daily_minutes >= 0"));
+
+    let old_daily: i64 = conn
+        .query_row(
+            "SELECT daily_minutes FROM policy_allowances WHERE id = 'old-daily'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("old allowance should be preserved");
+    assert_eq!(old_daily, 15);
+
+    conn.execute(
+        "INSERT INTO policy_allowances (id, name, daily_minutes) VALUES ('zero-daily', NULL, 0)",
+        [],
+    )
+    .expect("zero-minute allowance should insert after migration");
 }
 
 #[test]
@@ -751,7 +838,7 @@ fn policy_config_roundtrips_through_sqlite() {
         [[allowances]]
         id = "daily"
         name = "Daily allowance"
-        daily_minutes = 15
+        daily_minutes = 0
 
         [[schedules]]
         id = "work"

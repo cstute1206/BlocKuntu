@@ -128,11 +128,13 @@ export function normalizeRuleDraft(rule: Rule): Rule {
 }
 
 export function normalizeAllowanceDraft(allowance: Allowance, rule: Rule): Allowance {
+  const dailyMinutes = Number(allowance.daily_minutes);
+
   return {
     ...allowance,
     id: linkedAllowanceIdForRule(rule),
     name: allowanceNameForRule(rule),
-    daily_minutes: Math.max(1, Math.round(Number(allowance.daily_minutes) || 1))
+    daily_minutes: Number.isFinite(dailyMinutes) ? Math.max(0, Math.round(dailyMinutes)) : 0
   };
 }
 

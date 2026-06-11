@@ -89,12 +89,6 @@ impl Config {
 
         for allowance in &self.allowances {
             require_identifier("allowance", &allowance.id)?;
-            if allowance.daily_minutes == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "allowance '{}' must grant at least one minute",
-                    allowance.id
-                )));
-            }
         }
 
         let mut allowance_links: HashMap<&str, &str> = HashMap::new();

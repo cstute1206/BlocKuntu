@@ -21,7 +21,6 @@
   import StatisticsView from "./components/views/StatisticsView.svelte";
   import {
     configSnapshot,
-    daemonRpc,
     daemonStatus,
     deleteAppRule,
     deleteSchedule,
@@ -30,8 +29,6 @@
     evaluateUrl,
     recentEvents,
     requestUnlock,
-    startEnforcement,
-    stopEnforcement,
     systemHealth,
     tier1EditKey,
     tier1EditStatus,
@@ -76,6 +73,11 @@
   } from "./lib/types";
 
   type Icon = typeof LayoutDashboard;
+  const AUTO_REFRESH_INTERVAL_MS = 5_000;
+
+  interface RefreshOptions {
+    silent?: boolean;
+  }
 
   const navItems: Array<{ id: ViewId; label: string; icon: Icon }> = [
     { id: "overview", label: "Dashboard", icon: LayoutDashboard },
@@ -87,18 +89,16 @@
   ];
 
   let activeView: ViewId = $state("overview");
-  let socketPath = $state("");
   let status = $state<DaemonStatus | null>(null);
   let enforcement = $state<EnforcementStatus | null>(null);
   let health = $state<SystemHealth | null>(null);
   let config = $state<ConfigSnapshot | null>(null);
   let events = $state<RecentEvent[]>([]);
   let loading = $state(false);
-  let enforcementChanging = $state(false);
-  let enforcementMessage: string | null = $state(null);
   let lastError: string | null = $state(null);
   let lastRefresh: string | null = $state(null);
   let showFirstRunOverview = $state(false);
+  let refreshInFlight = false;
 
   let testUrl = $state("https://youtube.com/");
   let urlDecision = $state<DecisionResult | null>(null);
@@ -124,11 +124,6 @@
   let scheduleDraft = $state<Schedule | null>(null);
   let scheduleSaving = $state(false);
   let scheduleMessage: string | null = $state(null);
-
-  let rawMethod = $state("status");
-  let rawParams = $state("{}");
-  let rawResult = $state("");
-  let rawRunning = $state(false);
 
   let uninstallPhrase: string | null = $state(null);
   let uninstallPhraseLoading = $state(false);
@@ -158,34 +153,44 @@
   );
 
   onMount(() => {
-    const interval = window.setInterval(() => {
+    const clockInterval = window.setInterval(() => {
       nowMs = Date.now();
     }, 1000);
+    const refreshInterval = window.setInterval(() => {
+      void refreshAll({ silent: true });
+    }, AUTO_REFRESH_INTERVAL_MS);
     showFirstRunOverview = !firstRunOverviewDismissed();
     void loadUninstallPhrase();
     void loadTier1EditKey();
     void refreshAll();
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(clockInterval);
+      window.clearInterval(refreshInterval);
+    };
   });
 
   function socketArg(): string | undefined {
-    const trimmed = socketPath.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
+    return undefined;
   }
 
-  async function refreshAll(): Promise<void> {
-    loading = true;
+  async function refreshAll(options: RefreshOptions = {}): Promise<void> {
+    if (refreshInFlight) return;
+
+    refreshInFlight = true;
+    if (!options.silent) {
+      loading = true;
+    }
     lastError = null;
 
-    const [
-      statusResult,
-      enforcementResult,
-      configResult,
-      eventsResult,
-      healthResult,
-      tier1EditStatusResult
-    ] =
-      await Promise.allSettled([
+    try {
+      const [
+        statusResult,
+        enforcementResult,
+        configResult,
+        eventsResult,
+        healthResult,
+        tier1EditStatusResult
+      ] = await Promise.allSettled([
         daemonStatus(socketArg()),
         enforcementStatus(socketArg()),
         configSnapshot(socketArg()),
@@ -194,40 +199,45 @@
         tier1EditStatus(socketArg())
       ]);
 
-    if (statusResult.status === "fulfilled") {
-      status = statusResult.value;
-    } else {
-      status = null;
-      lastError = formatError(statusResult.reason);
-    }
+      if (statusResult.status === "fulfilled") {
+        status = statusResult.value;
+      } else {
+        status = null;
+        lastError = formatError(statusResult.reason);
+      }
 
-    if (enforcementResult.status === "fulfilled") {
-      enforcement = enforcementResult.value;
-    } else {
-      enforcement = null;
-    }
+      if (enforcementResult.status === "fulfilled") {
+        enforcement = enforcementResult.value;
+      } else {
+        enforcement = null;
+      }
 
-    if (configResult.status === "fulfilled") {
-      config = configResult.value;
-      syncConfigSelection(configResult.value);
-    }
+      if (configResult.status === "fulfilled") {
+        config = configResult.value;
+        syncConfigSelection(configResult.value);
+      }
 
-    if (eventsResult.status === "fulfilled") {
-      events = eventsResult.value.events;
-    }
+      if (eventsResult.status === "fulfilled") {
+        events = eventsResult.value.events;
+      }
 
-    if (healthResult.status === "fulfilled") {
-      health = healthResult.value;
-    }
+      if (healthResult.status === "fulfilled") {
+        health = healthResult.value;
+      }
 
-    if (tier1EditStatusResult.status === "fulfilled") {
-      tier1EditUnlockedUntil = tier1EditStatusResult.value.active
-        ? (tier1EditStatusResult.value.expires_at ?? null)
-        : null;
-    }
+      if (tier1EditStatusResult.status === "fulfilled") {
+        tier1EditUnlockedUntil = tier1EditStatusResult.value.active
+          ? (tier1EditStatusResult.value.expires_at ?? null)
+          : null;
+      }
 
-    lastRefresh = new Date().toLocaleTimeString();
-    loading = false;
+      lastRefresh = new Date().toLocaleTimeString();
+    } finally {
+      refreshInFlight = false;
+      if (!options.silent) {
+        loading = false;
+      }
+    }
   }
 
   function syncConfigSelection(snapshot: ConfigSnapshot): void {
@@ -292,52 +302,6 @@
       events = (await recentEvents(80, socketArg())).events;
     } catch {
       // Full refresh surfaces connection errors; lightweight event refresh does not interrupt actions.
-    }
-  }
-
-  async function runRawRpc(): Promise<void> {
-    rawRunning = true;
-    rawResult = "";
-    lastError = null;
-    try {
-      const parsed = rawParams.trim() ? JSON.parse(rawParams) : {};
-      const result = await daemonRpc(rawMethod, parsed, socketArg());
-      rawResult = JSON.stringify(result, null, 2);
-    } catch (error) {
-      lastError = formatError(error);
-      rawResult = "";
-    } finally {
-      rawRunning = false;
-    }
-  }
-
-  async function runStartEnforcement(): Promise<void> {
-    enforcementChanging = true;
-    enforcementMessage = null;
-    lastError = null;
-    try {
-      enforcement = await startEnforcement(socketArg());
-      enforcementMessage = "Started.";
-      await refreshAll();
-    } catch (error) {
-      lastError = formatError(error);
-    } finally {
-      enforcementChanging = false;
-    }
-  }
-
-  async function runStopEnforcement(): Promise<void> {
-    enforcementChanging = true;
-    enforcementMessage = null;
-    lastError = null;
-    try {
-      enforcement = await stopEnforcement(socketArg());
-      enforcementMessage = "Stopped.";
-      await refreshAll();
-    } catch (error) {
-      lastError = formatError(error);
-    } finally {
-      enforcementChanging = false;
     }
   }
 
@@ -667,15 +631,7 @@
         <h1>{activeViewTitle}</h1>
       </div>
       <div class="topbar-actions">
-        <label class="socket-field">
-          <span>Socket</span>
-          <input
-            bind:value={socketPath}
-            placeholder="Auto: /run/blockuntu/blockuntud.sock, then /tmp/blockuntu/blockuntud.sock"
-            spellcheck="false"
-          />
-        </label>
-        <button class="icon-button" title="Refresh" onclick={refreshAll} disabled={loading}>
+        <button class="icon-button" title="Refresh" onclick={() => refreshAll()} disabled={loading}>
           <span class:spin={loading}>
             <RefreshCw size={18} aria-hidden="true" />
           </span>
@@ -753,15 +709,7 @@
       <StatisticsView {events} />
     {:else if activeView === "admin"}
       <AdminView
-        {status}
-        {enforcement}
         {health}
-        {enforcementChanging}
-        {enforcementMessage}
-        bind:rawMethod
-        bind:rawParams
-        {rawResult}
-        {rawRunning}
         {uninstallPhrase}
         bind:uninstallPhraseInput
         {uninstallRunning}
@@ -774,9 +722,6 @@
         {tier1EditRemainingSeconds}
         {tier1EditMessage}
         {tier1EditKeyError}
-        onStartEnforcement={runStartEnforcement}
-        onStopEnforcement={runStopEnforcement}
-        onRunRawRpc={runRawRpc}
         onRunUninstallBlockuntu={runUninstallBlockuntu}
         onUnlockTier1Edit={runUnlockTier1Edit}
       />
@@ -784,7 +729,6 @@
 
     <footer class="footer-line">
       <span>{lastRefresh ? `Last refresh ${lastRefresh}` : "Not refreshed"}</span>
-      <span>{health?.socket_path ?? socketPath}</span>
     </footer>
   </main>
 </div>
