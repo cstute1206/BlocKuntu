@@ -22,6 +22,14 @@ pub struct HeartbeatState {
     pub details: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VisitUsage {
+    pub rule_id: Option<String>,
+    pub url: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+}
+
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let conn = Connection::open(path)?;
@@ -933,6 +941,53 @@ impl Database {
         }
 
         Ok(used_seconds)
+    }
+
+    pub(crate) fn visit_usage_for_day(&self, now: DateTime<Utc>) -> Result<Vec<VisitUsage>, Error> {
+        let day_start = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is valid")
+            .and_utc();
+        let day_end = day_start + Duration::days(1);
+
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT rule_id, url, started_at, ended_at
+            FROM visits
+            WHERE started_at < ?1
+              AND COALESCE(ended_at, ?2) > ?3
+            "#,
+        )?;
+
+        let rows = statement.query_map(
+            params![
+                format_time(day_end),
+                format_time(now),
+                format_time(day_start)
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )?;
+
+        let mut visits = Vec::new();
+        for row in rows {
+            let (rule_id, url, started_at, ended_at) = row?;
+            visits.push(VisitUsage {
+                rule_id,
+                url,
+                started_at: parse_time(&started_at)?,
+                ended_at: ended_at.map(|value| parse_time(&value)).transpose()?,
+            });
+        }
+
+        Ok(visits)
     }
 
     pub(crate) fn insert_visit_start(

@@ -1,4 +1,4 @@
-use chrono::{Datelike, Duration, Timelike};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use url::Url;
 
 use crate::{
@@ -13,6 +13,25 @@ const FIXED_TIER_2_UNLOCK_POLICY: UnlockPolicyConfig = UnlockPolicyConfig {
     cooldown_minutes: 0,
     max_unlocks_per_hour: 1,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ControlledRuleStrictness {
+    allowance_minutes: Option<u32>,
+    pattern_specificity: u8,
+}
+
+impl ControlledRuleStrictness {
+    fn is_stricter_than(self, other: Self) -> bool {
+        match (self.allowance_minutes, other.allowance_minutes) {
+            (None, Some(_)) => return true,
+            (Some(_), None) => return false,
+            (Some(left), Some(right)) if left != right => return left < right,
+            _ => {}
+        }
+
+        self.pattern_specificity > other.pattern_specificity
+    }
+}
 
 pub struct PolicyEngine<'a> {
     config: &'a Config,
@@ -43,6 +62,7 @@ impl<'a> PolicyEngine<'a> {
             }
         }
 
+        let mut controlled_block: Option<(Decision, ControlledRuleStrictness)> = None;
         for rule in self.matching_rules(&parsed, RuleTier::ControlledAccess) {
             if !self.rule_is_active(rule, context) {
                 continue;
@@ -51,11 +71,20 @@ impl<'a> PolicyEngine<'a> {
             let decision =
                 self.evaluate_controlled_rule(rule, &parsed.url_without_fragment, context);
             if decision.is_block() {
-                return decision;
+                let strictness = self.controlled_rule_strictness(rule, &parsed);
+                let should_replace = controlled_block
+                    .as_ref()
+                    .map(|(_, current)| strictness.is_stricter_than(*current))
+                    .unwrap_or(true);
+                if should_replace {
+                    controlled_block = Some((decision, strictness));
+                }
             }
         }
 
-        Decision::Allow
+        controlled_block
+            .map(|(decision, _)| decision)
+            .unwrap_or(Decision::Allow)
     }
 
     pub fn evaluate_app(
@@ -81,6 +110,7 @@ impl<'a> PolicyEngine<'a> {
                 &rule.id,
                 &rule.name,
                 rule.allowance_id.as_deref(),
+                None,
                 None,
                 context,
             );
@@ -180,7 +210,7 @@ impl<'a> PolicyEngine<'a> {
     ) -> Result<VisitState, Error> {
         let parsed = NormalizedUrl::parse(url)?;
         let rule_id = self
-            .first_matching_rule(&parsed)
+            .visit_rule_for_url(&parsed, context)
             .map(|rule| rule.id.as_str());
         let target = parsed.host.as_deref().unwrap_or(url);
         self.database
@@ -215,6 +245,7 @@ impl<'a> PolicyEngine<'a> {
             &rule.name,
             rule.allowance_id.as_deref(),
             Some(url_without_fragment),
+            Some(rule),
             context,
         )
     }
@@ -225,6 +256,7 @@ impl<'a> PolicyEngine<'a> {
         rule_name: &str,
         allowance_id: Option<&str>,
         exact_unlock_target: Option<&str>,
+        usage_rule: Option<&RuleConfig>,
         context: &EvaluationContext<'_>,
     ) -> Decision {
         let now = context.now_utc();
@@ -261,10 +293,14 @@ impl<'a> PolicyEngine<'a> {
             });
         };
 
-        match self
-            .database
-            .used_seconds_for_rule_on_day(rule_id, context.now_utc())
-        {
+        let used_seconds = match usage_rule {
+            Some(rule) => self.used_seconds_for_site_rule_on_day(rule, context.now_utc()),
+            None => self
+                .database
+                .used_seconds_for_rule_on_day(rule_id, context.now_utc()),
+        };
+
+        match used_seconds {
             Ok(used_seconds) => {
                 if used_seconds < i64::from(allowance.daily_minutes) * 60 {
                     Decision::Allow
@@ -345,26 +381,133 @@ impl<'a> PolicyEngine<'a> {
         exact_unlock_target: &str,
         context: &EvaluationContext<'_>,
     ) -> Option<&'b RuleConfig> {
-        let mut first_active_match = None;
+        let mut active_match: Option<(&RuleConfig, ControlledRuleStrictness)> = None;
+        let mut blocking_match: Option<(&RuleConfig, ControlledRuleStrictness)> = None;
 
         for rule in self.matching_rules(parsed, RuleTier::ControlledAccess) {
             if !self.rule_is_active(rule, context) {
                 continue;
             }
 
-            if first_active_match.is_none() {
-                first_active_match = Some(rule);
+            let strictness = self.controlled_rule_strictness(rule, parsed);
+            let should_replace_active = active_match
+                .as_ref()
+                .map(|(_, current)| strictness.is_stricter_than(*current))
+                .unwrap_or(true);
+            if should_replace_active {
+                active_match = Some((rule, strictness));
             }
 
             if self
                 .evaluate_controlled_rule(rule, exact_unlock_target, context)
                 .is_block()
             {
-                return Some(rule);
+                let should_replace_blocking = blocking_match
+                    .as_ref()
+                    .map(|(_, current)| strictness.is_stricter_than(*current))
+                    .unwrap_or(true);
+                if should_replace_blocking {
+                    blocking_match = Some((rule, strictness));
+                }
             }
         }
 
-        first_active_match
+        blocking_match.or(active_match).map(|(rule, _)| rule)
+    }
+
+    fn visit_rule_for_url<'b>(
+        &'b self,
+        parsed: &'b NormalizedUrl,
+        context: &EvaluationContext<'_>,
+    ) -> Option<&'b RuleConfig> {
+        let mut metered_match: Option<(&RuleConfig, ControlledRuleStrictness)> = None;
+        let mut active_match: Option<(&RuleConfig, ControlledRuleStrictness)> = None;
+
+        for rule in self.matching_rules(parsed, RuleTier::ControlledAccess) {
+            if !self.rule_is_active(rule, context) {
+                continue;
+            }
+
+            let strictness = self.controlled_rule_strictness(rule, parsed);
+            let should_replace_active = active_match
+                .as_ref()
+                .map(|(_, current)| strictness.is_stricter_than(*current))
+                .unwrap_or(true);
+            if should_replace_active {
+                active_match = Some((rule, strictness));
+            }
+
+            if self.rule_allowance_minutes(rule).is_some() {
+                let should_replace_metered = metered_match
+                    .as_ref()
+                    .map(|(_, current)| strictness.is_stricter_than(*current))
+                    .unwrap_or(true);
+                if should_replace_metered {
+                    metered_match = Some((rule, strictness));
+                }
+            }
+        }
+
+        metered_match.or(active_match).map(|(rule, _)| rule)
+    }
+
+    fn controlled_rule_strictness(
+        &self,
+        rule: &RuleConfig,
+        parsed: &NormalizedUrl,
+    ) -> ControlledRuleStrictness {
+        ControlledRuleStrictness {
+            allowance_minutes: self.rule_allowance_minutes(rule),
+            pattern_specificity: matched_pattern_specificity(rule, parsed),
+        }
+    }
+
+    fn rule_allowance_minutes(&self, rule: &RuleConfig) -> Option<u32> {
+        let allowance_id = rule.allowance_id.as_deref()?;
+        self.config
+            .allowances
+            .iter()
+            .find(|allowance| allowance.id == allowance_id)
+            .map(|allowance| allowance.daily_minutes)
+    }
+
+    fn used_seconds_for_site_rule_on_day(
+        &self,
+        rule: &RuleConfig,
+        now: DateTime<Utc>,
+    ) -> Result<i64, Error> {
+        let day_start = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is valid")
+            .and_utc();
+        let day_end = day_start + Duration::days(1);
+        let mut used_seconds = 0_i64;
+
+        for visit in self.database.visit_usage_for_day(now)? {
+            if visit.rule_id.as_deref() != Some(rule.id.as_str()) {
+                let parsed = match NormalizedUrl::parse(&visit.url) {
+                    Ok(parsed) => parsed,
+                    Err(_) => continue,
+                };
+                if !rule
+                    .patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, &parsed))
+                {
+                    continue;
+                }
+            }
+
+            let ended_at = visit.ended_at.unwrap_or(now);
+            let clamped_start = visit.started_at.max(day_start);
+            let clamped_end = ended_at.min(now).min(day_end);
+            if clamped_end > clamped_start {
+                used_seconds += (clamped_end - clamped_start).num_seconds();
+            }
+        }
+
+        Ok(used_seconds)
     }
 
     fn matching_rules<'b>(
@@ -377,18 +520,6 @@ impl<'a> PolicyEngine<'a> {
             .iter()
             .filter(move |rule| rule.enabled && rule.tier == tier)
             .filter(move |rule| {
-                rule.patterns
-                    .iter()
-                    .any(|pattern| pattern_matches(pattern, parsed))
-            })
-    }
-
-    fn first_matching_rule<'b>(&'b self, parsed: &'b NormalizedUrl) -> Option<&'b RuleConfig> {
-        self.config
-            .rules
-            .iter()
-            .filter(|rule| rule.enabled)
-            .find(|rule| {
                 rule.patterns
                     .iter()
                     .any(|pattern| pattern_matches(pattern, parsed))
@@ -583,6 +714,24 @@ fn pattern_matches(pattern: &RulePatternConfig, parsed: &NormalizedUrl) -> bool 
             .map(|pattern| parsed.url_without_fragment.starts_with(&pattern))
             .unwrap_or(false),
         RulePatternKind::PathPrefix => path_prefix_matches(&pattern.value, parsed),
+    }
+}
+
+fn matched_pattern_specificity(rule: &RuleConfig, parsed: &NormalizedUrl) -> u8 {
+    rule.patterns
+        .iter()
+        .filter(|pattern| pattern_matches(pattern, parsed))
+        .map(pattern_specificity)
+        .max()
+        .unwrap_or(0)
+}
+
+fn pattern_specificity(pattern: &RulePatternConfig) -> u8 {
+    match pattern.kind {
+        RulePatternKind::ExactUrl => 4,
+        RulePatternKind::PathPrefix | RulePatternKind::UrlPrefix => 3,
+        RulePatternKind::Domain if !pattern.match_subdomains => 2,
+        RulePatternKind::Domain => 1,
     }
 }
 

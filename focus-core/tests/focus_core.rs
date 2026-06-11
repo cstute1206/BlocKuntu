@@ -413,6 +413,110 @@ fn overlapping_rules_apply_the_strictest_active_result() {
 }
 
 #[test]
+fn overlapping_allowances_report_the_strictest_matching_rule() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "broad-daily"
+        daily_minutes = 30
+
+        [[allowances]]
+        id = "strict-daily"
+        daily_minutes = 1
+
+        [[rules]]
+        id = "broad-controlled"
+        name = "Broad controlled"
+        tier = "controlled_access"
+        allowance_id = "broad-daily"
+        patterns = [
+          { kind = "domain", value = "overlap.example", match_subdomains = false }
+        ]
+
+        [[rules]]
+        id = "strict-controlled"
+        name = "Strict controlled"
+        tier = "controlled_access"
+        allowance_id = "strict-daily"
+        patterns = [
+          { kind = "domain", value = "overlap.example", match_subdomains = false }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    database
+        .insert_visit_interval(
+            "broad-controlled",
+            "overlap.example",
+            "https://overlap.example/watch",
+            "tab-old",
+            at_utc(2026, 5, 18, 9, 0).with_timezone(&Utc),
+            at_utc(2026, 5, 18, 9, 31).with_timezone(&Utc),
+        )
+        .expect("visit interval should insert");
+
+    let ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    assert_eq!(
+        evaluate_url("https://overlap.example/watch", &ctx),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id: "strict-controlled".to_string(),
+            rule_name: "Strict controlled".to_string(),
+            reason: ControlledBlockReason::AllowanceExhausted,
+        })
+    );
+}
+
+#[test]
+fn overlapping_allowance_visits_are_metered_against_the_strictest_rule() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "broad-daily"
+        daily_minutes = 30
+
+        [[allowances]]
+        id = "strict-daily"
+        daily_minutes = 1
+
+        [[rules]]
+        id = "broad-controlled"
+        name = "Broad controlled"
+        tier = "controlled_access"
+        allowance_id = "broad-daily"
+        patterns = [
+          { kind = "domain", value = "overlap.example", match_subdomains = false }
+        ]
+
+        [[rules]]
+        id = "strict-controlled"
+        name = "Strict controlled"
+        tier = "controlled_access"
+        allowance_id = "strict-daily"
+        patterns = [
+          { kind = "domain", value = "overlap.example", match_subdomains = false }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let start_ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    let visit = record_visit_start("https://overlap.example/watch", "tab-7", &start_ctx)
+        .expect("visit should start");
+    assert_eq!(visit.rule_id.as_deref(), Some("strict-controlled"));
+
+    let exhausted_ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 2));
+    assert_eq!(
+        evaluate_url("https://overlap.example/watch", &exhausted_ctx),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id: "strict-controlled".to_string(),
+            rule_name: "Strict controlled".to_string(),
+            reason: ControlledBlockReason::AllowanceExhausted,
+        })
+    );
+}
+
+#[test]
 fn overnight_schedule_windows_remain_active_after_midnight() {
     let config = Config::from_toml_str(
         r#"
