@@ -128,10 +128,16 @@ install -Dm644 browser-extension-chrome/browser-extension-chrome.crx \
 
 install -Dm644 focus-gui/src-tauri/icons/32x32.png \
   "${PKG_ROOT}/usr/share/icons/hicolor/32x32/apps/blockuntu.png"
+install -Dm644 focus-gui/src-tauri/icons/32x32.png \
+  "${PKG_ROOT}/usr/share/icons/hicolor/32x32/apps/blockuntu-gui.png"
 install -Dm644 focus-gui/src-tauri/icons/64x64.png \
   "${PKG_ROOT}/usr/share/icons/hicolor/64x64/apps/blockuntu.png"
+install -Dm644 focus-gui/src-tauri/icons/64x64.png \
+  "${PKG_ROOT}/usr/share/icons/hicolor/64x64/apps/blockuntu-gui.png"
 install -Dm644 focus-gui/src-tauri/icons/128x128.png \
   "${PKG_ROOT}/usr/share/icons/hicolor/128x128/apps/blockuntu.png"
+install -Dm644 focus-gui/src-tauri/icons/128x128.png \
+  "${PKG_ROOT}/usr/share/icons/hicolor/128x128/apps/blockuntu-gui.png"
 
 install -d "${PKG_ROOT}/usr/share/applications"
 cat >"${PKG_ROOT}/usr/share/applications/blockuntu.desktop" <<'DESKTOP'
@@ -140,9 +146,11 @@ Type=Application
 Name=BlocKuntu
 Comment=Linux focus blocker frontend
 Exec=/usr/bin/blockuntu-gui
-Icon=blockuntu
+Icon=blockuntu-gui
+StartupWMClass=blockuntu-gui
+StartupNotify=true
 Terminal=false
-Categories=Utility;Productivity;
+Categories=Utility;
 DESKTOP
 chmod 0644 "${PKG_ROOT}/usr/share/applications/blockuntu.desktop"
 

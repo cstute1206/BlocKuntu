@@ -194,6 +194,17 @@ input[type="checkbox"] {
   width: 16px;
 }
 
+.time-input {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  min-width: 84px;
+}
+
+.time-input:invalid,
+.time-input[aria-invalid="true"] {
+  border-color: #c94f4f;
+}
+
 select {
   appearance: auto;
 }

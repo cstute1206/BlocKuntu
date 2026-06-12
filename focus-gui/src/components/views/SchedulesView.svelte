@@ -32,6 +32,19 @@
   );
   let scheduleDraftIsExisting = $derived(Boolean(savedSchedule));
   let scheduleDraftLocked = $derived(Boolean(savedSchedule && scheduleIsActive(savedSchedule)));
+  const timeInputPattern = "([01][0-9]|2[0-3]):[0-5][0-9]";
+  const timeInputTitle = "24-hour time, for example 09:00";
+  let scheduleDraftHasValidTimes = $derived(
+    Boolean(
+      scheduleDraft?.windows.every(
+        (window) => isTwentyFourHourTime(window.start) && isTwentyFourHourTime(window.end)
+      )
+    )
+  );
+
+  function isTwentyFourHourTime(value: string): boolean {
+    return /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(value);
+  }
 
   function addScheduleWindow(): void {
     if (!scheduleDraft) return;
@@ -116,10 +129,32 @@
                   </select>
                 </td>
                 <td>
-                  <input type="time" bind:value={window.start} disabled={scheduleDraftLocked} />
+                  <input
+                    class="time-input"
+                    type="text"
+                    inputmode="text"
+                    maxlength="5"
+                    pattern={timeInputPattern}
+                    placeholder="09:00"
+                    title={timeInputTitle}
+                    bind:value={window.start}
+                    disabled={scheduleDraftLocked}
+                    aria-invalid={!isTwentyFourHourTime(window.start)}
+                  />
                 </td>
                 <td>
-                  <input type="time" bind:value={window.end} disabled={scheduleDraftLocked} />
+                  <input
+                    class="time-input"
+                    type="text"
+                    inputmode="text"
+                    maxlength="5"
+                    pattern={timeInputPattern}
+                    placeholder="17:00"
+                    title={timeInputTitle}
+                    bind:value={window.end}
+                    disabled={scheduleDraftLocked}
+                    aria-invalid={!isTwentyFourHourTime(window.end)}
+                  />
                 </td>
                 <td>
                   <button
@@ -153,7 +188,7 @@
         <button
           class="primary"
           onclick={onSaveScheduleDraft}
-          disabled={scheduleSaving || scheduleDraftLocked}
+          disabled={scheduleSaving || scheduleDraftLocked || !scheduleDraftHasValidTimes}
         >
           <Save size={17} aria-hidden="true" />
           <span>Save</span>

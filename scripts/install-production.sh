@@ -450,10 +450,16 @@ if [[ "${INSTALL_GUI}" -eq 1 ]]; then
     /usr/local/bin/blockuntu-gui
   sudo install -Dm644 focus-gui/src-tauri/icons/32x32.png \
     /usr/share/icons/hicolor/32x32/apps/blockuntu.png
+  sudo install -Dm644 focus-gui/src-tauri/icons/32x32.png \
+    /usr/share/icons/hicolor/32x32/apps/blockuntu-gui.png
   sudo install -Dm644 focus-gui/src-tauri/icons/64x64.png \
     /usr/share/icons/hicolor/64x64/apps/blockuntu.png
+  sudo install -Dm644 focus-gui/src-tauri/icons/64x64.png \
+    /usr/share/icons/hicolor/64x64/apps/blockuntu-gui.png
   sudo install -Dm644 focus-gui/src-tauri/icons/128x128.png \
     /usr/share/icons/hicolor/128x128/apps/blockuntu.png
+  sudo install -Dm644 focus-gui/src-tauri/icons/128x128.png \
+    /usr/share/icons/hicolor/128x128/apps/blockuntu-gui.png
 
   desktop_file="$(mktemp)"
   cat >"${desktop_file}" <<'DESKTOP'
@@ -462,9 +468,11 @@ Type=Application
 Name=BlocKuntu
 Comment=Linux focus blocker frontend
 Exec=/usr/local/bin/blockuntu-gui
-Icon=blockuntu
+Icon=blockuntu-gui
+StartupWMClass=blockuntu-gui
+StartupNotify=true
 Terminal=false
-Categories=Utility;Productivity;
+Categories=Utility;
 DESKTOP
   sudo install -Dm644 "${desktop_file}" /usr/share/applications/blockuntu.desktop
 
