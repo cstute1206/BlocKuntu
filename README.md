@@ -1,606 +1,153 @@
 # BlocKuntu
 
-BlocKuntu is a Linux focus and productivity blocker. The current productionized
-pieces in this repository are `focus-core`, the shared Rust policy engine, and
-`focusd`, the privileged daemon that exposes the local JSON-RPC API and owns
-root-managed enforcement hooks.
+BlocKuntu is a Linux focus blocker. It combines a privileged daemon, browser
+extensions, a Native Messaging bridge, and a Tauri/Svelte GUI to enforce website
+and application blocking rules from one local policy store.
 
-The older proof of concept still lives under `PoC/`.
+The normal production path is the Debian package built by
+`./scripts/package-deb.sh`. Browser extensions are installed and enabled by the
+user; the daemon repairs managed browser policy only after the matching
+extension has sent its first heartbeat through Native Messaging.
+
+The older proof of concept still exists under `PoC/`, but the active code lives
+in the `focus-*`, `native-host`, browser-extension, packaging, and script
+directories described below.
+
+## Documentation
+
+- [Production installation](Docs/INSTALLATION.md): build a current `.deb`,
+  install it on Ubuntu/Debian, configure Firefox Snap/Flatpak support, and
+  understand production runtime paths.
+- [Uninstall](Docs/UNINSTALL.md): GUI uninstall, recovery phrases, Debian purge
+  behavior, and standalone script cleanup.
+- [Dev and production runbook](Docs/DEV_AND_PROD_RUNBOOK.md): local daemon
+  runtime, dev Native Messaging manifests, browser-extension testing, and manual
+  commands.
+- [Component architecture](Docs/COMPONENT_ARCHITECTURE.md): daemon, policy
+  engine, GUI, browser, database, systemd, and packaging boundaries.
+- [TODO](Docs/TODO.md): open design and implementation work.
 
 ## Repository Layout
 
 ```text
 .
-├── focus-core/                 # Shared Rust policy/config/database library
-├── focusd/                     # Privileged daemon binary crate
-├── focus-gui/                  # Tauri v2 + Svelte desktop frontend
-├── native-host/                # Browser Native Messaging bridge
+├── focus-core/                  # Rust policy, config, database, evaluation
+├── focusd/                      # Privileged daemon and local RPC surface
+├── focus-gui/                   # Tauri v2 + Svelte desktop GUI
+├── native-host/                 # Firefox/Chrome Native Messaging bridge
 ├── browser-extension-firefox/   # Firefox WebExtension TypeScript source
-├── browser-extension-chrome/    # Chrome/Chromium MV3 extension TypeScript source
-├── packaging/systemd/           # Production systemd units
-├── packaging/native-messaging/  # Firefox and Chrome native-host manifests
-├── scripts/
-│   ├── verify-focus-core.sh     # Clean build + test harness
-│   ├── verify-focusd.sh         # Clean daemon build + test harness
-│   ├── verify-focus-gui.sh      # Tauri/Svelte frontend verification
-│   ├── verify-native-host.sh    # Clean native-host build + test harness
-│   ├── start-dev-daemon.sh      # Non-root development daemon on /tmp/blockuntu
-│   ├── install-dev-native-host.sh
-│   ├── verify-firefox-extension.sh
-│   └── verify-chrome-extension.sh
-├── PoC/                         # Earlier Firefox/native-host/root-daemon PoC
-└── Docs/                        # Notes and design material
+├── browser-extension-chrome/    # Chrome/Chromium MV3 TypeScript source
+├── packaging/                   # systemd units and Native Messaging manifests
+├── scripts/                     # dev, verification, package, install helpers
+├── examples/                    # seed policy examples
+├── Docs/                        # detailed operational and design docs
+└── PoC/                         # historical proof of concept
 ```
 
-## Detailed Documentation
+## Architecture
 
-- [Dev and Production Runbook](Docs/DEV_AND_PROD_RUNBOOK.md): how to start the
-  dev daemon, install the dev Native Messaging host, load the browser
-  extensions, run the GUI, and what remains before a production install is
-  ready.
-- [Component Architecture](Docs/COMPONENT_ARCHITECTURE.md): how `focus-core`,
-  `focusd`, `native-host`, the browser extensions, the GUI, and systemd
-  packaging connect to each other.
+| Component | Role |
+| --- | --- |
+| `focus-core` | Shared Rust library for policy validation, URL/app evaluation, schedules, allowances, unlocks, events, and SQLite migrations. |
+| `focusd` | Root-oriented daemon. Owns the runtime database, enforcement state, `/etc/hosts` repair, browser policy repair, process checks, and the local daemon socket. |
+| `focus-gui` | Unprivileged Tauri/Svelte GUI. It does not decide policy locally; it calls daemon-backed Tauri commands. |
+| `native-host` | Unprivileged Native Messaging bridge used by Firefox and Chrome/Chromium extensions. |
+| Browser extensions | Observe top-level navigation, maintain heartbeat state, ask the daemon for decisions, record visit usage, and show blocked pages. |
+| `packaging/` and `scripts/` | systemd units, Native Messaging manifests, confined Firefox helper, Debian packaging, install, uninstall, and verification workflows. |
 
-## What `focus-core` Does
-
-`focus-core` is a library crate. It does not run as a daemon and it does not
-edit system files. It provides:
-
-- TOML configuration parsing and validation.
-- SQLite policy and runtime database migration.
-- URL policy evaluation for Tier 1 hard blocks and Tier 2 controlled access.
-- Schedule checks, daily allowance accounting, unlock cooldowns, maximum
-  session limits, and hourly unlock quotas.
-- Persistent policy records for site lists, schedules, allowances, unlock
-  defaults, and runtime records for unlocks, visits, events, heartbeats, and
-  service state.
-
-Privileged behavior such as `/etc/hosts` repair, Firefox enterprise policy
-writing, process killing, socket binding, and systemd watchdogs belongs in
-`focusd`.
-
-## What `focusd` Does
-
-`focusd` builds the `blockuntud` daemon. It:
-
-- Loads the SQLite policy/runtime database through `focus-core`; if the policy
-  tables are empty, imports the TOML config once as a seed.
-- Serves local JSON-RPC requests over a Unix domain socket.
-- Supports systemd socket activation for `/run/blockuntu/blockuntud.sock`.
-- Repairs Firefox enterprise policy at `/etc/firefox/policies/policies.json`.
-- Repairs Chrome managed policy at
-  `/etc/opt/chrome/policies/managed/blockuntu.json` and a local Chrome update
-  manifest at `/usr/local/share/blockuntu/chrome-extension-updates.xml`.
-- Repairs the BlocKuntu managed block inside `/etc/hosts` and reapplies
-  `chattr +i` for the production hosts path.
-- Exposes explicit start/stop enforcement RPCs so the GUI can disable the
-  blocker without manual file deletion.
-- Provides process-scanning primitives based on `/proc/[pid]/exe` and
-  `/proc/[pid]/comm`, including a mandatory Tier 1 hard block for unsupported
-  browsers such as Chromium, Brave, Edge, Opera, Vivaldi, LibreWolf, Waterfox,
-  Epiphany, Falkon, qutebrowser, Midori, Min, Nyxt, and Tor Browser.
-- Persists URL block events and browser extension heartbeats in SQLite.
-
-The daemon is root-oriented. Its tests use temporary files and do not modify
-system files.
-
-## What `focus-gui` Does
-
-`focus-gui` is a Tauri v2 desktop frontend built with Svelte and TypeScript. It
-does not evaluate policies locally. The Svelte UI calls Tauri commands, and the
-Rust side talks to `focusd` over the Unix socket.
-
-It includes:
-
-- Dashboard with daemon, rule, schedule, allowance, and health summaries.
-- Lists view for daemon-mediated site-list editing, Tier 1/Tier 2 assignment,
-  schedule assignment, and active-list edit protection.
-- Schedule view for daemon-mediated weekly schedule editing and active-schedule
-  edit protection.
-- Allowance overview.
-- Statistics from daemon event logs.
-- Admin/debug view with enforcement start/stop controls,
-  systemd/socket/policy/hosts/native-host/browser-extension/unsupported-browser
-  checks, and raw JSON-RPC execution.
-
-## What `native-host` Does
-
-`native-host` builds the `blockuntu-native` executable used by Firefox and
-Chrome Native Messaging. It is unprivileged and has no policy authority. It:
-
-- Maintains the persistent stdin/stdout Native Messaging session with the
-  browser.
-- Reads and writes Native Messaging length-prefixed JSON frames.
-- Connects to the daemon Unix socket as a member of the `blockuntu` group.
-- Translates current PoC messages like `{"url": "..."}` into daemon JSON-RPC.
-- Translates extension heartbeats into the daemon `extension_heartbeat` method.
-- Passes raw JSON-RPC through unchanged for the future TypeScript extension.
-- Fails closed from a privilege perspective: if the daemon is unavailable, it
-  returns an error-shaped browser response and never makes local decisions.
-
-## What The Browser Extensions Do
-
-The Firefox extension and Chrome/Chromium extension are written in TypeScript
-and compile to `dist/background.js`. They:
-
-- Maintain daemon health through Native Messaging heartbeat acknowledgements.
-- Start in fail-closed mode until a heartbeat acknowledgement arrives.
-- Block all top-level HTTP/HTTPS navigation when heartbeat state is stale or
-  unavailable.
-- Send URL evaluations to `focusd` through `native-host`.
-- Record visit start, visit heartbeat, and visit end events for allowed pages.
-- Redirect blocked pages to `blocked.html`.
-
-## Prerequisites
-
-Install a recent Rust toolchain:
-
-```bash
-rustup default stable
-```
-
-You also need normal native build tooling available on Linux, such as `cc`,
-`pkg-config`, and libc headers. SQLite is built through the bundled
-`rusqlite` feature, so a system SQLite development package is not required.
-
-## Run Locally
-
-Start a non-root development daemon from the repository root:
-
-```bash
-./scripts/start-dev-daemon.sh
-```
-
-This uses:
-
-- Config: `/tmp/blockuntu/config.toml`
-- Database: `/tmp/blockuntu/blockuntu.sqlite3`
-- Socket: `/tmp/blockuntu/blockuntud.sock`
-- Sandbox Firefox policy file: `/tmp/blockuntu/firefox/policies.json`
-- Sandbox hosts file: `/tmp/blockuntu/hosts`
-
-In a second terminal, start the Tauri GUI:
-
-```bash
-cd focus-gui
-npm install
-npm run tauri dev
-```
-
-The GUI socket field defaults to auto-detection. It tries the production socket
-`/run/blockuntu/blockuntud.sock` first and then the development socket
-`/tmp/blockuntu/blockuntud.sock`.
-
-For the development daemon, you can also set the socket field in the top bar
-explicitly to:
+The main browser path is:
 
 ```text
-/tmp/blockuntu/blockuntud.sock
+browser extension -> blockuntu-native -> blockuntud -> focus-core
 ```
 
-The Lists and Schedule tabs save structured policy records through JSON-RPC.
-Saves are validated by `focus-core`, persisted in SQLite by `focusd`, and
-reloaded in the daemon process immediately. A site list or schedule that is
-active at the current local time cannot be edited from the GUI.
-
-For Firefox and Chrome extension testing against the development daemon,
-install the per-user Native Messaging manifests:
-
-```bash
-./scripts/install-dev-native-host.sh
-```
-
-Restart Firefox and Chrome after installing or updating those manifests.
-
-## Build
-
-From the repository root:
-
-```bash
-cd focus-core
-cargo build
-```
-
-Build the daemon:
-
-```bash
-cd focusd
-cargo build
-```
-
-Build the native host:
-
-```bash
-cd native-host
-cargo build
-```
-
-Build the Tauri frontend web assets:
-
-```bash
-cd focus-gui
-npm install
-npm run build
-```
-
-Build the Firefox extension:
-
-```bash
-cd browser-extension-firefox
-npm install
-npm run build
-```
-
-Build the Chrome extension:
-
-```bash
-cd browser-extension-chrome
-npm install
-npm run build
-```
-
-For a release build:
-
-```bash
-cd focus-core
-cargo build --release
-```
-
-```bash
-cd focusd
-cargo build --release
-```
-
-```bash
-cd native-host
-cargo build --release
-```
-
-The compiled library artifacts are written under `focus-core/target/`.
-
-## Test
-
-Run the full `focus-core` test suite:
-
-```bash
-cd focus-core
-cargo test --all-targets
-```
-
-Run the full `focusd` test suite:
-
-```bash
-cd focusd
-cargo test --all-targets
-```
-
-Run the full `native-host` test suite:
-
-```bash
-cd native-host
-cargo test --all-targets
-```
-
-Check the Tauri frontend:
-
-```bash
-cd focus-gui
-npm run verify
-```
-
-Type-check and validate the Firefox extension:
-
-```bash
-cd browser-extension-firefox
-npm run verify
-```
-
-Type-check and validate the Chrome extension:
-
-```bash
-cd browser-extension-chrome
-npm run verify
-```
-
-Run formatting checks:
-
-```bash
-cd focus-core
-cargo fmt --check
-```
-
-## One-Command Verification
-
-From the repository root:
-
-```bash
-./scripts/verify-focus-core.sh
-```
-
-For the daemon:
-
-```bash
-./scripts/verify-focusd.sh
-```
-
-For the Tauri frontend:
-
-```bash
-./scripts/verify-focus-gui.sh
-```
-
-For the native host:
-
-```bash
-./scripts/verify-native-host.sh
-```
-
-For the Firefox extension:
-
-```bash
-./scripts/verify-firefox-extension.sh
-```
-
-For the Chrome extension:
-
-```bash
-./scripts/verify-chrome-extension.sh
-```
-
-This script:
-
-1. Enters `focus-core/`.
-2. Runs `cargo clean`.
-3. Runs `cargo fmt --check`.
-4. Runs `cargo test --all-targets`.
-
-Use these before integrating changes into other crates.
-
-## Running `focusd` for Development
-
-`focus-core` is a library and is not run directly. `focusd` is executable.
-
-For a non-root development run, use the helper script:
-
-```bash
-./scripts/start-dev-daemon.sh
-```
-
-It uses only temporary paths under `/tmp/blockuntu`, including the daemon socket,
-SQLite database, Firefox policy sandbox, and hosts sandbox.
-
-The equivalent manual command is:
-
-```bash
-mkdir -p /tmp/blockuntu
-cp examples/blockuntu.toml /tmp/blockuntu/config.toml
-
-cd focusd
-cargo run -- \
-  --config /tmp/blockuntu/config.toml \
-  --database /tmp/blockuntu/blockuntu.sqlite3 \
-  --socket /tmp/blockuntu/blockuntud.sock \
-  --firefox-policy /tmp/blockuntu/firefox/policies.json \
-  --hosts /tmp/blockuntu/hosts \
-  --dev-bind-socket \
-  serve
-```
-
-The production service should use systemd socket activation instead of
-`--dev-bind-socket`.
-
-If you are testing Firefox or Chrome against the dev daemon, install the
-per-user dev Native Messaging manifests:
-
-```bash
-./scripts/install-dev-native-host.sh
-```
-
-Then restart Firefox/Chrome and reload the extension. The dev manifests point
-`blockuntu_native` at the local native host binary and force it to use
-`/tmp/blockuntu/blockuntud.sock`. The generated wrapper also passes
-`--revive-command ./scripts/start-dev-daemon.sh`, so Firefox heartbeats can
-restart the dev daemon after a missing or stale `/tmp/blockuntu/blockuntud.sock`.
-
-Check policy/database initialization without serving. If the SQLite policy
-tables are empty, this imports `/tmp/blockuntu/config.toml` once; later GUI
-edits are stored in `/tmp/blockuntu/blockuntu.sqlite3`:
-
-```bash
-cd focusd
-cargo run -- \
-  --config /tmp/blockuntu/config.toml \
-  --database /tmp/blockuntu/blockuntu.sqlite3 \
-  check
-```
-
-## Minimal Seed Config Example
-
-The live policy source is SQLite. TOML remains useful as the first-run seed
-format for an empty policy database:
-
-```toml
-[[allowances]]
-id = "social-daily"
-name = "Social daily allowance"
-daily_minutes = 30
-
-[[schedules]]
-id = "work-hours"
-name = "Work hours"
-
-[[schedules.windows]]
-weekday = "mon"
-start = "09:00"
-end = "17:00"
-
-[[rules]]
-id = "instagram-hard"
-name = "Instagram hard block"
-tier = "hard"
-patterns = [
-  { kind = "domain", value = "instagram.com", match_subdomains = true }
-]
-
-[[rules]]
-id = "reddit-hard"
-name = "Reddit hard block"
-tier = "hard"
-patterns = [
-  { kind = "domain", value = "reddit.com", match_subdomains = true },
-  { kind = "domain", value = "redd.it", match_subdomains = true }
-]
-
-[[rules]]
-id = "twitch-hard"
-name = "Twitch hard block"
-tier = "hard"
-patterns = [
-  { kind = "domain", value = "twitch.tv", match_subdomains = true }
-]
-
-[[rules]]
-id = "tiktok-hard"
-name = "TikTok hard block"
-tier = "hard"
-patterns = [
-  { kind = "domain", value = "tiktok.com", match_subdomains = true }
-]
-
-[[rules]]
-id = "youtube-controlled"
-name = "YouTube controlled access"
-tier = "controlled_access"
-schedule_ids = ["work-hours"]
-allowance_id = "social-daily"
-patterns = [
-  { kind = "domain", value = "youtube.com", match_subdomains = true }
-]
-
-[rules.unlock_policy]
-max_session_minutes = 10
-cooldown_minutes = 30
-max_unlocks_per_hour = 2
-```
-
-## Minimal Rust Usage
-
-```rust
-use chrono::Local;
-use focus_core::{Database, EvaluationContext, Config, evaluate_url};
-
-let config = Config::from_toml_str(include_str!("blockuntu.toml"))?;
-let database = Database::open("blockuntu.sqlite3")?;
-let now = Local::now().fixed_offset();
-let context = EvaluationContext::new(&config, &database, now);
-
-let decision = evaluate_url("https://youtube.com/watch?v=abc", &context);
-println!("{decision:?}");
-# Ok::<(), focus_core::Error>(())
-```
-
-## Minimal JSON-RPC Usage
-
-With `blockuntud` serving on a Unix socket:
-
-```bash
-printf '%s' '{"jsonrpc":"2.0","id":1,"method":"evaluate_url","params":{"url":"https://youtube.com/"}}' \
-  | socat - UNIX-CONNECT:/tmp/blockuntu/blockuntud.sock
-```
-
-Example methods:
+The main GUI path is:
 
 ```text
-status
-config_snapshot
-upsert_site_list
-delete_site_list
-upsert_schedule
-delete_schedule
-evaluate_url
-request_unlock
-record_visit_start
-record_visit_heartbeat
-record_visit_end
-extension_heartbeat
-extension_status
+focus-gui frontend -> Tauri command -> blockuntud -> focus-core
 ```
 
-## Native Host Development
+## Current Policy Model
 
-The native host talks to `/run/blockuntu/blockuntud.sock` by default. For local
-development against a temporary daemon socket:
+BlocKuntu supports:
+
+- Tier 1 hard blocks.
+- Tier 2 controlled access rules.
+- Domain and URL pattern matching.
+- Weekly schedules, including grouped days such as workdays and weekends.
+- Daily allowances, including zero-minute allowances.
+- Rule-scoped temporary unlocks.
+- Cooldowns, maximum session length, and hourly unlock quotas.
+- App rules based on process identity such as executable path, basename,
+  command name, desktop id, and fallback window title matching.
+- Browser heartbeat fail-closed behavior when the extension, native host, or
+  daemon chain is unhealthy.
+
+If multiple Tier 2 site rules match, the policy engine evaluates the stricter
+applicable rule rather than relying on the first matching rule.
+
+## Production Package
+
+Build the current Debian package from the repository root:
 
 ```bash
-cd native-host
-cargo run -- --socket /tmp/blockuntu/blockuntud.sock
+./scripts/package-deb.sh
 ```
 
-Firefox and Chrome launch this binary through native messaging manifests, not
-manually. For the development manifests, use
-`./scripts/install-dev-native-host.sh`; it generates a wrapper that enables
-dev-daemon revival with `./scripts/start-dev-daemon.sh`.
-
-The production manifests are:
-
-```text
-packaging/native-messaging/blockuntu_native.json
-packaging/native-messaging/blockuntu_native.chrome.json
-```
-
-For per-user browser installs during development:
+The default package version is currently `0.1.0-7`, and the artifact path is:
 
 ```bash
-mkdir -p \
-  ~/.mozilla/native-messaging-hosts \
-  ~/.config/google-chrome/NativeMessagingHosts \
-  ~/.config/chromium/NativeMessagingHosts
-cp packaging/native-messaging/blockuntu_native.json \
-  ~/.mozilla/native-messaging-hosts/blockuntu_native.json
-cp packaging/native-messaging/blockuntu_native.chrome.json \
-  ~/.config/google-chrome/NativeMessagingHosts/blockuntu_native.json
-cp packaging/native-messaging/blockuntu_native.chrome.json \
-  ~/.config/chromium/NativeMessagingHosts/blockuntu_native.json
+target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
 ```
 
-For system-wide installation:
+Install it on the target Ubuntu/Debian machine with `apt`, not raw `dpkg -i`:
 
 ```bash
-sudo install -Dm755 native-host/target/release/blockuntu-native \
-  /usr/local/bin/blockuntu-native
-sudo install -Dm644 packaging/native-messaging/blockuntu_native.json \
-  /usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json
-sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
-  /etc/opt/chrome/native-messaging-hosts/blockuntu_native.json
-sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
-  /etc/chromium/native-messaging-hosts/blockuntu_native.json
+sudo apt install ./target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
+sudo usermod -aG blockuntu "$USER"
 ```
 
-For Firefox Snap or Flatpak, configure the per-user confined browser profile
-after the native host exists:
+Log out and back in after adding the desktop user to the `blockuntu` group.
 
-```bash
-./scripts/setup-confined-firefox-native-host.sh \
-  --native-host /usr/local/bin/blockuntu-native
-```
-
-For Firefox Flatpak this also writes the `org.mozilla.firefox.systemconfig`
-policy at
-`$XDG_DATA_HOME/flatpak/extension/org.mozilla.firefox.systemconfig/<arch>/stable/policies/policies.json`
-(default `~/.local/share/flatpak/extension/...`)
-and copies the signed XPI into
-`~/.var/app/org.mozilla.firefox/data/blockuntu/BlocKuntu-Signed.xpi`. Inside the
-Flatpak sandbox the policy is visible as
-`/app/etc/firefox/policies/policies.json`.
-
-Packaged installs expose the same helper as:
+For Firefox Snap or Firefox Flatpak, run the confined-browser helper as the
+desktop user after installing the package:
 
 ```bash
 blockuntu-setup-confined-firefox
 ```
 
-## Tauri GUI Development
+See [Docs/INSTALLATION.md](Docs/INSTALLATION.md) for package inspection,
+browser-specific setup, Chrome policy behavior, recovery files, and production
+runtime paths.
+
+## Local Development
+
+Start the non-root dev daemon from the repository root:
+
+```bash
+./scripts/start-dev-daemon.sh
+```
+
+It uses temporary paths under `/tmp/blockuntu`, including:
+
+```text
+/tmp/blockuntu/config.toml
+/tmp/blockuntu/blockuntu.sqlite3
+/tmp/blockuntu/blockuntud.sock
+/tmp/blockuntu/firefox/policies.json
+/tmp/blockuntu/chrome/policies/managed/blockuntu.json
+/tmp/blockuntu/hosts
+```
+
+Install dev Native Messaging manifests:
+
+```bash
+./scripts/install-dev-native-host.sh
+```
+
+Then restart Firefox or Chrome so the browser reloads the manifests.
+
+Run the GUI in development mode:
 
 ```bash
 cd focus-gui
@@ -608,11 +155,12 @@ npm install
 npm run tauri dev
 ```
 
-The GUI auto-detects `/run/blockuntu/blockuntud.sock` first, then
-`/tmp/blockuntu/blockuntud.sock`. For local daemon testing, you can leave the
-socket field empty or set it explicitly to `/tmp/blockuntu/blockuntud.sock`.
+The GUI auto-detects `/run/blockuntu/blockuntud.sock` first and then
+`/tmp/blockuntu/blockuntud.sock`.
 
-## Firefox Extension Development
+## Browser Extension Development
+
+Firefox:
 
 ```bash
 cd browser-extension-firefox
@@ -623,15 +171,7 @@ npm run build
 Load `browser-extension-firefox/manifest.json` from
 `about:debugging#/runtime/this-firefox`.
 
-Create an unsigned XPI archive when needed:
-
-```bash
-cd browser-extension-firefox
-npm run build
-npm run package:xpi
-```
-
-## Chrome Extension Development
+Chrome/Chromium:
 
 ```bash
 cd browser-extension-chrome
@@ -640,49 +180,64 @@ npm run build
 ```
 
 Load `browser-extension-chrome/` from `chrome://extensions` with Developer mode
-enabled and "Load unpacked". The manifest embeds the public key from the hosted
-CRX so the extension ID remains:
+enabled.
+
+The Chrome extension ID is kept stable by the manifest key:
 
 ```text
 odedgejjcdilkoibeljkeohekonmdfea
 ```
 
-Create a local ZIP archive when needed:
+## Verification
+
+From the repository root:
+
+```bash
+./scripts/verify-focus-core.sh
+./scripts/verify-focusd.sh
+./scripts/verify-focus-gui.sh
+./scripts/verify-native-host.sh
+./scripts/verify-firefox-extension.sh
+./scripts/verify-chrome-extension.sh
+```
+
+Targeted checks are also available from each component:
+
+```bash
+cargo test --manifest-path focus-core/Cargo.toml --all-targets
+cargo test --manifest-path focusd/Cargo.toml --all-targets
+cargo test --manifest-path native-host/Cargo.toml --all-targets
+```
+
+```bash
+cd focus-gui
+npm run verify
+```
+
+```bash
+cd browser-extension-firefox
+npm run verify
+```
 
 ```bash
 cd browser-extension-chrome
-npm run build
-npm run package:zip
+npm run verify
 ```
 
-The production Chrome policy uses a local update manifest that points at the
-hosted CRX:
+## Uninstall
 
-```text
-https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download
+For Debian package installs, use the GUI Admin tab when possible. The GUI
+validates the uninstall phrase and then runs the package purge through `pkexec`.
+
+The terminal equivalent is:
+
+```bash
+sudo dpkg --purge blockuntu
 ```
 
-Future CRX builds must be signed with the same Chrome packaging key to keep the
-extension ID stable.
+Package purge removes the systemd units, runtime socket directory, package
+binaries, package GUI launcher/icons, BlocKuntu-owned browser policies,
+BlocKuntu-owned `/etc/hosts` state, `/etc/blockuntu`, and `/var/lib/blockuntu`.
 
-## Current Verification Status
-
-The latest verification run passed:
-
-```text
-cargo fmt --check
-cargo test --all-targets
-focus-core: 11 integration tests passed
-focusd: daemon/module tests passed
-focus-gui: Svelte check, Vite build, and Tauri cargo check passed
-native-host: framing/protocol/socket bridge tests passed
-browser-extension-firefox: TypeScript build and manifest checks passed
-browser-extension-chrome: TypeScript build and manifest checks passed
-browser-extension-chrome: ZIP packaging helper passed
-```
-
-## Next Implementation Step
-
-The next production module should be `focus-cli`, so there is an admin/debug
-tool for checking daemon status, repairing installation state, and inspecting
-SQLite events.
+See [Docs/UNINSTALL.md](Docs/UNINSTALL.md) before manual cleanup, especially if
+you used dev manifests, Firefox Snap, or Firefox Flatpak.

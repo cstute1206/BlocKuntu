@@ -10,6 +10,8 @@ import type {
   ScheduleWindow
 } from "./types";
 
+export { formatError } from "./errors";
+
 const firstRunOverviewKey = "blockuntu.firstRunOverviewDismissed";
 
 export const weekdays = [
@@ -221,13 +223,6 @@ export function nextAvailableIndexedId(
     id = `${prefix}-${index}`;
   }
   return { id, index };
-}
-
-export function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
 
 export function firstRunOverviewDismissed(): boolean {
