@@ -587,7 +587,7 @@ fn overnight_schedule_windows_remain_active_after_midnight() {
 }
 
 #[test]
-fn unlocks_allow_only_the_exact_url_and_use_fixed_quota() {
+fn unlocks_apply_to_the_matched_site_rule_and_use_fixed_quota() {
     let config = Config::from_toml_str(
         r#"
         [[rules]]
@@ -595,7 +595,7 @@ fn unlocks_allow_only_the_exact_url_and_use_fixed_quota() {
         name = "Controlled without allowance"
         tier = "controlled_access"
         patterns = [
-          { kind = "domain", value = "focus.example", match_subdomains = false }
+          { kind = "domain", value = "focus.example", match_subdomains = true }
         ]
         "#,
     )
@@ -628,7 +628,18 @@ fn unlocks_allow_only_the_exact_url_and_use_fixed_quota() {
         evaluate_url("https://focus.example/", &during_unlock),
         Decision::Allow
     );
-    assert!(evaluate_url("https://focus.example/watch?v=abc", &during_unlock).is_block());
+    assert_eq!(
+        evaluate_url("https://focus.example/watch?v=abc", &during_unlock),
+        Decision::Allow
+    );
+    assert_eq!(
+        evaluate_url("http://focus.example/", &during_unlock),
+        Decision::Allow
+    );
+    assert_eq!(
+        evaluate_url("https://www.focus.example/news", &during_unlock),
+        Decision::Allow
+    );
 
     let duplicate = request_unlock(
         "https://focus.example/",

@@ -157,7 +157,7 @@
       nowMs = Date.now();
     }, 1000);
     const refreshInterval = window.setInterval(() => {
-      void refreshAll({ silent: true });
+      void refreshRuntime({ silent: true });
     }, AUTO_REFRESH_INTERVAL_MS);
     showFirstRunOverview = !firstRunOverviewDismissed();
     void loadUninstallPhrase();
@@ -171,6 +171,46 @@
 
   function socketArg(): string | undefined {
     return undefined;
+  }
+
+  async function refreshRuntime(options: RefreshOptions = {}): Promise<void> {
+    if (refreshInFlight) return;
+
+    refreshInFlight = true;
+    if (!options.silent) {
+      loading = true;
+    }
+    lastError = null;
+
+    try {
+      const [
+        statusResult,
+        enforcementResult,
+        eventsResult,
+        healthResult,
+        tier1EditStatusResult
+      ] = await Promise.allSettled([
+        daemonStatus(socketArg()),
+        enforcementStatus(socketArg()),
+        recentEvents(80, socketArg()),
+        systemHealth(socketArg()),
+        tier1EditStatus(socketArg())
+      ]);
+
+      applyRuntimeRefreshResults(
+        statusResult,
+        enforcementResult,
+        eventsResult,
+        healthResult,
+        tier1EditStatusResult
+      );
+      lastRefresh = new Date().toLocaleTimeString();
+    } finally {
+      refreshInFlight = false;
+      if (!options.silent) {
+        loading = false;
+      }
+    }
   }
 
   async function refreshAll(options: RefreshOptions = {}): Promise<void> {
@@ -199,36 +239,17 @@
         tier1EditStatus(socketArg())
       ]);
 
-      if (statusResult.status === "fulfilled") {
-        status = statusResult.value;
-      } else {
-        status = null;
-        lastError = formatError(statusResult.reason);
-      }
-
-      if (enforcementResult.status === "fulfilled") {
-        enforcement = enforcementResult.value;
-      } else {
-        enforcement = null;
-      }
+      applyRuntimeRefreshResults(
+        statusResult,
+        enforcementResult,
+        eventsResult,
+        healthResult,
+        tier1EditStatusResult
+      );
 
       if (configResult.status === "fulfilled") {
         config = configResult.value;
         syncConfigSelection(configResult.value);
-      }
-
-      if (eventsResult.status === "fulfilled") {
-        events = eventsResult.value.events;
-      }
-
-      if (healthResult.status === "fulfilled") {
-        health = healthResult.value;
-      }
-
-      if (tier1EditStatusResult.status === "fulfilled") {
-        tier1EditUnlockedUntil = tier1EditStatusResult.value.active
-          ? (tier1EditStatusResult.value.expires_at ?? null)
-          : null;
       }
 
       lastRefresh = new Date().toLocaleTimeString();
@@ -240,33 +261,136 @@
     }
   }
 
+  function applyRuntimeRefreshResults(
+    statusResult: PromiseSettledResult<DaemonStatus>,
+    enforcementResult: PromiseSettledResult<EnforcementStatus>,
+    eventsResult: PromiseSettledResult<{ events: RecentEvent[] }>,
+    healthResult: PromiseSettledResult<SystemHealth>,
+    tier1EditStatusResult: PromiseSettledResult<{ active: boolean; expires_at?: string | null }>
+  ): void {
+    if (statusResult.status === "fulfilled") {
+      status = statusResult.value;
+    } else {
+      status = null;
+      lastError = formatError(statusResult.reason);
+    }
+
+    if (enforcementResult.status === "fulfilled") {
+      enforcement = enforcementResult.value;
+    } else {
+      enforcement = null;
+    }
+
+    if (eventsResult.status === "fulfilled") {
+      events = eventsResult.value.events;
+    }
+
+    if (healthResult.status === "fulfilled") {
+      health = healthResult.value;
+    }
+
+    if (tier1EditStatusResult.status === "fulfilled") {
+      tier1EditUnlockedUntil = tier1EditStatusResult.value.active
+        ? (tier1EditStatusResult.value.expires_at ?? null)
+        : null;
+    }
+  }
+
   function syncConfigSelection(snapshot: ConfigSnapshot): void {
-    const selectedRuleSnapshot =
-      snapshot.rules.find((rule) => rule.id === selectedRuleId) ?? null;
-    if (!selectedRuleSnapshot) {
-      selectedRuleId = snapshot.rules[0]?.id ?? null;
-      setRuleDraft(snapshot.rules[0] ?? null, snapshot);
-    } else if (!ruleDraft) {
-      setRuleDraft(selectedRuleSnapshot, snapshot);
+    if (!ruleDraftHasUnsavedChanges(snapshot)) {
+      const selectedRuleSnapshot =
+        snapshot.rules.find((rule) => rule.id === selectedRuleId) ?? null;
+      if (!selectedRuleSnapshot) {
+        selectedRuleId = snapshot.rules[0]?.id ?? null;
+        setRuleDraft(snapshot.rules[0] ?? null, snapshot);
+      } else {
+        setRuleDraft(selectedRuleSnapshot, snapshot);
+      }
     }
 
-    const selectedAppRuleSnapshot =
-      snapshot.app_rules.find((rule) => rule.id === selectedAppRuleId) ?? null;
-    if (!selectedAppRuleSnapshot) {
-      selectedAppRuleId = snapshot.app_rules[0]?.id ?? null;
-      appRuleDraft = snapshot.app_rules[0] ? cloneAppRule(snapshot.app_rules[0]) : null;
-    } else if (!appRuleDraft) {
-      appRuleDraft = cloneAppRule(selectedAppRuleSnapshot);
+    if (!appRuleDraftHasUnsavedChanges(snapshot)) {
+      const selectedAppRuleSnapshot =
+        snapshot.app_rules.find((rule) => rule.id === selectedAppRuleId) ?? null;
+      if (!selectedAppRuleSnapshot) {
+        selectedAppRuleId = snapshot.app_rules[0]?.id ?? null;
+        appRuleDraft = snapshot.app_rules[0] ? cloneAppRule(snapshot.app_rules[0]) : null;
+      } else {
+        appRuleDraft = cloneAppRule(selectedAppRuleSnapshot);
+      }
     }
 
-    const selectedScheduleSnapshot =
+    if (!scheduleDraftHasUnsavedChanges(snapshot)) {
+      const selectedScheduleSnapshot =
+        snapshot.schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
+      if (!selectedScheduleSnapshot) {
+        selectedScheduleId = snapshot.schedules[0]?.id ?? null;
+        scheduleDraft = snapshot.schedules[0] ? cloneSchedule(snapshot.schedules[0]) : null;
+      } else {
+        scheduleDraft = cloneSchedule(selectedScheduleSnapshot);
+      }
+    }
+  }
+
+  function ruleDraftHasUnsavedChanges(snapshot: ConfigSnapshot): boolean {
+    if (!ruleDraft) return false;
+
+    const savedRule = snapshot.rules.find((rule) => rule.id === selectedRuleId) ?? null;
+    if (!savedRule) return true;
+
+    if (!sameDraft(normalizeRuleDraft(ruleDraft), normalizeRuleDraft(savedRule))) {
+      return true;
+    }
+
+    if (ruleDraft.tier !== "controlled_access" && savedRule.tier !== "controlled_access") {
+      return false;
+    }
+
+    const draftAllowance = ruleAllowanceDraft ?? defaultAllowanceForRule(ruleDraft);
+    const savedAllowance = cloneAllowanceForRule(savedRule, snapshot) ?? defaultAllowanceForRule(savedRule);
+
+    return !sameDraft(
+      normalizeAllowanceDraft(draftAllowance, ruleDraft),
+      normalizeAllowanceDraft(savedAllowance, savedRule)
+    );
+  }
+
+  function appRuleDraftHasUnsavedChanges(snapshot: ConfigSnapshot): boolean {
+    if (!appRuleDraft) return false;
+
+    const savedRule = snapshot.app_rules.find((rule) => rule.id === selectedAppRuleId) ?? null;
+    if (!savedRule) return true;
+
+    return !sameDraft(normalizeAppRuleDraft(appRuleDraft), normalizeAppRuleDraft(savedRule));
+  }
+
+  function scheduleDraftHasUnsavedChanges(snapshot: ConfigSnapshot): boolean {
+    if (!scheduleDraft) return false;
+
+    const savedSchedule =
       snapshot.schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
-    if (!selectedScheduleSnapshot) {
-      selectedScheduleId = snapshot.schedules[0]?.id ?? null;
-      scheduleDraft = snapshot.schedules[0] ? cloneSchedule(snapshot.schedules[0]) : null;
-    } else if (!scheduleDraft) {
-      scheduleDraft = cloneSchedule(selectedScheduleSnapshot);
+    if (!savedSchedule) return true;
+
+    return !sameDraft(normalizeScheduleDraft(scheduleDraft), normalizeScheduleDraft(savedSchedule));
+  }
+
+  function sameDraft(left: unknown, right: unknown): boolean {
+    return stableStringify(left) === stableStringify(right);
+  }
+
+  function stableStringify(value: unknown): string {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => stableStringify(item)).join(",")}]`;
     }
+
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      return `{${Object.keys(record)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+        .join(",")}}`;
+    }
+
+    return JSON.stringify(value);
   }
 
   async function runUrlCheck(): Promise<void> {

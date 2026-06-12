@@ -68,8 +68,7 @@ impl<'a> PolicyEngine<'a> {
                 continue;
             }
 
-            let decision =
-                self.evaluate_controlled_rule(rule, &parsed.url_without_fragment, context);
+            let decision = self.evaluate_controlled_rule(rule, context);
             if decision.is_block() {
                 let strictness = self.controlled_rule_strictness(rule, &parsed);
                 let should_replace = controlled_block
@@ -111,7 +110,6 @@ impl<'a> PolicyEngine<'a> {
                 &rule.name,
                 rule.allowance_id.as_deref(),
                 None,
-                None,
                 context,
             );
             if decision.is_block() {
@@ -147,13 +145,7 @@ impl<'a> PolicyEngine<'a> {
         let minutes = policy.max_session_minutes;
 
         let now = context.now_utc();
-        let active_unlock = match rule.scope {
-            UnlockScope::ExactUrl => {
-                self.database
-                    .active_unlock_for_rule_and_target(&rule.id, &rule.target, now)?
-            }
-            UnlockScope::Rule => self.database.active_unlock_for_rule(&rule.id, now)?,
-        };
+        let active_unlock = self.database.active_unlock_for_rule(&rule.id, now)?;
         if let Some(active) = active_unlock {
             return Err(UnlockError::UnlockAlreadyActive {
                 rule_id: rule.id.clone(),
@@ -237,14 +229,12 @@ impl<'a> PolicyEngine<'a> {
     fn evaluate_controlled_rule(
         &self,
         rule: &RuleConfig,
-        url_without_fragment: &str,
         context: &EvaluationContext<'_>,
     ) -> Decision {
         self.evaluate_controlled_rule_fields(
             &rule.id,
             &rule.name,
             rule.allowance_id.as_deref(),
-            Some(url_without_fragment),
             Some(rule),
             context,
         )
@@ -255,17 +245,11 @@ impl<'a> PolicyEngine<'a> {
         rule_id: &str,
         rule_name: &str,
         allowance_id: Option<&str>,
-        exact_unlock_target: Option<&str>,
         usage_rule: Option<&RuleConfig>,
         context: &EvaluationContext<'_>,
     ) -> Decision {
         let now = context.now_utc();
-        let active_unlock = match exact_unlock_target {
-            Some(target) => self
-                .database
-                .active_unlock_for_rule_and_target(rule_id, target, now),
-            None => self.database.active_unlock_for_rule(rule_id, now),
-        };
+        let active_unlock = self.database.active_unlock_for_rule(rule_id, now);
         match active_unlock {
             Ok(Some(_)) => return Decision::Allow,
             Ok(None) => {}
@@ -338,11 +322,10 @@ impl<'a> PolicyEngine<'a> {
                 }
             }
 
-            if let Some(rule) = self.controlled_rule_for_unlock(&parsed, &unlock_target, context) {
+            if let Some(rule) = self.controlled_rule_for_unlock(&parsed, context) {
                 return Ok(ResolvedUnlockRule {
                     id: rule.id.clone(),
                     target: unlock_target,
-                    scope: UnlockScope::ExactUrl,
                 });
             }
         }
@@ -378,7 +361,6 @@ impl<'a> PolicyEngine<'a> {
     fn controlled_rule_for_unlock<'b>(
         &'b self,
         parsed: &'b NormalizedUrl,
-        exact_unlock_target: &str,
         context: &EvaluationContext<'_>,
     ) -> Option<&'b RuleConfig> {
         let mut active_match: Option<(&RuleConfig, ControlledRuleStrictness)> = None;
@@ -398,10 +380,7 @@ impl<'a> PolicyEngine<'a> {
                 active_match = Some((rule, strictness));
             }
 
-            if self
-                .evaluate_controlled_rule(rule, exact_unlock_target, context)
-                .is_block()
-            {
+            if self.evaluate_controlled_rule(rule, context).is_block() {
                 let should_replace_blocking = blocking_match
                     .as_ref()
                     .map(|(_, current)| strictness.is_stricter_than(*current))
@@ -573,13 +552,6 @@ impl<'a> PolicyEngine<'a> {
 struct ResolvedUnlockRule {
     id: String,
     target: String,
-    scope: UnlockScope,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UnlockScope {
-    ExactUrl,
-    Rule,
 }
 
 pub fn evaluate_url(url: &str, context: &EvaluationContext<'_>) -> Decision {
@@ -625,7 +597,6 @@ fn unlock_rule_from_app(rule: &AppRuleConfig, target: &str) -> Result<ResolvedUn
         RuleTier::ControlledAccess => Ok(ResolvedUnlockRule {
             id: rule.id.clone(),
             target: target.to_string(),
-            scope: UnlockScope::Rule,
         }),
     }
 }

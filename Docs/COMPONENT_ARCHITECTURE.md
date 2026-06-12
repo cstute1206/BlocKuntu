@@ -430,7 +430,7 @@ GUI request
   -> request_unlock RPC
   -> focus-core validates target and constraints
   -> SQLite unlock row
-  -> future evaluate_url calls may allow the target until expiry
+  -> future evaluate_url calls may allow the matched Tier 2 rule until expiry
 ```
 
 ### Config Edit

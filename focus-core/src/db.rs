@@ -836,29 +836,6 @@ impl Database {
             .map_err(Error::from)
     }
 
-    pub(crate) fn active_unlock_for_rule_and_target(
-        &self,
-        rule_id: &str,
-        target: &str,
-        now: DateTime<Utc>,
-    ) -> Result<Option<UnlockState>, Error> {
-        let now = format_time(now);
-        self.conn
-            .query_row(
-                r#"
-                SELECT id, target, rule_id, minutes, reason, started_at, expires_at
-                FROM unlocks
-                WHERE rule_id = ?1 AND target = ?2 AND expires_at > ?3
-                ORDER BY expires_at DESC
-                LIMIT 1
-                "#,
-                params![rule_id, target, now],
-                unlock_from_row,
-            )
-            .optional()
-            .map_err(Error::from)
-    }
-
     pub(crate) fn latest_unlock_for_rule(
         &self,
         rule_id: &str,
