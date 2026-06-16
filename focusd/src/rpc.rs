@@ -5,8 +5,8 @@ use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelik
 use focus_core::{
     evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
     AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision,
-    EvaluationContext, FocusCore, HeartbeatState, RuleConfig, RuleTier, ScheduleConfig,
-    UnlockState, VisitState, Weekday,
+    DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState, RuleConfig,
+    RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -30,6 +30,7 @@ const BROWSER_EXTENSION_MODE_UNINSTALLING: &str = "uninstalling";
 const TIER1_EDIT_KEY_PATH: &str = "/etc/blockuntu/tier1-edit-key.txt";
 const TIER1_EDIT_UNLOCK_UNTIL_KEY: &str = "tier1_edit_unlocked_until";
 const TIER1_EDIT_UNLOCK_MINUTES: i64 = 5;
+const MAX_DETOX_DURATION_MINUTES: u32 = 7 * 24 * 60;
 
 #[derive(Clone)]
 pub struct RpcContext {
@@ -273,6 +274,36 @@ struct DeleteScheduleParams {
     now: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct StartDetoxParams {
+    #[serde(default)]
+    name: Option<String>,
+    duration_minutes: u32,
+    #[serde(default)]
+    site_rule_ids: Vec<String>,
+    #[serde(default)]
+    app_rule_ids: Vec<String>,
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CancelDetoxParams {
+    id: String,
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DetoxSessionsParams {
+    #[serde(default = "default_detox_sessions_limit")]
+    limit: u32,
+    #[serde(default)]
+    active_only: bool,
+    #[serde(default)]
+    now: Option<String>,
+}
+
 pub fn handle_payload(context: &RpcContext, payload: &[u8]) -> Vec<u8> {
     let response = match serde_json::from_slice::<Value>(payload) {
         Ok(value) => handle_json_value(context, value),
@@ -347,6 +378,18 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
         "delete_schedule" => {
             let params = parse_params::<DeleteScheduleParams>(params)?;
             delete_schedule_method(context, params)
+        }
+        "start_detox" => {
+            let params = parse_params::<StartDetoxParams>(params)?;
+            start_detox_method(context, params)
+        }
+        "cancel_detox" => {
+            let params = parse_params::<CancelDetoxParams>(params)?;
+            cancel_detox_method(context, params)
+        }
+        "detox_sessions" => {
+            let params = parse_params::<DetoxSessionsParams>(params)?;
+            detox_sessions_method(context, params)
         }
         "recent_events" => {
             let params = parse_params::<RecentEventsParams>(params)?;
@@ -690,6 +733,11 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
         Some(index) => {
             let current_rule = &next.rules[index];
             if current_rule != &params.rule
+                && site_rule_in_active_detox(&core, &current_rule.id, now)?
+            {
+                return Err(active_detox_site_list_edit_error(&current_rule.id));
+            }
+            if current_rule != &params.rule
                 && rule_is_active_at(current_rule, core.config(), now)
                 && !active_tier1_site_list_edit_allowed(&core, current_rule, now)?
             {
@@ -745,6 +793,9 @@ fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -
         )));
     };
     let current_rule = &next.rules[index];
+    if site_rule_in_active_detox(&core, &current_rule.id, now)? {
+        return Err(active_detox_site_list_edit_error(&current_rule.id));
+    }
     if rule_is_active_at(current_rule, core.config(), now)
         && !active_tier1_site_list_edit_allowed(&core, current_rule, now)?
     {
@@ -891,6 +942,11 @@ fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> 
         Some(index) => {
             let current_rule = &next.app_rules[index];
             if current_rule != &params.rule
+                && app_rule_in_active_detox(&core, &current_rule.id, now)?
+            {
+                return Err(active_detox_app_rule_edit_error(&current_rule.id));
+            }
+            if current_rule != &params.rule
                 && app_rule_is_active_at(current_rule, core.config(), now)
             {
                 return Err(active_app_rule_edit_error(&current_rule.id));
@@ -933,6 +989,9 @@ fn delete_app_rule_method(context: &RpcContext, params: DeleteAppRuleParams) -> 
         )));
     };
     let current_rule = &next.app_rules[index];
+    if app_rule_in_active_detox(&core, &current_rule.id, now)? {
+        return Err(active_detox_app_rule_edit_error(&current_rule.id));
+    }
     if app_rule_is_active_at(current_rule, core.config(), now) {
         return Err(active_app_rule_edit_error(&current_rule.id));
     }
@@ -1030,6 +1089,129 @@ fn delete_schedule_method(context: &RpcContext, params: DeleteScheduleParams) ->
         "status": "ok",
         "config": core.config(),
         "updated_at": updated_at
+    }))
+}
+
+fn start_detox_method(context: &RpcContext, params: StartDetoxParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let now_utc = now.with_timezone(&Utc);
+    if params.duration_minutes == 0 {
+        return Err(DaemonError::InvalidRequest(
+            "detox duration must be at least one minute".to_string(),
+        ));
+    }
+    if params.duration_minutes > MAX_DETOX_DURATION_MINUTES {
+        return Err(DaemonError::InvalidRequest(format!(
+            "detox duration cannot exceed {MAX_DETOX_DURATION_MINUTES} minutes"
+        )));
+    }
+
+    let site_rule_ids = normalized_unique_ids(params.site_rule_ids);
+    let app_rule_ids = normalized_unique_ids(params.app_rule_ids);
+    if site_rule_ids.is_empty() && app_rule_ids.is_empty() {
+        return Err(DaemonError::InvalidRequest(
+            "detox needs at least one site list or app rule".to_string(),
+        ));
+    }
+
+    let name = params
+        .name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty());
+    let ends_at = now_utc + Duration::minutes(i64::from(params.duration_minutes));
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+
+    validate_detox_targets(core.config(), &site_rule_ids, &app_rule_ids)?;
+    let session = DetoxSession {
+        id: next_detox_session_id(&core, now_utc)?,
+        name,
+        starts_at: now_utc,
+        ends_at,
+        cancelled_at: None,
+        site_rule_ids,
+        app_rule_ids,
+    };
+    let session = core.database().insert_detox_session(&session)?;
+    core.database().record_event(
+        "detox_started",
+        Some(&session.id),
+        Some(&format!(
+            "duration_minutes={};site_rules={};app_rules={}",
+            params.duration_minutes,
+            session.site_rule_ids.join(","),
+            session.app_rule_ids.join(",")
+        )),
+        now_utc,
+    )?;
+
+    Ok(json!({
+        "status": "ok",
+        "session": detox_session_to_json(&session, now_utc)
+    }))
+}
+
+fn cancel_detox_method(context: &RpcContext, params: CancelDetoxParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let now_utc = now.with_timezone(&Utc);
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let Some(session) = core.database().detox_session(&params.id)? else {
+        return Err(DaemonError::InvalidRequest(format!(
+            "detox session '{}' does not exist",
+            params.id
+        )));
+    };
+    if session.cancelled_at.is_some() {
+        return Err(DaemonError::InvalidRequest(format!(
+            "detox session '{}' is already cancelled",
+            params.id
+        )));
+    }
+    if session.ends_at <= now_utc {
+        return Err(DaemonError::InvalidRequest(format!(
+            "detox session '{}' has already ended",
+            params.id
+        )));
+    }
+    if !tier1_edit_window_active(&core, now)? {
+        return Err(DaemonError::InvalidRequest(
+            "Tier 1 edit unlock is required to cancel detox".to_string(),
+        ));
+    }
+
+    let Some(session) = core.database().cancel_detox_session(&params.id, now_utc)? else {
+        return Err(DaemonError::InvalidRequest(format!(
+            "detox session '{}' does not exist",
+            params.id
+        )));
+    };
+    core.database().record_event(
+        "detox_cancelled",
+        Some(&session.id),
+        Some("cancelled through privileged Tier 1 edit unlock"),
+        now_utc,
+    )?;
+
+    Ok(json!({
+        "status": "ok",
+        "session": detox_session_to_json(&session, now_utc)
+    }))
+}
+
+fn detox_sessions_method(context: &RpcContext, params: DetoxSessionsParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let now_utc = now.with_timezone(&Utc);
+    let limit = params.limit.clamp(1, 200);
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let sessions = if params.active_only {
+        core.database().active_detox_sessions(now_utc)?
+    } else {
+        core.database().detox_sessions(limit)?
+    };
+    Ok(json!({
+        "sessions": sessions
+            .iter()
+            .map(|session| detox_session_to_json(session, now_utc))
+            .collect::<Vec<_>>()
     }))
 }
 
@@ -1430,6 +1612,29 @@ fn block_reason_to_json(
             "url": url,
             "summary": "The URL could not be parsed safely."
         }),
+        BlockReason::Detox {
+            session_id,
+            session_name,
+            rule_id,
+            rule_name,
+            target_kind,
+            ends_at,
+        } => {
+            let free_at = ends_at.with_timezone(now.offset());
+            json!({
+                "kind": "detox",
+                "blocked_by": "detox",
+                "session_id": session_id,
+                "session_name": session_name,
+                "rule_id": rule_id,
+                "rule_name": rule_name,
+                "target_kind": detox_target_kind_to_str(*target_kind),
+                "summary": "Detox is active for this target.",
+                "detail": "This temporary block stays active until the detox session ends or is cancelled from the privileged admin path.",
+                "detox_ends_at": ends_at.to_rfc3339(),
+                "free_at": free_at.to_rfc3339()
+            })
+        }
         BlockReason::HardBlock { rule_id, rule_name } => json!({
             "kind": "hard_block",
             "tier": "tier_1",
@@ -1642,6 +1847,42 @@ fn next_allowance_reset_at(now: DateTime<FixedOffset>) -> DateTime<FixedOffset> 
     next_utc_midnight.with_timezone(now.offset())
 }
 
+fn detox_session_to_json(session: &DetoxSession, now: DateTime<Utc>) -> Value {
+    let status = if session.cancelled_at.is_some() {
+        "cancelled"
+    } else if session.starts_at > now {
+        "scheduled"
+    } else if session.ends_at > now {
+        "active"
+    } else {
+        "expired"
+    };
+    let remaining_seconds = if status == "active" {
+        Some((session.ends_at - now).num_seconds())
+    } else {
+        None
+    };
+
+    json!({
+        "id": session.id,
+        "name": session.name,
+        "starts_at": session.starts_at,
+        "ends_at": session.ends_at,
+        "cancelled_at": session.cancelled_at,
+        "site_rule_ids": session.site_rule_ids,
+        "app_rule_ids": session.app_rule_ids,
+        "status": status,
+        "remaining_seconds": remaining_seconds
+    })
+}
+
+fn detox_target_kind_to_str(kind: DetoxTargetKind) -> &'static str {
+    match kind {
+        DetoxTargetKind::SiteRule => "site_rule",
+        DetoxTargetKind::AppRule => "app_rule",
+    }
+}
+
 fn unlock_to_json(unlock: &UnlockState) -> Value {
     json!({
         "id": unlock.id,
@@ -1681,6 +1922,70 @@ fn jsonrpc_error(id: Option<Value>, code: i64, message: &str, data: Option<Strin
 
 fn default_recent_events_limit() -> u32 {
     50
+}
+
+fn default_detox_sessions_limit() -> u32 {
+    50
+}
+
+fn normalized_unique_ids(ids: Vec<String>) -> Vec<String> {
+    let mut unique = Vec::new();
+    for id in ids {
+        let id = id.trim().to_string();
+        if !id.is_empty() && !unique.contains(&id) {
+            unique.push(id);
+        }
+    }
+    unique
+}
+
+fn validate_detox_targets(
+    config: &Config,
+    site_rule_ids: &[String],
+    app_rule_ids: &[String],
+) -> Result<()> {
+    for rule_id in site_rule_ids {
+        let Some(rule) = config.rules.iter().find(|rule| rule.id == *rule_id) else {
+            return Err(DaemonError::InvalidRequest(format!(
+                "site list '{}' does not exist",
+                rule_id
+            )));
+        };
+        if !rule.enabled {
+            return Err(DaemonError::InvalidRequest(format!(
+                "site list '{}' is disabled and cannot be used for detox",
+                rule_id
+            )));
+        }
+    }
+
+    for rule_id in app_rule_ids {
+        let Some(rule) = config.app_rules.iter().find(|rule| rule.id == *rule_id) else {
+            return Err(DaemonError::InvalidRequest(format!(
+                "app rule '{}' does not exist",
+                rule_id
+            )));
+        };
+        if !rule.enabled {
+            return Err(DaemonError::InvalidRequest(format!(
+                "app rule '{}' is disabled and cannot be used for detox",
+                rule_id
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn next_detox_session_id(core: &FocusCore, now: DateTime<Utc>) -> Result<String> {
+    let base = format!("detox-{}", now.timestamp_micros());
+    let mut id = base.clone();
+    let mut suffix = 2;
+    while core.database().detox_session(&id)?.is_some() {
+        id = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    Ok(id)
 }
 
 fn enforcement_state_from_core(core: &FocusCore) -> Result<String> {
@@ -1796,6 +2101,18 @@ fn active_app_rule_edit_error(rule_id: &str) -> DaemonError {
     ))
 }
 
+fn active_detox_site_list_edit_error(rule_id: &str) -> DaemonError {
+    DaemonError::InvalidRequest(format!(
+        "site list '{rule_id}' is covered by an active detox session and cannot be edited"
+    ))
+}
+
+fn active_detox_app_rule_edit_error(rule_id: &str) -> DaemonError {
+    DaemonError::InvalidRequest(format!(
+        "app rule '{rule_id}' is covered by an active detox session and cannot be edited"
+    ))
+}
+
 fn active_schedule_edit_error(schedule_id: &str) -> DaemonError {
     DaemonError::InvalidRequest(format!(
         "schedule '{schedule_id}' is currently active and cannot be edited"
@@ -1839,6 +2156,30 @@ fn allowance_is_active_at(allowance_id: &str, config: &Config, now: DateTime<Fix
     config.rules.iter().any(|rule| {
         rule.allowance_id.as_deref() == Some(allowance_id) && rule_is_active_at(rule, config, now)
     })
+}
+
+fn site_rule_in_active_detox(
+    core: &FocusCore,
+    rule_id: &str,
+    now: DateTime<FixedOffset>,
+) -> Result<bool> {
+    Ok(core
+        .database()
+        .active_detox_sessions(now.with_timezone(&Utc))?
+        .iter()
+        .any(|session| session.site_rule_ids.iter().any(|id| id == rule_id)))
+}
+
+fn app_rule_in_active_detox(
+    core: &FocusCore,
+    rule_id: &str,
+    now: DateTime<FixedOffset>,
+) -> Result<bool> {
+    Ok(core
+        .database()
+        .active_detox_sessions(now.with_timezone(&Utc))?
+        .iter()
+        .any(|session| session.app_rule_ids.iter().any(|id| id == rule_id)))
 }
 
 fn rule_is_active_at(rule: &RuleConfig, config: &Config, now: DateTime<FixedOffset>) -> bool {
@@ -2671,6 +3012,186 @@ mod tests {
             .as_str()
             .expect("error data should be a string")
             .contains("site list 'controlled' is currently active"));
+    }
+
+    #[test]
+    fn detox_session_blocks_until_privileged_cancel() {
+        let (_temp, context) = rpc_context_with_tier1_edit_key(editable_rpc_context());
+        let start_request = json!({
+            "jsonrpc": "2.0",
+            "id": 121,
+            "method": "start_detox",
+            "params": {
+                "name": "Deep work",
+                "duration_minutes": 90,
+                "site_rule_ids": ["controlled"],
+                "now": "2026-05-22T18:00:00Z"
+            }
+        });
+        let start_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&start_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(start_response.get("error").is_none(), "{start_response}");
+        assert_eq!(start_response["result"]["session"]["status"], "active");
+        let session_id = start_response["result"]["session"]["id"]
+            .as_str()
+            .expect("session id should be a string")
+            .to_string();
+
+        let eval_request = json!({
+            "jsonrpc": "2.0",
+            "id": 122,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://controlled.example/",
+                "now": "2026-05-22T18:10:00Z"
+            }
+        });
+        let eval_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&eval_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(eval_response["result"]["decision"], "block");
+        assert_eq!(eval_response["result"]["reason"]["kind"], "detox");
+        assert_eq!(eval_response["result"]["reason"]["blocked_by"], "detox");
+        assert_eq!(eval_response["result"]["reason"]["session_id"], session_id);
+
+        let edit_request = json!({
+            "jsonrpc": "2.0",
+            "id": 123,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T18:11:00Z",
+                "rule": {
+                    "id": "controlled",
+                    "name": "Controlled edited",
+                    "tier": "controlled_access",
+                    "enabled": true,
+                    "patterns": [
+                        { "kind": "domain", "value": "different.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let edit_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&edit_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(edit_response["error"]["code"], -32602);
+        assert!(edit_response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("covered by an active detox session"));
+
+        let cancel_without_unlock = json!({
+            "jsonrpc": "2.0",
+            "id": 124,
+            "method": "cancel_detox",
+            "params": {
+                "id": session_id.clone(),
+                "now": "2026-05-22T18:12:00Z"
+            }
+        });
+        let cancel_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&cancel_without_unlock).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(cancel_response["error"]["code"], -32602);
+        assert!(cancel_response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("Tier 1 edit unlock is required"));
+
+        let unlock_request = json!({
+            "jsonrpc": "2.0",
+            "id": 125,
+            "method": "unlock_tier1_edit",
+            "params": {
+                "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
+                "now": "2026-05-22T18:13:00Z"
+            }
+        });
+        let unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&unlock_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(unlock_response.get("error").is_none(), "{unlock_response}");
+
+        let cancel_request = json!({
+            "jsonrpc": "2.0",
+            "id": 126,
+            "method": "cancel_detox",
+            "params": {
+                "id": session_id.clone(),
+                "now": "2026-05-22T18:14:00Z"
+            }
+        });
+        let cancel_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&cancel_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(cancel_response.get("error").is_none(), "{cancel_response}");
+        assert_eq!(cancel_response["result"]["session"]["status"], "cancelled");
+
+        let eval_after_cancel: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&eval_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(eval_after_cancel["result"]["decision"], "allow");
+    }
+
+    #[test]
+    fn detox_sessions_rpc_lists_active_sessions() {
+        let context = editable_rpc_context();
+        let start_request = json!({
+            "jsonrpc": "2.0",
+            "id": 127,
+            "method": "start_detox",
+            "params": {
+                "duration_minutes": 30,
+                "site_rule_ids": ["controlled"],
+                "now": "2026-05-22T18:00:00Z"
+            }
+        });
+        let start_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&start_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(start_response.get("error").is_none(), "{start_response}");
+
+        let list_request = json!({
+            "jsonrpc": "2.0",
+            "id": 128,
+            "method": "detox_sessions",
+            "params": {
+                "active_only": true,
+                "now": "2026-05-22T18:10:00Z"
+            }
+        });
+        let list_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&list_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(
+            list_response["result"]["sessions"]
+                .as_array()
+                .expect("sessions should be an array")
+                .len(),
+            1
+        );
     }
 
     #[test]

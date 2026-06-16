@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
     AllowanceConfig, AppMatcherConfig, AppMatcherKind, AppRuleConfig, Config, ConfigError,
-    DefaultsConfig, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
+    DefaultsConfig, DetoxSession, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
     ScheduleConfig, ScheduleDay, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockPolicyConfig,
     UnlockState, VisitState,
 };
@@ -779,6 +779,145 @@ impl Database {
             .optional()?)
     }
 
+    pub fn insert_detox_session(&self, session: &DetoxSession) -> Result<DetoxSession, Error> {
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute(
+            r#"
+            INSERT INTO detox_sessions (id, name, starts_at, ends_at, cancelled_at, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            params![
+                &session.id,
+                session.name.as_deref(),
+                format_time(session.starts_at),
+                format_time(session.ends_at),
+                session.cancelled_at.map(format_time),
+                format_time(session.starts_at),
+            ],
+        )?;
+
+        for (position, rule_id) in session.site_rule_ids.iter().enumerate() {
+            transaction.execute(
+                r#"
+                INSERT INTO detox_session_site_rules (session_id, rule_id, position)
+                VALUES (?1, ?2, ?3)
+                "#,
+                params![&session.id, rule_id, position as i64],
+            )?;
+        }
+
+        for (position, rule_id) in session.app_rule_ids.iter().enumerate() {
+            transaction.execute(
+                r#"
+                INSERT INTO detox_session_app_rules (session_id, rule_id, position)
+                VALUES (?1, ?2, ?3)
+                "#,
+                params![&session.id, rule_id, position as i64],
+            )?;
+        }
+
+        transaction.commit()?;
+        Ok(session.clone())
+    }
+
+    pub fn active_detox_sessions(&self, now: DateTime<Utc>) -> Result<Vec<DetoxSession>, Error> {
+        let now = format_time(now);
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT id, name, starts_at, ends_at, cancelled_at
+            FROM detox_sessions
+            WHERE starts_at <= ?1
+              AND ends_at > ?1
+              AND cancelled_at IS NULL
+            ORDER BY ends_at DESC, starts_at DESC, id
+            "#,
+        )?;
+        self.load_detox_sessions_from_statement(&mut statement, params![now])
+    }
+
+    pub fn detox_sessions(&self, limit: u32) -> Result<Vec<DetoxSession>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT id, name, starts_at, ends_at, cancelled_at
+            FROM detox_sessions
+            ORDER BY starts_at DESC, id DESC
+            LIMIT ?1
+            "#,
+        )?;
+        self.load_detox_sessions_from_statement(&mut statement, params![i64::from(limit)])
+    }
+
+    pub fn detox_session(&self, id: &str) -> Result<Option<DetoxSession>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT id, name, starts_at, ends_at, cancelled_at
+            FROM detox_sessions
+            WHERE id = ?1
+            "#,
+        )?;
+        let mut sessions = self.load_detox_sessions_from_statement(&mut statement, params![id])?;
+        Ok(sessions.pop())
+    }
+
+    pub fn cancel_detox_session(
+        &self,
+        id: &str,
+        cancelled_at: DateTime<Utc>,
+    ) -> Result<Option<DetoxSession>, Error> {
+        self.conn.execute(
+            r#"
+            UPDATE detox_sessions
+            SET cancelled_at = ?2
+            WHERE id = ?1 AND cancelled_at IS NULL
+            "#,
+            params![id, format_time(cancelled_at)],
+        )?;
+        self.detox_session(id)
+    }
+
+    fn load_detox_sessions_from_statement<P>(
+        &self,
+        statement: &mut rusqlite::Statement<'_>,
+        params: P,
+    ) -> Result<Vec<DetoxSession>, Error>
+    where
+        P: rusqlite::Params,
+    {
+        let rows = statement.query_map(params, detox_session_base_from_row)?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            let mut session = row?;
+            session.site_rule_ids =
+                self.load_detox_session_rule_ids("detox_session_site_rules", &session.id)?;
+            session.app_rule_ids =
+                self.load_detox_session_rule_ids("detox_session_app_rules", &session.id)?;
+            sessions.push(session);
+        }
+        Ok(sessions)
+    }
+
+    fn load_detox_session_rule_ids(
+        &self,
+        table: &str,
+        session_id: &str,
+    ) -> Result<Vec<String>, Error> {
+        let sql = format!(
+            r#"
+            SELECT rule_id
+            FROM {table}
+            WHERE session_id = ?1
+            ORDER BY position, rule_id
+            "#
+        );
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
+        let mut rule_ids = Vec::new();
+        for row in rows {
+            rule_ids.push(row?);
+        }
+        Ok(rule_ids)
+    }
+
     pub(crate) fn insert_unlock(
         &self,
         target: &str,
@@ -1157,6 +1296,40 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS detox_sessions (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            starts_at TEXT NOT NULL,
+            ends_at TEXT NOT NULL,
+            cancelled_at TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_detox_sessions_active
+            ON detox_sessions(starts_at, ends_at, cancelled_at);
+
+        CREATE TABLE IF NOT EXISTS detox_session_site_rules (
+            session_id TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(session_id, rule_id),
+            FOREIGN KEY(session_id) REFERENCES detox_sessions(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_detox_session_site_rules_rule
+            ON detox_session_site_rules(rule_id);
+
+        CREATE TABLE IF NOT EXISTS detox_session_app_rules (
+            session_id TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(session_id, rule_id),
+            FOREIGN KEY(session_id) REFERENCES detox_sessions(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_detox_session_app_rules_rule
+            ON detox_session_app_rules(rule_id);
+
         CREATE TABLE IF NOT EXISTS policy_defaults (
             key INTEGER PRIMARY KEY CHECK (key = 1),
             max_session_minutes INTEGER NOT NULL,
@@ -1527,6 +1700,47 @@ fn schedule_day_from_str(value: &str) -> Result<ScheduleDay, Error> {
         "sun" => Ok(ScheduleDay::Sun),
         _ => Err(ConfigError::Validation(format!("unknown schedule day '{value}'")).into()),
     }
+}
+
+fn detox_session_base_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DetoxSession> {
+    let starts_at: String = row.get(2)?;
+    let ends_at: String = row.get(3)?;
+    let cancelled_at: Option<String> = row.get(4)?;
+
+    let starts_at = DateTime::parse_from_rfc3339(&starts_at)
+        .map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(err))
+        })?
+        .with_timezone(&Utc);
+    let ends_at = DateTime::parse_from_rfc3339(&ends_at)
+        .map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(err))
+        })?
+        .with_timezone(&Utc);
+    let cancelled_at = match cancelled_at {
+        Some(cancelled_at) => Some(
+            DateTime::parse_from_rfc3339(&cancelled_at)
+                .map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Text,
+                        Box::new(err),
+                    )
+                })?
+                .with_timezone(&Utc),
+        ),
+        None => None,
+    };
+
+    Ok(DetoxSession {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        starts_at,
+        ends_at,
+        cancelled_at,
+        site_rule_ids: Vec::new(),
+        app_rule_ids: Vec::new(),
+    })
 }
 
 fn unlock_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnlockState> {

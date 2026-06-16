@@ -11,24 +11,29 @@
     LockKeyhole,
     RefreshCw,
     Settings,
+    Timer,
     XCircle
   } from "@lucide/svelte";
   import AdminView from "./components/views/AdminView.svelte";
   import AppRulesView from "./components/views/AppRulesView.svelte";
+  import DetoxView from "./components/views/DetoxView.svelte";
   import OverviewView from "./components/views/OverviewView.svelte";
   import SchedulesView from "./components/views/SchedulesView.svelte";
   import SiteListsView from "./components/views/SiteListsView.svelte";
   import StatisticsView from "./components/views/StatisticsView.svelte";
   import {
+    cancelDetox,
     configSnapshot,
     daemonStatus,
     deleteAppRule,
     deleteSchedule,
     deleteSiteList,
+    detoxSessions,
     enforcementStatus,
     evaluateUrl,
     recentEvents,
     requestUnlock,
+    startDetox,
     systemHealth,
     tier1EditKey,
     tier1EditStatus,
@@ -62,6 +67,7 @@
     ConfigSnapshot,
     DaemonStatus,
     DecisionResult,
+    DetoxSession,
     EnforcementStatus,
     RecentEvent,
     Rule,
@@ -83,6 +89,7 @@
     { id: "overview", label: "Dashboard", icon: LayoutDashboard },
     { id: "blocks", label: "Lists", icon: ListChecks },
     { id: "apps", label: "Apps", icon: Gamepad2 },
+    { id: "detox", label: "Detox", icon: Timer },
     { id: "schedule", label: "Schedule", icon: CalendarDays },
     { id: "statistics", label: "Statistics", icon: BarChart3 },
     { id: "admin", label: "Admin", icon: Settings }
@@ -93,6 +100,7 @@
   let enforcement = $state<EnforcementStatus | null>(null);
   let health = $state<SystemHealth | null>(null);
   let config = $state<ConfigSnapshot | null>(null);
+  let detoxSessionList = $state<DetoxSession[]>([]);
   let events = $state<RecentEvent[]>([]);
   let loading = $state(false);
   let lastError: string | null = $state(null);
@@ -125,6 +133,14 @@
   let scheduleSaving = $state(false);
   let scheduleMessage: string | null = $state(null);
 
+  let detoxName = $state("Deep work");
+  let detoxDurationMinutes: number | undefined = $state(60);
+  let selectedDetoxSiteRuleIds = $state<string[]>([]);
+  let selectedDetoxAppRuleIds = $state<string[]>([]);
+  let detoxStarting = $state(false);
+  let detoxCancellingId: string | null = $state(null);
+  let detoxMessage: string | null = $state(null);
+
   let uninstallPhrase: string | null = $state(null);
   let uninstallPhraseLoading = $state(false);
   let uninstallPhraseError: string | null = $state(null);
@@ -151,6 +167,20 @@
   let tier1EditRemainingSeconds = $derived(
     tier1EditUnlockedUntil ? Math.max(0, Math.ceil((Date.parse(tier1EditUnlockedUntil) - nowMs) / 1000)) : 0
   );
+  let activeDetoxSessions = $derived(
+    detoxSessionList.filter(
+      (session) =>
+        session.status === "active" &&
+        !session.cancelled_at &&
+        Date.parse(session.ends_at) > nowMs
+    )
+  );
+  let activeDetoxSiteRuleIds = $derived([
+    ...new Set(activeDetoxSessions.flatMap((session) => session.site_rule_ids))
+  ]);
+  let activeDetoxAppRuleIds = $derived([
+    ...new Set(activeDetoxSessions.flatMap((session) => session.app_rule_ids))
+  ]);
 
   onMount(() => {
     const clockInterval = window.setInterval(() => {
@@ -186,12 +216,14 @@
       const [
         statusResult,
         enforcementResult,
+        detoxResult,
         eventsResult,
         healthResult,
         tier1EditStatusResult
       ] = await Promise.allSettled([
         daemonStatus(socketArg()),
         enforcementStatus(socketArg()),
+        detoxSessions(false, socketArg()),
         recentEvents(80, socketArg()),
         systemHealth(socketArg()),
         tier1EditStatus(socketArg())
@@ -200,6 +232,7 @@
       applyRuntimeRefreshResults(
         statusResult,
         enforcementResult,
+        detoxResult,
         eventsResult,
         healthResult,
         tier1EditStatusResult
@@ -227,6 +260,7 @@
         statusResult,
         enforcementResult,
         configResult,
+        detoxResult,
         eventsResult,
         healthResult,
         tier1EditStatusResult
@@ -234,6 +268,7 @@
         daemonStatus(socketArg()),
         enforcementStatus(socketArg()),
         configSnapshot(socketArg()),
+        detoxSessions(false, socketArg()),
         recentEvents(80, socketArg()),
         systemHealth(socketArg()),
         tier1EditStatus(socketArg())
@@ -242,6 +277,7 @@
       applyRuntimeRefreshResults(
         statusResult,
         enforcementResult,
+        detoxResult,
         eventsResult,
         healthResult,
         tier1EditStatusResult
@@ -264,6 +300,7 @@
   function applyRuntimeRefreshResults(
     statusResult: PromiseSettledResult<DaemonStatus>,
     enforcementResult: PromiseSettledResult<EnforcementStatus>,
+    detoxResult: PromiseSettledResult<{ sessions: DetoxSession[] }>,
     eventsResult: PromiseSettledResult<{ events: RecentEvent[] }>,
     healthResult: PromiseSettledResult<SystemHealth>,
     tier1EditStatusResult: PromiseSettledResult<{ active: boolean; expires_at?: string | null }>
@@ -279,6 +316,10 @@
       enforcement = enforcementResult.value;
     } else {
       enforcement = null;
+    }
+
+    if (detoxResult.status === "fulfilled") {
+      detoxSessionList = detoxResult.value.sessions;
     }
 
     if (eventsResult.status === "fulfilled") {
@@ -329,6 +370,13 @@
         scheduleDraft = cloneSchedule(selectedScheduleSnapshot);
       }
     }
+
+    selectedDetoxSiteRuleIds = selectedDetoxSiteRuleIds.filter((ruleId) =>
+      snapshot.rules.some((rule) => rule.id === ruleId && rule.enabled)
+    );
+    selectedDetoxAppRuleIds = selectedDetoxAppRuleIds.filter((ruleId) =>
+      snapshot.app_rules.some((rule) => rule.id === ruleId && rule.enabled)
+    );
   }
 
   function ruleDraftHasUnsavedChanges(snapshot: ConfigSnapshot): boolean {
@@ -421,11 +469,68 @@
     }
   }
 
+  async function runStartDetox(): Promise<void> {
+    const durationMinutes = Math.max(0, Math.round(Number(detoxDurationMinutes ?? 0)));
+    if (durationMinutes <= 0) return;
+    if (selectedDetoxSiteRuleIds.length + selectedDetoxAppRuleIds.length === 0) return;
+
+    detoxStarting = true;
+    detoxMessage = null;
+    lastError = null;
+    try {
+      const response = await startDetox(
+        detoxName.trim() || null,
+        durationMinutes,
+        selectedDetoxSiteRuleIds,
+        selectedDetoxAppRuleIds,
+        socketArg()
+      );
+      detoxMessage = `Detox active until ${new Date(response.session.ends_at).toLocaleTimeString()}.`;
+      await refreshDetoxAndEvents();
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      detoxStarting = false;
+    }
+  }
+
+  async function runCancelDetox(id: string): Promise<void> {
+    detoxCancellingId = id;
+    detoxMessage = null;
+    lastError = null;
+    try {
+      const response = await cancelDetox(id, socketArg());
+      detoxMessage = `Detox ${response.session.status}.`;
+      await refreshDetoxAndEvents();
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      detoxCancellingId = null;
+    }
+  }
+
   async function refreshEventsOnly(): Promise<void> {
     try {
       events = (await recentEvents(80, socketArg())).events;
     } catch {
       // Full refresh surfaces connection errors; lightweight event refresh does not interrupt actions.
+    }
+  }
+
+  async function refreshDetoxAndEvents(): Promise<void> {
+    try {
+      const [detoxResult, eventsResult] = await Promise.allSettled([
+        detoxSessions(false, socketArg()),
+        recentEvents(80, socketArg())
+      ]);
+      if (detoxResult.status === "fulfilled") {
+        detoxSessionList = detoxResult.value.sessions;
+      }
+      if (eventsResult.status === "fulfilled") {
+        events = eventsResult.value.events;
+      }
+    } catch {
+      // Full refresh surfaces connection errors; action handlers keep their own result state.
     }
   }
 
@@ -802,6 +907,7 @@
         {ruleSaving}
         {ruleMessage}
         {tier1EditUnlocked}
+        {activeDetoxSiteRuleIds}
         onSelectRule={selectRule}
         onStartNewRule={startNewRule}
         onSaveRuleDraft={saveRuleDraft}
@@ -813,10 +919,27 @@
         bind:appRuleDraft
         {appRuleSaving}
         {appRuleMessage}
+        {activeDetoxAppRuleIds}
         onSelectAppRule={selectAppRule}
         onStartNewAppRule={startNewAppRule}
         onSaveAppRuleDraft={saveAppRuleDraft}
         onRemoveAppRuleDraft={removeAppRuleDraft}
+      />
+    {:else if activeView === "detox"}
+      <DetoxView
+        {config}
+        detoxSessions={detoxSessionList}
+        bind:detoxName
+        bind:detoxDurationMinutes
+        bind:selectedSiteRuleIds={selectedDetoxSiteRuleIds}
+        bind:selectedAppRuleIds={selectedDetoxAppRuleIds}
+        {detoxStarting}
+        {detoxCancellingId}
+        {detoxMessage}
+        {tier1EditUnlocked}
+        {nowMs}
+        onStartDetox={runStartDetox}
+        onCancelDetox={runCancelDetox}
       />
     {:else if activeView === "schedule"}
       <SchedulesView

@@ -26,6 +26,6 @@ pub use policy::{
     request_unlock, PolicyEngine,
 };
 pub use types::{
-    BlockReason, ControlledBlockReason, Decision, EvaluationContext, ProcessIdentity, UnlockState,
-    VisitState,
+    BlockReason, ControlledBlockReason, Decision, DetoxSession, DetoxTargetKind, EvaluationContext,
+    ProcessIdentity, UnlockState, VisitState,
 };

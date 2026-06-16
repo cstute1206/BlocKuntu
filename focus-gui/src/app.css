@@ -538,6 +538,134 @@ button:disabled {
   grid-template-columns: minmax(180px, 260px);
 }
 
+.detox-grid {
+  align-items: start;
+}
+
+.detox-start-panel,
+.detox-active-panel {
+  min-height: 100%;
+}
+
+.detox-form {
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 0.32fr);
+}
+
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.preset-row .secondary {
+  min-width: 58px;
+}
+
+.preset-row .secondary.active {
+  background: #cfeee0;
+  color: #145c3d;
+}
+
+.detox-chip-grid {
+  max-height: 168px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.detox-action-row {
+  align-items: center;
+  margin-top: 16px;
+}
+
+.detox-action-row > span {
+  color: #63716b;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.detox-session-list,
+.detox-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.detox-session-row {
+  align-items: center;
+  background: #f7faf8;
+  border: 1px solid #dfe7e2;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 22px minmax(0, 1fr) minmax(112px, max-content) max-content;
+  min-height: 70px;
+  padding: 10px;
+}
+
+.detox-session-row[data-state="active"] svg {
+  color: #1f8f68;
+}
+
+.detox-session-copy,
+.detox-session-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.detox-session-copy strong,
+.detox-history-row span {
+  color: #29332f;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detox-session-copy span,
+.detox-session-meta small,
+.detox-history-row small,
+.detox-history-row time {
+  color: #68766f;
+  font-size: 0.84rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detox-session-meta {
+  justify-items: end;
+}
+
+.detox-session-meta strong {
+  color: #1f8f68;
+  font-variant-numeric: tabular-nums;
+}
+
+.detox-history-row {
+  align-items: center;
+  border-bottom: 1px solid #e2e8e4;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(140px, 0.34fr) minmax(0, 1fr) max-content max-content;
+  min-height: 42px;
+  padding-bottom: 8px;
+}
+
+.detox-history-row strong {
+  border-radius: 8px;
+  color: #63716b;
+  font-size: 0.76rem;
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+
+.detox-history-row[data-state="cancelled"] strong {
+  background: #fae2e2;
+  color: #8b1d1d;
+}
+
+.detox-history-row[data-state="expired"] strong {
+  background: #e4ebe6;
+}
+
 .chip-check {
   background: #f5f7f5;
   border: 1px solid #dfe6e1;
@@ -926,9 +1054,19 @@ pre {
     .split-view,
     .setup-grid,
     .allowance-editor,
+    .detox-form,
     .tier1-edit-form,
     .uninstall-form {
     grid-template-columns: 1fr;
+  }
+
+  .detox-session-row,
+  .detox-history-row {
+    grid-template-columns: 1fr;
+  }
+
+  .detox-session-meta {
+    justify-items: start;
   }
 
   .topbar {

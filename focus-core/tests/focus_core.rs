@@ -2,7 +2,7 @@ use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use focus_core::{
     evaluate_app, evaluate_url, migrate_database, record_visit_end, record_visit_heartbeat,
     record_visit_start, request_unlock, BlockReason, Config, ControlledBlockReason, Database,
-    Decision, Error, EvaluationContext, ProcessIdentity, UnlockError,
+    Decision, DetoxSession, Error, EvaluationContext, ProcessIdentity, UnlockError,
 };
 use rusqlite::Connection;
 
@@ -180,6 +180,137 @@ fn controlled_app_rules_can_be_unlocked_by_rule_or_matcher_value() {
 
     let during_unlock = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
     assert_eq!(evaluate_app(&process, &during_unlock), Decision::Allow);
+}
+
+#[test]
+fn detox_sessions_block_site_rules_until_the_absolute_end_time() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "daily"
+        daily_minutes = 60
+
+        [[rules]]
+        id = "video"
+        name = "Video"
+        tier = "controlled_access"
+        allowance_id = "daily"
+        patterns = [
+          { kind = "domain", value = "video.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let starts_at = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
+    database
+        .insert_detox_session(&DetoxSession {
+            id: "detox-test".to_string(),
+            name: Some("Deep work".to_string()),
+            starts_at,
+            ends_at: starts_at + chrono::Duration::minutes(60),
+            cancelled_at: None,
+            site_rule_ids: vec!["video".to_string()],
+            app_rule_ids: Vec::new(),
+        })
+        .expect("detox session should insert");
+
+    let during = context(&config, &database, at_utc(2026, 5, 18, 10, 30));
+    assert!(matches!(
+        evaluate_url("https://watch.video.example/", &during),
+        Decision::Block(BlockReason::Detox {
+            session_id,
+            rule_id,
+            ends_at,
+            ..
+        }) if session_id == "detox-test"
+            && rule_id == "video"
+            && ends_at == starts_at + chrono::Duration::minutes(60)
+    ));
+
+    let after = context(&config, &database, at_utc(2026, 5, 18, 11, 1));
+    assert_eq!(
+        evaluate_url("https://watch.video.example/", &after),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
+    let config = Config::from_toml_str(
+        r#"
+        [[rules]]
+        id = "social"
+        name = "Social"
+        tier = "controlled_access"
+        patterns = [
+          { kind = "domain", value = "social.example", match_subdomains = false }
+        ]
+
+        [[schedules]]
+        id = "work-hours"
+        name = "Work hours"
+
+        [[schedules.windows]]
+        weekday = "mon"
+        start = "09:00"
+        end = "17:00"
+
+        [[app_rules]]
+        id = "game"
+        name = "Game"
+        tier = "hard"
+        schedule_ids = ["work-hours"]
+        matchers = [
+          { kind = "command_name", value = "game-bin" }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let starts_at = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
+    let before_detox = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    request_unlock(
+        "https://social.example/",
+        2,
+        "Needed briefly".to_string(),
+        &before_detox,
+    )
+    .expect("unlock should be active before detox starts");
+    database
+        .insert_detox_session(&DetoxSession {
+            id: "detox-override".to_string(),
+            name: None,
+            starts_at,
+            ends_at: starts_at + chrono::Duration::hours(10),
+            cancelled_at: None,
+            site_rule_ids: vec!["social".to_string()],
+            app_rule_ids: vec!["game".to_string()],
+        })
+        .expect("detox session should insert");
+
+    let during = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
+    assert!(matches!(
+        evaluate_url("https://social.example/", &during),
+        Decision::Block(BlockReason::Detox { rule_id, .. }) if rule_id == "social"
+    ));
+
+    let process = ProcessIdentity {
+        pid: Some(1234),
+        executable_path: None,
+        executable_basename: None,
+        command_name: Some("game-bin".to_string()),
+        desktop_id: None,
+        window_titles: Vec::new(),
+    };
+    let before_detox_app = context(&config, &database, at_utc(2026, 5, 18, 8, 0));
+    assert_eq!(evaluate_app(&process, &before_detox_app), Decision::Allow);
+
+    let during_app_detox = context(&config, &database, at_utc(2026, 5, 18, 18, 0));
+    assert!(matches!(
+        evaluate_app(&process, &during_app_detox),
+        Decision::Block(BlockReason::Detox { rule_id, .. }) if rule_id == "game"
+    ));
 }
 
 #[test]
@@ -742,6 +873,9 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
         "events",
         "heartbeats",
         "service_state",
+        "detox_sessions",
+        "detox_session_site_rules",
+        "detox_session_app_rules",
         "policy_defaults",
         "policy_strict_mode",
         "policy_allowances",

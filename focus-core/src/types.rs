@@ -23,6 +23,14 @@ pub enum BlockReason {
     InvalidUrl {
         url: String,
     },
+    Detox {
+        session_id: String,
+        session_name: Option<String>,
+        rule_id: String,
+        rule_name: String,
+        target_kind: DetoxTargetKind,
+        ends_at: DateTime<Utc>,
+    },
     HardBlock {
         rule_id: String,
         rule_name: String,
@@ -42,6 +50,23 @@ pub enum ControlledBlockReason {
     NoAllowance,
     AllowanceExhausted,
     UnlockRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetoxTargetKind {
+    SiteRule,
+    AppRule,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetoxSession {
+    pub id: String,
+    pub name: Option<String>,
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
+    pub cancelled_at: Option<DateTime<Utc>>,
+    pub site_rule_ids: Vec<String>,
+    pub app_rule_ids: Vec<String>,
 }
 
 #[derive(Clone)]

@@ -13,6 +13,9 @@ const ruleId = stringValue("rule_id") || params.get("rule_id");
 const tier = stringValue("tier") || params.get("tier");
 const blockedBy = stringValue("blocked_by") || params.get("blocked_by");
 const controlledReason = stringValue("controlled_reason") || params.get("controlled_reason");
+const detoxSessionName = stringValue("session_name");
+const detoxSessionId = stringValue("session_id");
+const targetKind = stringValue("target_kind");
 const freeAt = stringValue("free_at") || params.get("free_at");
 const allowanceResetAt = stringValue("allowance_reset_at") || params.get("allowance_reset_at");
 const lastHeartbeatOkAt = stringValue("last_heartbeat_ok_at") || params.get("last_heartbeat_ok_at");
@@ -31,6 +34,15 @@ if (ruleName || ruleId) {
 }
 if (activeSchedules.length > 0) {
   addDetail("Schedule", scheduleText(activeSchedules));
+}
+if (reason === "detox" && (detoxSessionName || detoxSessionId)) {
+  addDetail(
+    "Detox session",
+    detoxSessionName ? `${detoxSessionName}${detoxSessionId ? ` (${detoxSessionId})` : ""}` : detoxSessionId
+  );
+}
+if (reason === "detox" && targetKind) {
+  addDetail("Target", humanize(targetKind));
 }
 if (freeAt) {
   addDetail("Expected release", formatDateWithDistance(freeAt));
@@ -82,6 +94,9 @@ function arrayValue(key: string): unknown[] {
 }
 
 function reasonTitle(): string {
+  if (reason === "detox") {
+    return "Detox block";
+  }
   if (reason === "hard_block") {
     return "Tier 1 hard block";
   }
@@ -117,6 +132,9 @@ function summaryText(): string {
   if (ruleName) {
     return `This navigation matched the list "${ruleName}".`;
   }
+  if (reason === "detox") {
+    return "Detox is active for this target.";
+  }
   return "This navigation was blocked by the local policy.";
 }
 
@@ -127,6 +145,9 @@ function detailText(): string {
   }
   if (reason === "backend_unhealthy" || reason === "backend_unavailable") {
     return "Browsing is blocked fail-closed until the Chrome extension, native host, and daemon can confirm policy enforcement.";
+  }
+  if (reason === "detox") {
+    return "This temporary block stays active until the detox session ends or is cancelled from the privileged admin path.";
   }
   if (controlledReason === "allowance_exhausted") {
     return "The daily allowance for this list has been consumed.";

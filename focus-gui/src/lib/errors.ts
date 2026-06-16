@@ -136,6 +136,20 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
     return `App rule "${activeAppRule[1]}" is active right now, so it cannot be edited. Wait until it is inactive, then try again.`;
   }
 
+  const detoxSiteList = normalized.match(
+    /^site list '([^']+)' is covered by an active detox session and cannot be edited$/
+  );
+  if (detoxSiteList) {
+    return `Site list "${detoxSiteList[1]}" is covered by an active detox session. Cancel the detox session from Admin-unlocked Detox before editing it.`;
+  }
+
+  const detoxAppRule = normalized.match(
+    /^app rule '([^']+)' is covered by an active detox session and cannot be edited$/
+  );
+  if (detoxAppRule) {
+    return `App rule "${detoxAppRule[1]}" is covered by an active detox session. Cancel the detox session from Admin-unlocked Detox before editing it.`;
+  }
+
   const activeSchedule = normalized.match(
     /^schedule '([^']+)' is currently active and cannot be edited$/
   );
@@ -232,6 +246,23 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
 
   if (normalized === "Tier 1 edit key is required") {
     return "Enter the Tier 1 edit key before unlocking active Tier 1 edits.";
+  }
+
+  if (normalized === "Tier 1 edit unlock is required to cancel detox") {
+    return "Unlock the Tier 1 edit window in Admin before cancelling detox.";
+  }
+
+  if (normalized === "detox duration must be at least one minute") {
+    return "Detox duration must be at least one minute.";
+  }
+
+  if (normalized === "detox needs at least one site list or app rule") {
+    return "Select at least one site list or app rule before starting detox.";
+  }
+
+  const missingDetox = normalized.match(/^detox session '([^']+)' does not exist$/);
+  if (missingDetox) {
+    return `Detox session "${missingDetox[1]}" no longer exists. Refresh and try again.`;
   }
 
   if (normalized.startsWith("Tier 1 edit key is unavailable at ")) {

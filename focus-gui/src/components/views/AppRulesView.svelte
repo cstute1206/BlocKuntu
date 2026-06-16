@@ -8,6 +8,7 @@
     appRuleDraft?: AppRule | null;
     appRuleSaving: boolean;
     appRuleMessage: string | null;
+    activeDetoxAppRuleIds?: string[];
     onSelectAppRule: (rule: AppRule) => void;
     onStartNewAppRule: () => void;
     onSaveAppRuleDraft: () => void | Promise<void>;
@@ -19,6 +20,7 @@
     appRuleDraft = $bindable<AppRule | null>(null),
     appRuleSaving,
     appRuleMessage,
+    activeDetoxAppRuleIds = [],
     onSelectAppRule,
     onStartNewAppRule,
     onSaveAppRuleDraft,
@@ -29,8 +31,14 @@
     appRuleDraft ? (config?.app_rules.find((rule) => rule.id === appRuleDraft?.id) ?? null) : null
   );
   let appRuleDraftIsExisting = $derived(Boolean(savedAppRule));
+  let appRuleDraftDetoxLocked = $derived(
+    Boolean(savedAppRule && activeDetoxAppRuleIds.includes(savedAppRule.id))
+  );
   let appRuleDraftLocked = $derived(
-    Boolean(savedAppRule && appRuleIsActive(savedAppRule, config?.schedules ?? []))
+    Boolean(
+      savedAppRule &&
+        (appRuleDraftDetoxLocked || appRuleIsActive(savedAppRule, config?.schedules ?? []))
+    )
   );
 
   function addAppMatcher(): void {
@@ -99,7 +107,11 @@
       {#if appRuleDraftLocked}
         <section class="inline-warning">
           <AlertTriangle size={17} aria-hidden="true" />
-          <span>This app rule is active right now.</span>
+          <span>
+            {appRuleDraftDetoxLocked
+              ? "This app rule is covered by an active detox session."
+              : "This app rule is active right now."}
+          </span>
         </section>
       {/if}
       <div class="form-grid">

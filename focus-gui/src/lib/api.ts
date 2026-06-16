@@ -4,6 +4,8 @@ import type {
   ConfigMutationResponse,
   DaemonStatus,
   DecisionResult,
+  DetoxMutationResponse,
+  DetoxSessionsResponse,
   EnforcementStatus,
   EventsResponse,
   AppRule,
@@ -109,6 +111,45 @@ export function deleteSchedule(id: string, socketPath?: string): Promise<ConfigM
     { id, now: new Date().toISOString() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
+}
+
+export function detoxSessions(
+  activeOnly = false,
+  socketPath?: string
+): Promise<DetoxSessionsResponse> {
+  return daemonRpc(
+    "detox_sessions",
+    { active_only: activeOnly, limit: 80, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<DetoxSessionsResponse>;
+}
+
+export function startDetox(
+  name: string | null,
+  durationMinutes: number,
+  siteRuleIds: string[],
+  appRuleIds: string[],
+  socketPath?: string
+): Promise<DetoxMutationResponse> {
+  return daemonRpc(
+    "start_detox",
+    {
+      name,
+      duration_minutes: durationMinutes,
+      site_rule_ids: siteRuleIds,
+      app_rule_ids: appRuleIds,
+      now: new Date().toISOString()
+    },
+    socketPath
+  ) as Promise<DetoxMutationResponse>;
+}
+
+export function cancelDetox(id: string, socketPath?: string): Promise<DetoxMutationResponse> {
+  return daemonRpc(
+    "cancel_detox",
+    { id, now: new Date().toISOString() },
+    socketPath
+  ) as Promise<DetoxMutationResponse>;
 }
 
 export function recentEvents(limit = 50, socketPath?: string): Promise<EventsResponse> {

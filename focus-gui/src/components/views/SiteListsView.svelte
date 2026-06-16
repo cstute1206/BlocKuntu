@@ -14,6 +14,7 @@
     ruleSaving: boolean;
     ruleMessage: string | null;
     tier1EditUnlocked: boolean;
+    activeDetoxSiteRuleIds?: string[];
     onSelectRule: (rule: Rule) => void;
     onStartNewRule: () => void;
     onSaveRuleDraft: () => void | Promise<void>;
@@ -27,6 +28,7 @@
     ruleSaving,
     ruleMessage,
     tier1EditUnlocked,
+    activeDetoxSiteRuleIds = [],
     onSelectRule,
     onStartNewRule,
     onSaveRuleDraft,
@@ -37,11 +39,15 @@
     ruleDraft ? (config?.rules.find((rule) => rule.id === ruleDraft?.id) ?? null) : null
   );
   let ruleDraftIsExisting = $derived(Boolean(savedRule));
+  let ruleDraftDetoxLocked = $derived(
+    Boolean(savedRule && activeDetoxSiteRuleIds.includes(savedRule.id))
+  );
   let ruleDraftLocked = $derived(
     Boolean(
       savedRule &&
-        ruleIsActive(savedRule, config?.schedules ?? []) &&
-        !(savedRule.tier === "hard" && tier1EditUnlocked)
+        (ruleDraftDetoxLocked ||
+          (ruleIsActive(savedRule, config?.schedules ?? []) &&
+            !(savedRule.tier === "hard" && tier1EditUnlocked)))
     )
   );
 
@@ -112,7 +118,11 @@
       {#if ruleDraftLocked}
         <section class="inline-warning">
           <AlertTriangle size={17} aria-hidden="true" />
-          <span>This list is active right now.</span>
+          <span>
+            {ruleDraftDetoxLocked
+              ? "This list is covered by an active detox session."
+              : "This list is active right now."}
+          </span>
         </section>
       {/if}
       <div class="form-grid">

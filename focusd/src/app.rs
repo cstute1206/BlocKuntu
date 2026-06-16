@@ -696,9 +696,9 @@ fn unsupported_browser_matchers() -> Vec<(AppMatcherKind, &'static str)> {
 
 fn blocked_rule_id(reason: &BlockReason) -> Option<&str> {
     match reason {
-        BlockReason::HardBlock { rule_id, .. } | BlockReason::ControlledAccess { rule_id, .. } => {
-            Some(rule_id.as_str())
-        }
+        BlockReason::Detox { rule_id, .. }
+        | BlockReason::HardBlock { rule_id, .. }
+        | BlockReason::ControlledAccess { rule_id, .. } => Some(rule_id.as_str()),
         BlockReason::InvalidUrl { .. } | BlockReason::RuntimeError { .. } => None,
     }
 }

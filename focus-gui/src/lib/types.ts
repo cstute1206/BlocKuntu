@@ -2,6 +2,7 @@ export type ViewId =
   | "overview"
   | "blocks"
   | "apps"
+  | "detox"
   | "schedule"
   | "statistics"
   | "admin";
@@ -104,6 +105,27 @@ export interface ConfigMutationResponse {
   status: string;
   config: ConfigSnapshot;
   updated_at: string;
+}
+
+export interface DetoxSession {
+  id: string;
+  name?: string | null;
+  starts_at: string;
+  ends_at: string;
+  cancelled_at?: string | null;
+  site_rule_ids: string[];
+  app_rule_ids: string[];
+  status: "scheduled" | "active" | "expired" | "cancelled";
+  remaining_seconds?: number | null;
+}
+
+export interface DetoxSessionsResponse {
+  sessions: DetoxSession[];
+}
+
+export interface DetoxMutationResponse {
+  status: string;
+  session: DetoxSession;
 }
 
 export interface RecentEvent {

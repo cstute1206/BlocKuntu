@@ -3,9 +3,9 @@ use url::Url;
 
 use crate::{
     AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Config, ControlledBlockReason,
-    Database, Decision, Error, EvaluationContext, ProcessIdentity, RuleConfig, RulePatternConfig,
-    RulePatternKind, RuleTier, ScheduleConfig, UnlockError, UnlockPolicyConfig, UnlockState,
-    VisitState, Weekday,
+    Database, Decision, DetoxSession, DetoxTargetKind, Error, EvaluationContext, ProcessIdentity,
+    RuleConfig, RulePatternConfig, RulePatternKind, RuleTier, ScheduleConfig, UnlockError,
+    UnlockPolicyConfig, UnlockState, VisitState, Weekday,
 };
 
 const FIXED_TIER_2_UNLOCK_POLICY: UnlockPolicyConfig = UnlockPolicyConfig {
@@ -53,6 +53,12 @@ impl<'a> PolicyEngine<'a> {
             }
         };
 
+        match self.detox_block_for_url(&parsed, context) {
+            Ok(Some(reason)) => return Decision::Block(reason),
+            Ok(None) => {}
+            Err(err) => return runtime_error(err),
+        }
+
         for rule in self.matching_rules(&parsed, RuleTier::Hard) {
             if self.rule_is_active(rule, context) {
                 return Decision::Block(BlockReason::HardBlock {
@@ -91,6 +97,12 @@ impl<'a> PolicyEngine<'a> {
         process: &ProcessIdentity,
         context: &EvaluationContext<'_>,
     ) -> Decision {
+        match self.detox_block_for_app(process, context) {
+            Ok(Some(reason)) => return Decision::Block(reason),
+            Ok(None) => {}
+            Err(err) => return runtime_error(err),
+        }
+
         for rule in self.matching_app_rules(process, RuleTier::Hard) {
             if self.app_rule_is_active(rule, context) {
                 return Decision::Block(BlockReason::HardBlock {
@@ -487,6 +499,108 @@ impl<'a> PolicyEngine<'a> {
         }
 
         Ok(used_seconds)
+    }
+
+    fn detox_block_for_url(
+        &self,
+        parsed: &NormalizedUrl,
+        context: &EvaluationContext<'_>,
+    ) -> Result<Option<BlockReason>, Error> {
+        let active_sessions = self.database.active_detox_sessions(context.now_utc())?;
+        let mut block: Option<(&DetoxSession, &RuleConfig)> = None;
+
+        for rule in self.config.rules.iter().filter(|rule| rule.enabled) {
+            if !rule
+                .patterns
+                .iter()
+                .any(|pattern| pattern_matches(pattern, parsed))
+            {
+                continue;
+            }
+
+            let Some(session) = active_sessions
+                .iter()
+                .filter(|session| {
+                    session
+                        .site_rule_ids
+                        .iter()
+                        .any(|rule_id| rule_id == &rule.id)
+                })
+                .max_by_key(|session| session.ends_at.timestamp_micros())
+            else {
+                continue;
+            };
+
+            if block
+                .as_ref()
+                .map(|(current, _)| {
+                    session.ends_at.timestamp_micros() > current.ends_at.timestamp_micros()
+                })
+                .unwrap_or(true)
+            {
+                block = Some((session, rule));
+            }
+        }
+
+        Ok(block.map(|(session, rule)| BlockReason::Detox {
+            session_id: session.id.clone(),
+            session_name: session.name.clone(),
+            rule_id: rule.id.clone(),
+            rule_name: rule.name.clone(),
+            target_kind: DetoxTargetKind::SiteRule,
+            ends_at: session.ends_at,
+        }))
+    }
+
+    fn detox_block_for_app(
+        &self,
+        process: &ProcessIdentity,
+        context: &EvaluationContext<'_>,
+    ) -> Result<Option<BlockReason>, Error> {
+        let active_sessions = self.database.active_detox_sessions(context.now_utc())?;
+        let mut block: Option<(&DetoxSession, &AppRuleConfig)> = None;
+
+        for rule in self.config.app_rules.iter().filter(|rule| rule.enabled) {
+            if !rule
+                .matchers
+                .iter()
+                .any(|matcher| app_matcher_matches(matcher, process))
+            {
+                continue;
+            }
+
+            let Some(session) = active_sessions
+                .iter()
+                .filter(|session| {
+                    session
+                        .app_rule_ids
+                        .iter()
+                        .any(|rule_id| rule_id == &rule.id)
+                })
+                .max_by_key(|session| session.ends_at.timestamp_micros())
+            else {
+                continue;
+            };
+
+            if block
+                .as_ref()
+                .map(|(current, _)| {
+                    session.ends_at.timestamp_micros() > current.ends_at.timestamp_micros()
+                })
+                .unwrap_or(true)
+            {
+                block = Some((session, rule));
+            }
+        }
+
+        Ok(block.map(|(session, rule)| BlockReason::Detox {
+            session_id: session.id.clone(),
+            session_name: session.name.clone(),
+            rule_id: rule.id.clone(),
+            rule_name: rule.name.clone(),
+            target_kind: DetoxTargetKind::AppRule,
+            ends_at: session.ends_at,
+        }))
     }
 
     fn matching_rules<'b>(
