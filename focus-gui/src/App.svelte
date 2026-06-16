@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import {
     AlertTriangle,
@@ -80,6 +81,8 @@
 
   type Icon = typeof LayoutDashboard;
   const AUTO_REFRESH_INTERVAL_MS = 5_000;
+  const TRAY_OPEN_VIEW_EVENT = "blockuntu-open-view";
+  const TRAY_RUNTIME_REFRESH_EVENT = "blockuntu-runtime-refresh";
 
   interface RefreshOptions {
     silent?: boolean;
@@ -193,11 +196,45 @@
     void loadUninstallPhrase();
     void loadTier1EditKey();
     void refreshAll();
+    let disposed = false;
+    let removeOpenViewListener: (() => void) | null = null;
+    let removeRuntimeRefreshListener: (() => void) | null = null;
+
+    void listen<string>(TRAY_OPEN_VIEW_EVENT, (event) => {
+      if (isViewId(event.payload)) {
+        activeView = event.payload;
+        void refreshAll({ silent: true });
+      }
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        removeOpenViewListener = unlisten;
+      }
+    });
+
+    void listen(TRAY_RUNTIME_REFRESH_EVENT, () => {
+      void refreshAll({ silent: true });
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        removeRuntimeRefreshListener = unlisten;
+      }
+    });
+
     return () => {
+      disposed = true;
       window.clearInterval(clockInterval);
       window.clearInterval(refreshInterval);
+      removeOpenViewListener?.();
+      removeRuntimeRefreshListener?.();
     };
   });
+
+  function isViewId(value: unknown): value is ViewId {
+    return typeof value === "string" && navItems.some((item) => item.id === value);
+  }
 
   function socketArg(): string | undefined {
     return undefined;

@@ -516,6 +516,10 @@ Important next steps:
   3. Restart the browser after installing the extension.
   4. Start the GUI from the app launcher or run: blockuntu-gui
 
+Closing the GUI window keeps BlocKuntu available from the tray icon. On vanilla
+GNOME, install or enable AppIndicator/KStatusNotifierItem support if the tray
+icon is not visible.
+
 The Tier 1 site-list edit key is stored at:
   /etc/blockuntu/tier1-edit-key.txt
 

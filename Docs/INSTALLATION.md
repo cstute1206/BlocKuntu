@@ -33,29 +33,36 @@ The GUI build goes through `npm run tauri -- build --no-bundle`, which embeds
 the current frontend assets. That is what prevents a packaged GUI from opening
 the development URL at `http://localhost:1420`.
 
-The current default Debian package version is `0.1.0-7`, and the artifact is:
+The current default Debian package version is `0.1.0-8`, and the artifact is:
 
 ```bash
-target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-8_$(dpkg --print-architecture).deb
 ```
 
 Inspect the package before copying it to a target machine:
 
 ```bash
-dpkg-deb -I target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
-dpkg-deb -c target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb | less
+dpkg-deb -I target/debian/blockuntu_0.1.0-8_$(dpkg --print-architecture).deb
+dpkg-deb -c target/debian/blockuntu_0.1.0-8_$(dpkg --print-architecture).deb | less
 ```
 
 Install the package on the target Ubuntu/Debian machine with `apt`, not raw
 `dpkg -i`:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-8_$(dpkg --print-architecture).deb
 sudo usermod -aG blockuntu "$USER"
 ```
 
 Log out and back in after the `usermod` command so the GUI, browsers, and
 shells receive the `blockuntu` socket-group membership.
+
+When the GUI is running, closing the window hides it to the BlocKuntu tray icon
+instead of stopping the GUI process. Use the tray menu to show the window,
+open Detox/Admin, refresh daemon status, start or stop enforcement, or quit only
+the GUI. GNOME sessions may need AppIndicator/KStatusNotifierItem support before
+the tray icon is visible; KDE Plasma, XFCE, Cinnamon, MATE, and Ubuntu-style
+GNOME sessions are typically the smoother path.
 
 For Debian-package installs, uninstall through the GUI Admin tab when possible:
 type the first-run uninstall phrase or the system recovery phrase exactly and
@@ -321,13 +328,13 @@ Build a complete Debian package from the repository root:
 The package is written to `target/debian`, for example:
 
 ```bash
-target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-8_$(dpkg --print-architecture).deb
 ```
 
 On a target Ubuntu/Debian machine, install it with:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-7_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-8_$(dpkg --print-architecture).deb
 ```
 
 Use `apt install ./...deb`, not `dpkg -i`, for normal installs. `dpkg -i`
@@ -368,6 +375,9 @@ into the GUI Admin uninstall field. Also store the Tier 1 edit key shown there;
 the Admin tab can use it to unlock active Tier 1 site-list edits for five
 minutes. Install and enable the browser extension manually, then restart the
 browser. The daemon writes the matching managed policy after the first heartbeat.
+Closing the GUI window keeps BlocKuntu available from the tray icon. On vanilla
+GNOME, install or enable AppIndicator/KStatusNotifierItem support if the tray
+icon is not visible.
 
 ## Manual Build And Install
 

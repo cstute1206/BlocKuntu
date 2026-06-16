@@ -5,11 +5,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{App, AppHandle, Emitter, Manager, WindowEvent, Wry};
 use thiserror::Error;
 
 const DEFAULT_SOCKET_PATH: &str = "/run/blockuntu/blockuntud.sock";
@@ -46,6 +51,16 @@ const SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE: &str = "/etc/blockuntu/uninstall-re
 const TIER1_EDIT_KEY_FILE: &str = "/etc/blockuntu/tier1-edit-key.txt";
 const DEBIAN_PACKAGE_NAME: &str = "blockuntu";
 const BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS: u64 = 6;
+const TRAY_REFRESH_INTERVAL_SECONDS: u64 = 5;
+const TRAY_OPEN_VIEW_EVENT: &str = "blockuntu-open-view";
+const TRAY_RUNTIME_REFRESH_EVENT: &str = "blockuntu-runtime-refresh";
+const TRAY_MENU_SHOW: &str = "show";
+const TRAY_MENU_OPEN_DETOX: &str = "open_detox";
+const TRAY_MENU_OPEN_ADMIN: &str = "open_admin";
+const TRAY_MENU_REFRESH: &str = "refresh";
+const TRAY_MENU_START_ENFORCEMENT: &str = "start_enforcement";
+const TRAY_MENU_STOP_ENFORCEMENT: &str = "stop_enforcement";
+const TRAY_MENU_QUIT: &str = "quit";
 
 #[derive(Debug, Error)]
 enum GuiError {
@@ -131,6 +146,16 @@ struct Tier1EditKey {
 struct UninstallResult {
     status: String,
     detail: String,
+}
+
+#[derive(Clone)]
+struct TrayMenuState {
+    daemon_status: MenuItem<Wry>,
+    enforcement_status: MenuItem<Wry>,
+    detox_status: MenuItem<Wry>,
+    last_action: MenuItem<Wry>,
+    start_enforcement: MenuItem<Wry>,
+    stop_enforcement: MenuItem<Wry>,
 }
 
 #[tauri::command]
@@ -1160,9 +1185,309 @@ fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
 }
 
+fn setup_tray(app: &mut App<Wry>) -> tauri::Result<TrayMenuState> {
+    let show = MenuItem::with_id(app, TRAY_MENU_SHOW, "Show BlocKuntu", true, None::<&str>)?;
+    let open_detox =
+        MenuItem::with_id(app, TRAY_MENU_OPEN_DETOX, "Open Detox", true, None::<&str>)?;
+    let open_admin =
+        MenuItem::with_id(app, TRAY_MENU_OPEN_ADMIN, "Open Admin", true, None::<&str>)?;
+    let refresh = MenuItem::with_id(app, TRAY_MENU_REFRESH, "Refresh status", true, None::<&str>)?;
+    let daemon_status = MenuItem::with_id(
+        app,
+        "daemon_status",
+        "Daemon: Checking",
+        false,
+        None::<&str>,
+    )?;
+    let enforcement_status = MenuItem::with_id(
+        app,
+        "enforcement_status",
+        "Enforcement: Checking",
+        false,
+        None::<&str>,
+    )?;
+    let detox_status =
+        MenuItem::with_id(app, "detox_status", "Detox: Checking", false, None::<&str>)?;
+    let last_action = MenuItem::with_id(
+        app,
+        "last_action",
+        "Last action: Ready",
+        false,
+        None::<&str>,
+    )?;
+    let start_enforcement = MenuItem::with_id(
+        app,
+        TRAY_MENU_START_ENFORCEMENT,
+        "Start enforcement",
+        false,
+        None::<&str>,
+    )?;
+    let stop_enforcement = MenuItem::with_id(
+        app,
+        TRAY_MENU_STOP_ENFORCEMENT,
+        "Stop enforcement",
+        false,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, TRAY_MENU_QUIT, "Quit GUI", true, None::<&str>)?;
+    let separator_one = PredefinedMenuItem::separator(app)?;
+    let separator_two = PredefinedMenuItem::separator(app)?;
+    let separator_three = PredefinedMenuItem::separator(app)?;
+    let separator_four = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show,
+            &open_detox,
+            &open_admin,
+            &separator_one,
+            &daemon_status,
+            &enforcement_status,
+            &detox_status,
+            &last_action,
+            &separator_two,
+            &refresh,
+            &separator_three,
+            &start_enforcement,
+            &stop_enforcement,
+            &separator_four,
+            &quit,
+        ],
+    )?;
+    let menu_state = TrayMenuState {
+        daemon_status,
+        enforcement_status,
+        detox_status,
+        last_action,
+        start_enforcement,
+        stop_enforcement,
+    };
+
+    let menu_state_for_events = menu_state.clone();
+    let mut tray = TrayIconBuilder::with_id("blockuntu")
+        .menu(&menu)
+        .tooltip("BlocKuntu")
+        .show_menu_on_left_click(false)
+        .on_menu_event(move |app, event| match event.id.as_ref() {
+            TRAY_MENU_SHOW => {
+                show_main_window(app);
+                emit_runtime_refresh(app);
+            }
+            TRAY_MENU_OPEN_DETOX => {
+                show_main_window(app);
+                let _ = app.emit(TRAY_OPEN_VIEW_EVENT, "detox");
+                emit_runtime_refresh(app);
+            }
+            TRAY_MENU_OPEN_ADMIN => {
+                show_main_window(app);
+                let _ = app.emit(TRAY_OPEN_VIEW_EVENT, "admin");
+                emit_runtime_refresh(app);
+            }
+            TRAY_MENU_REFRESH => {
+                refresh_tray_menu_async(app.clone(), menu_state_for_events.clone());
+            }
+            TRAY_MENU_START_ENFORCEMENT => {
+                run_tray_daemon_action(
+                    app.clone(),
+                    menu_state_for_events.clone(),
+                    "start_enforcement",
+                    "Starting enforcement",
+                    "Started enforcement",
+                );
+            }
+            TRAY_MENU_STOP_ENFORCEMENT => {
+                run_tray_daemon_action(
+                    app.clone(),
+                    menu_state_for_events.clone(),
+                    "stop_enforcement",
+                    "Stopping enforcement",
+                    "Stopped enforcement",
+                );
+            }
+            TRAY_MENU_QUIT => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+                emit_runtime_refresh(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+
+    let app_handle = app.handle().clone();
+    refresh_tray_menu_async(app_handle.clone(), menu_state.clone());
+    start_tray_refresh_loop(app_handle, menu_state.clone());
+
+    Ok(menu_state)
+}
+
+fn start_tray_refresh_loop(app: AppHandle<Wry>, menu: TrayMenuState) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(TRAY_REFRESH_INTERVAL_SECONDS));
+        refresh_tray_menu(&app, &menu);
+    });
+}
+
+fn refresh_tray_menu_async(app: AppHandle<Wry>, menu: TrayMenuState) {
+    std::thread::spawn(move || {
+        refresh_tray_menu(&app, &menu);
+    });
+}
+
+fn refresh_tray_menu(_app: &AppHandle<Wry>, menu: &TrayMenuState) {
+    let socket = resolve_socket_path(None);
+    match call_daemon(&socket, "status", json!({})) {
+        Ok(status) => {
+            let enforcement_state = status
+                .get("enforcement_state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            set_menu_text(&menu.daemon_status, "Daemon: Online");
+            set_menu_text(
+                &menu.enforcement_status,
+                format!("Enforcement: {}", tray_enforcement_label(enforcement_state)),
+            );
+            update_tray_detox_status(&socket, menu);
+            update_tray_enforcement_actions(menu, Some(enforcement_state));
+        }
+        Err(_) => {
+            set_menu_text(&menu.daemon_status, "Daemon: Offline");
+            set_menu_text(&menu.enforcement_status, "Enforcement: Unknown");
+            set_menu_text(&menu.detox_status, "Detox: Unknown");
+            update_tray_enforcement_actions(menu, None);
+        }
+    }
+}
+
+fn update_tray_detox_status(socket: &str, menu: &TrayMenuState) {
+    match call_daemon(
+        socket,
+        "detox_sessions",
+        json!({
+            "active_only": true,
+            "limit": 80,
+            "now": Utc::now().to_rfc3339()
+        }),
+    ) {
+        Ok(value) => {
+            let active_count = value
+                .get("sessions")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            set_menu_text(&menu.detox_status, format!("Detox: {active_count} active"));
+        }
+        Err(_) => {
+            set_menu_text(&menu.detox_status, "Detox: Unknown");
+        }
+    }
+}
+
+fn update_tray_enforcement_actions(menu: &TrayMenuState, enforcement_state: Option<&str>) {
+    let (can_start, can_stop) = match enforcement_state {
+        Some("active") => (false, true),
+        Some("stopped") => (true, false),
+        Some(_) => (true, true),
+        None => (false, false),
+    };
+    set_menu_enabled(&menu.start_enforcement, can_start);
+    set_menu_enabled(&menu.stop_enforcement, can_stop);
+}
+
+fn run_tray_daemon_action(
+    app: AppHandle<Wry>,
+    menu: TrayMenuState,
+    method: &'static str,
+    pending_label: &'static str,
+    success_label: &'static str,
+) {
+    std::thread::spawn(move || {
+        set_menu_text(&menu.last_action, format!("Last action: {pending_label}"));
+        update_tray_enforcement_actions(&menu, None);
+        let socket = resolve_socket_path(None);
+        match call_daemon(&socket, method, json!({})) {
+            Ok(_) => set_menu_text(&menu.last_action, format!("Last action: {success_label}")),
+            Err(err) => set_menu_text(
+                &menu.last_action,
+                format!("Last action: {}", tray_error_label(&err)),
+            ),
+        }
+        refresh_tray_menu(&app, &menu);
+        emit_runtime_refresh(&app);
+    });
+}
+
+fn tray_enforcement_label(state: &str) -> &'static str {
+    match state {
+        "active" => "Active",
+        "stopped" => "Stopped",
+        _ => "Unknown",
+    }
+}
+
+fn tray_error_label(error: &GuiError) -> String {
+    let detail = error.to_string();
+    const MAX_LEN: usize = 60;
+    if detail.chars().count() <= MAX_LEN {
+        return format!("Failed: {detail}");
+    }
+    let truncated = detail.chars().take(MAX_LEN).collect::<String>();
+    format!("Failed: {truncated}...")
+}
+
+fn show_main_window(app: &AppHandle<Wry>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn emit_runtime_refresh(app: &AppHandle<Wry>) {
+    let _ = app.emit(TRAY_RUNTIME_REFRESH_EVENT, ());
+}
+
+fn set_menu_text<S: AsRef<str>>(item: &MenuItem<Wry>, text: S) {
+    let _ = item.set_text(text);
+}
+
+fn set_menu_enabled(item: &MenuItem<Wry>, enabled: bool) {
+    let _ = item.set_enabled(enabled);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let tray_available = Arc::new(AtomicBool::new(false));
+    let tray_available_for_setup = Arc::clone(&tray_available);
+    let tray_available_for_window = Arc::clone(&tray_available);
+
     tauri::Builder::default()
+        .setup(move |app| {
+            match setup_tray(app) {
+                Ok(_) => tray_available_for_setup.store(true, Ordering::SeqCst),
+                Err(err) => eprintln!("BlocKuntu tray setup failed: {err}"),
+            }
+            Ok(())
+        })
+        .on_window_event(move |window, event| {
+            if window.label() != "main" || !tray_available_for_window.load(Ordering::SeqCst) {
+                return;
+            }
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             daemon_rpc,
             daemon_status,

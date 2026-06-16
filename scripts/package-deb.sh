@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-7"
+VERSION="0.1.0-8"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
@@ -22,7 +22,7 @@ time; policy repair is deferred until the first browser-extension heartbeat.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-7.
+  --version VERSION   Package version, default 0.1.0-8.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -271,6 +271,9 @@ restart that Firefox build:
 Open the GUI once after the first login and store the uninstall phrase shown
 in the First Run panel. The Admin uninstall action accepts that phrase or the
 system recovery phrase.
+Closing the GUI window keeps BlocKuntu available from the tray icon. On vanilla
+GNOME, install or enable AppIndicator/KStatusNotifierItem support if the tray
+icon is not visible.
 A system recovery uninstall phrase is also stored at:
   /etc/blockuntu/uninstall-recovery.txt
 The Tier 1 site-list edit key is stored at:
