@@ -128,6 +128,7 @@
 
   let selectedAppRuleId = $state<string | null>(null);
   let appRuleDraft = $state<AppRule | null>(null);
+  let appRuleAllowanceDraft = $state<Allowance | null>(null);
   let appRuleSaving = $state(false);
   let appRuleMessage: string | null = $state(null);
 
@@ -391,9 +392,9 @@
         snapshot.app_rules.find((rule) => rule.id === selectedAppRuleId) ?? null;
       if (!selectedAppRuleSnapshot) {
         selectedAppRuleId = snapshot.app_rules[0]?.id ?? null;
-        appRuleDraft = snapshot.app_rules[0] ? cloneAppRule(snapshot.app_rules[0]) : null;
+        setAppRuleDraft(snapshot.app_rules[0] ?? null, snapshot);
       } else {
-        appRuleDraft = cloneAppRule(selectedAppRuleSnapshot);
+        setAppRuleDraft(selectedAppRuleSnapshot, snapshot);
       }
     }
 
@@ -445,7 +446,22 @@
     const savedRule = snapshot.app_rules.find((rule) => rule.id === selectedAppRuleId) ?? null;
     if (!savedRule) return true;
 
-    return !sameDraft(normalizeAppRuleDraft(appRuleDraft), normalizeAppRuleDraft(savedRule));
+    if (!sameDraft(normalizeAppRuleDraft(appRuleDraft), normalizeAppRuleDraft(savedRule))) {
+      return true;
+    }
+
+    if (appRuleDraft.tier !== "controlled_access" && savedRule.tier !== "controlled_access") {
+      return false;
+    }
+
+    const draftAllowance = appRuleAllowanceDraft ?? defaultAllowanceForRule(appRuleDraft);
+    const savedAllowance =
+      cloneAllowanceForRule(savedRule, snapshot) ?? defaultAllowanceForRule(savedRule);
+
+    return !sameDraft(
+      normalizeAllowanceDraft(draftAllowance, appRuleDraft),
+      normalizeAllowanceDraft(savedAllowance, savedRule)
+    );
   }
 
   function scheduleDraftHasUnsavedChanges(snapshot: ConfigSnapshot): boolean {
@@ -722,8 +738,16 @@
 
   function selectAppRule(rule: AppRule): void {
     selectedAppRuleId = rule.id;
-    appRuleDraft = cloneAppRule(rule);
+    setAppRuleDraft(rule, config);
     appRuleMessage = null;
+  }
+
+  function setAppRuleDraft(
+    rule: AppRule | null,
+    snapshot: ConfigSnapshot | null = config
+  ): void {
+    appRuleDraft = rule ? cloneAppRule(rule) : null;
+    appRuleAllowanceDraft = rule ? cloneAllowanceForRule(rule, snapshot) : null;
   }
 
   function startNewAppRule(): void {
@@ -742,6 +766,7 @@
       allowance_id: null,
       unlock_policy: null
     };
+    appRuleAllowanceDraft = null;
     appRuleMessage = null;
   }
 
@@ -751,12 +776,28 @@
     lastError = null;
     appRuleMessage = null;
     try {
-      const response = await upsertAppRule(normalizeAppRuleDraft(appRuleDraft), socketArg());
+      const socket = socketArg();
+      if (appRuleDraft.tier === "controlled_access") {
+        const allowance = normalizeAllowanceDraft(
+          appRuleAllowanceDraft ?? defaultAllowanceForRule(appRuleDraft),
+          appRuleDraft
+        );
+        const allowanceResponse = await upsertAllowance(allowance, socket);
+        config = allowanceResponse.config;
+        appRuleAllowanceDraft = cloneAllowance(allowance);
+        appRuleDraft.allowance_id = allowance.id;
+      } else {
+        appRuleDraft.allowance_id = null;
+      }
+
+      const response = await upsertAppRule(normalizeAppRuleDraft(appRuleDraft), socket);
       config = response.config;
       selectedAppRuleId = appRuleDraft.id.trim();
-      appRuleDraft = cloneAppRule(
+      setAppRuleDraft(
         response.config.app_rules.find((rule) => rule.id === selectedAppRuleId) ??
-          response.config.app_rules[0]
+          response.config.app_rules[0] ??
+          null,
+        response.config
       );
       appRuleMessage = "Saved.";
       await refreshEventsOnly();
@@ -776,7 +817,7 @@
       const response = await deleteAppRule(appRuleDraft.id, socketArg());
       config = response.config;
       selectedAppRuleId = response.config.app_rules[0]?.id ?? null;
-      appRuleDraft = response.config.app_rules[0] ? cloneAppRule(response.config.app_rules[0]) : null;
+      setAppRuleDraft(response.config.app_rules[0] ?? null, response.config);
       appRuleMessage = "Deleted.";
       await refreshEventsOnly();
     } catch (error) {
@@ -954,6 +995,7 @@
       <AppRulesView
         {config}
         bind:appRuleDraft
+        bind:appRuleAllowanceDraft
         {appRuleSaving}
         {appRuleMessage}
         {activeDetoxAppRuleIds}

@@ -1,11 +1,12 @@
 <script lang="ts">
   import { AlertTriangle, Gamepad2, Plus, Save, Trash2 } from "@lucide/svelte";
-  import { appMatcherKinds, appRuleIsActive } from "../../lib/ui";
-  import type { AppRule, ConfigSnapshot } from "../../lib/types";
+  import { appMatcherKinds, appRuleIsActive, defaultAllowanceForRule } from "../../lib/ui";
+  import type { Allowance, AppRule, ConfigSnapshot } from "../../lib/types";
 
   interface Props {
     config: ConfigSnapshot | null;
     appRuleDraft?: AppRule | null;
+    appRuleAllowanceDraft?: Allowance | null;
     appRuleSaving: boolean;
     appRuleMessage: string | null;
     activeDetoxAppRuleIds?: string[];
@@ -18,6 +19,7 @@
   let {
     config,
     appRuleDraft = $bindable<AppRule | null>(null),
+    appRuleAllowanceDraft = $bindable<Allowance | null>(null),
     appRuleSaving,
     appRuleMessage,
     activeDetoxAppRuleIds = [],
@@ -58,7 +60,10 @@
     appRuleDraft.tier = tier;
     if (tier === "hard") {
       appRuleDraft.allowance_id = null;
+      appRuleAllowanceDraft = null;
       appRuleDraft.unlock_policy = null;
+    } else if (!appRuleAllowanceDraft) {
+      appRuleAllowanceDraft = defaultAllowanceForRule(appRuleDraft);
     }
   }
 
@@ -140,6 +145,24 @@
         />
         <span>Enabled</span>
       </label>
+
+      {#if appRuleDraft.tier === "controlled_access"}
+        <div class="section-label">Daily allowance</div>
+        <div class="allowance-editor">
+          {#if appRuleAllowanceDraft}
+            <label>
+              <span>Daily minutes</span>
+              <input
+                type="number"
+                min="0"
+                max="1440"
+                bind:value={appRuleAllowanceDraft.daily_minutes}
+                disabled={appRuleDraftLocked}
+              />
+            </label>
+          {/if}
+        </div>
+      {/if}
 
       <div class="section-label">Schedules</div>
       <div class="chip-grid">

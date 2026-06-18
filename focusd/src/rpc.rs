@@ -933,6 +933,11 @@ fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> 
     let rule_id = params.rule.id.clone();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
+    let old_allowance_id = next
+        .app_rules
+        .iter()
+        .find(|candidate| candidate.id == params.rule.id)
+        .and_then(|rule| rule.allowance_id.clone());
 
     match next
         .app_rules
@@ -954,6 +959,14 @@ fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> 
             next.app_rules[index] = params.rule;
         }
         None => next.app_rules.push(params.rule),
+    }
+    let new_allowance_id = next
+        .app_rules
+        .iter()
+        .find(|candidate| candidate.id == rule_id)
+        .and_then(|rule| rule.allowance_id.clone());
+    if old_allowance_id != new_allowance_id {
+        remove_unreferenced_allowance(&mut next, old_allowance_id.as_deref());
     }
 
     focus_core::validate_config(&next)?;
@@ -996,6 +1009,7 @@ fn delete_app_rule_method(context: &RpcContext, params: DeleteAppRuleParams) -> 
         return Err(active_app_rule_edit_error(&current_rule.id));
     }
     let removed = next.app_rules.remove(index);
+    remove_unreferenced_allowance(&mut next, removed.allowance_id.as_deref());
 
     focus_core::validate_config(&next)?;
     core.database().replace_policy_config(&next)?;
@@ -2121,7 +2135,7 @@ fn active_schedule_edit_error(schedule_id: &str) -> DaemonError {
 
 fn active_allowance_edit_error(allowance_id: &str) -> DaemonError {
     DaemonError::InvalidRequest(format!(
-        "allowance '{allowance_id}' is currently used by an active site list and cannot be edited"
+        "allowance '{allowance_id}' is currently used by an active rule and cannot be edited"
     ))
 }
 
@@ -2155,6 +2169,9 @@ fn remove_unreferenced_allowance(config: &mut Config, allowance_id: Option<&str>
 fn allowance_is_active_at(allowance_id: &str, config: &Config, now: DateTime<FixedOffset>) -> bool {
     config.rules.iter().any(|rule| {
         rule.allowance_id.as_deref() == Some(allowance_id) && rule_is_active_at(rule, config, now)
+    }) || config.app_rules.iter().any(|rule| {
+        rule.allowance_id.as_deref() == Some(allowance_id)
+            && app_rule_is_active_at(rule, config, now)
     })
 }
 
@@ -2841,6 +2858,89 @@ mod tests {
             .expect("app rules should be an array")
             .iter()
             .any(|rule| rule["id"] == "kmines-hard"));
+    }
+
+    #[test]
+    fn upserts_allowance_for_app_rule_edits() {
+        let context = editable_rpc_context();
+        let allowance_request = json!({
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "upsert_allowance",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "allowance": {
+                    "id": "app-daily",
+                    "name": "App Daily",
+                    "daily_minutes": 20
+                }
+            }
+        });
+        let allowance_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&allowance_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(
+            allowance_response.get("error").is_none(),
+            "{allowance_response}"
+        );
+
+        let app_rule_request = json!({
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "upsert_app_rule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "kmines-controlled",
+                    "name": "KMines",
+                    "tier": "controlled_access",
+                    "enabled": true,
+                    "allowance_id": "app-daily",
+                    "matchers": [
+                        { "kind": "command_name", "value": "kmines" }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let app_rule_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&app_rule_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(
+            app_rule_response.get("error").is_none(),
+            "{app_rule_response}"
+        );
+        assert!(app_rule_response["result"]["config"]["app_rules"]
+            .as_array()
+            .expect("app rules should be an array")
+            .iter()
+            .any(|rule| rule["allowance_id"] == "app-daily"));
+
+        let delete_request = json!({
+            "jsonrpc": "2.0",
+            "id": 26,
+            "method": "delete_app_rule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "id": "kmines-controlled"
+            }
+        });
+        let delete_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&delete_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(delete_response.get("error").is_none(), "{delete_response}");
+        assert!(!delete_response["result"]["config"]["allowances"]
+            .as_array()
+            .expect("allowances should be an array")
+            .iter()
+            .any(|allowance| allowance["id"] == "app-daily"));
     }
 
     #[test]

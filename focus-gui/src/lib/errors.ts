@@ -158,10 +158,10 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   }
 
   const activeAllowance = normalized.match(
-    /^allowance '([^']+)' is currently used by an active site list and cannot be edited$/
+    /^allowance '([^']+)' is currently used by an active rule and cannot be edited$/
   );
   if (activeAllowance) {
-    return `Allowance "${activeAllowance[1]}" is used by an active site list right now, so it cannot be edited. Wait until the list is inactive, then try again.`;
+    return `Allowance "${activeAllowance[1]}" is used by an active rule right now, so it cannot be edited. Wait until the rule is inactive, then try again.`;
   }
 
   const missingSiteList = normalized.match(/^site list '([^']+)' does not exist$/);

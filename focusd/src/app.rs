@@ -1,9 +1,10 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use focus_core::{
     AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Database, Decision,
     EvaluationContext, FocusCore, ProcessIdentity, RuleTier, StrictModeConfig,
@@ -17,7 +18,8 @@ use crate::error::{DaemonError, Result};
 use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
 use crate::process_scan::{
-    attach_window_titles, kill_processes, scan_procfs, LinuxSignalKiller, WmctrlWindowTitleProvider,
+    attach_window_titles, kill_processes, scan_procfs, LinuxSignalKiller, ProcessInfo,
+    WmctrlWindowTitleProvider,
 };
 use crate::rpc::{handle_payload, RpcContext};
 use crate::socket::listener_from_systemd_or_path;
@@ -194,6 +196,7 @@ impl DaemonApp {
 
     fn scan_processes_once(&self) -> Result<()> {
         if !self.enforcement_is_active()? {
+            self.end_open_app_usage_sessions()?;
             return Ok(());
         }
 
@@ -202,6 +205,8 @@ impl DaemonApp {
             if core.config().app_rules.is_empty()
                 && !strict_supported_browser_enforcement_enabled(&core.config().strict_mode)
             {
+                core.database()
+                    .end_open_app_usage_sessions(chrono::Utc::now())?;
                 return Ok(());
             }
         }
@@ -210,11 +215,12 @@ impl DaemonApp {
         attach_window_titles(&mut processes, &WmctrlWindowTitleProvider)?;
         let now = chrono::Local::now().fixed_offset();
         let mut blocked_pids = Vec::new();
-        let mut kill_details_by_pid = std::collections::HashMap::new();
-        let mut kill_event_kind_by_pid = std::collections::HashMap::new();
+        let mut kill_details_by_pid = HashMap::new();
+        let mut kill_event_kind_by_pid = HashMap::new();
 
         {
             let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+            sync_metered_app_usage_sessions(&core, &processes, now)?;
             let context = EvaluationContext::new(core.config(), core.database(), now);
             for process in &processes {
                 if process.pid <= 1 || process.pid == std::process::id() {
@@ -324,6 +330,13 @@ impl DaemonApp {
         Ok(state.as_deref() != Some("stopped"))
     }
 
+    fn end_open_app_usage_sessions(&self) -> Result<()> {
+        let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        core.database()
+            .end_open_app_usage_sessions(chrono::Utc::now())?;
+        Ok(())
+    }
+
     async fn accept_loop(self, listener: UnixListener) -> Result<()> {
         loop {
             tokio::select! {
@@ -384,12 +397,12 @@ fn create_parent_dir(path: &Path, mode: u32) -> Result<()> {
 }
 
 fn strict_browser_kill_details(
-    processes: &[crate::process_scan::ProcessInfo],
+    processes: &[ProcessInfo],
     strict_mode: StrictModeConfig,
     database: &Database,
     now: DateTime<Utc>,
-) -> Result<std::collections::HashMap<u32, String>> {
-    let mut kill_details = std::collections::HashMap::new();
+) -> Result<HashMap<u32, String>> {
+    let mut kill_details = HashMap::new();
 
     if !strict_mode.kill_supported_browser_if_extension_stale {
         return Ok(kill_details);
@@ -568,6 +581,32 @@ fn matches_normalized(value: &str, expected_values: &[&str]) -> bool {
     expected_values.iter().any(|expected| value == *expected)
 }
 
+fn sync_metered_app_usage_sessions(
+    core: &FocusCore,
+    processes: &[ProcessInfo],
+    now: DateTime<FixedOffset>,
+) -> Result<Vec<String>> {
+    let context = EvaluationContext::new(core.config(), core.database(), now);
+    let mut rule_ids = HashSet::new();
+
+    for process in processes {
+        if process.pid <= 1 || process.pid == std::process::id() {
+            continue;
+        }
+
+        for rule_id in focus_core::metered_app_rule_ids_for_process(&process.identity(), &context)?
+        {
+            rule_ids.insert(rule_id);
+        }
+    }
+
+    let mut rule_ids = rule_ids.into_iter().collect::<Vec<_>>();
+    rule_ids.sort();
+    core.database()
+        .sync_app_usage_sessions(&rule_ids, now.with_timezone(&Utc))?;
+    Ok(rule_ids)
+}
+
 fn hosts_immutable_enabled(args: &Args) -> bool {
     if args.hosts_immutable {
         return true;
@@ -706,11 +745,14 @@ fn blocked_rule_id(reason: &BlockReason) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, TimeZone, Utc};
-    use focus_core::{Config, Database, ProcessIdentity, StrictModeConfig};
+    use focus_core::{
+        BlockReason, Config, ControlledBlockReason, Database, Decision, ProcessIdentity,
+        StrictModeConfig,
+    };
 
     use super::{
         ensure_mandatory_app_rules, strict_browser_kill_details, supported_browser_for_process,
-        SupportedBrowser, UNSUPPORTED_BROWSER_RULE_ID,
+        sync_metered_app_usage_sessions, SupportedBrowser, UNSUPPORTED_BROWSER_RULE_ID,
     };
     use crate::process_scan::ProcessInfo;
 
@@ -755,6 +797,57 @@ mod tests {
             Some(SupportedBrowser::Chrome)
         );
         assert_eq!(supported_browser_for_process(&process("chromium")), None);
+    }
+
+    #[test]
+    fn process_scan_sync_records_metered_app_usage() {
+        let config = Config::from_toml_str(
+            r#"
+            [[allowances]]
+            id = "kmines-daily"
+            daily_minutes = 1
+
+            [[app_rules]]
+            id = "kmines-controlled"
+            name = "KMines"
+            tier = "controlled_access"
+            allowance_id = "kmines-daily"
+            matchers = [
+              { kind = "command_name", value = "kmines" }
+            ]
+            "#,
+        )
+        .expect("config should parse");
+        let database = Database::in_memory().expect("database should initialize");
+        let core = focus_core::FocusCore::new(config, database).expect("core should initialize");
+        let process = process_info(1234, "kmines");
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+            .single()
+            .expect("timestamp should be valid")
+            .fixed_offset();
+        let exhausted_at = started_at + Duration::minutes(2);
+
+        let started_rules =
+            sync_metered_app_usage_sessions(&core, std::slice::from_ref(&process), started_at)
+                .expect("usage sync should start a session");
+        assert_eq!(started_rules, vec!["kmines-controlled".to_string()]);
+
+        sync_metered_app_usage_sessions(&core, std::slice::from_ref(&process), exhausted_at)
+            .expect("usage sync should update the session");
+        let context =
+            focus_core::EvaluationContext::new(core.config(), core.database(), exhausted_at);
+        assert_eq!(
+            focus_core::evaluate_app(&process.identity(), &context),
+            Decision::Block(BlockReason::ControlledAccess {
+                rule_id: "kmines-controlled".to_string(),
+                rule_name: "KMines".to_string(),
+                reason: ControlledBlockReason::AllowanceExhausted,
+            })
+        );
+
+        sync_metered_app_usage_sessions(&core, &[], exhausted_at + Duration::minutes(1))
+            .expect("usage sync should end the session");
     }
 
     #[test]

@@ -191,18 +191,29 @@ impl Config {
                 }
             }
 
-            if app_rule.allowance_id.is_some() {
-                return Err(ConfigError::Validation(format!(
-                    "app rule '{}' cannot define allowances until app runtime accounting is implemented",
-                    app_rule.id
-                )));
+            if let Some(allowance_id) = &app_rule.allowance_id {
+                if !allowance_ids.contains(allowance_id.as_str()) {
+                    return Err(ConfigError::Validation(format!(
+                        "app rule '{}' references missing allowance '{}'",
+                        app_rule.id, allowance_id
+                    )));
+                }
+
+                if let Some(existing_rule_id) =
+                    allowance_links.insert(allowance_id.as_str(), app_rule.id.as_str())
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "allowance '{}' is already linked to rule '{}' and cannot also be linked to app rule '{}'",
+                        allowance_id, existing_rule_id, app_rule.id
+                    )));
+                }
             }
 
             match app_rule.tier {
                 RuleTier::Hard => {
-                    if app_rule.unlock_policy.is_some() {
+                    if app_rule.allowance_id.is_some() || app_rule.unlock_policy.is_some() {
                         return Err(ConfigError::Validation(format!(
-                            "hard app rule '{}' cannot define unlock policies",
+                            "hard app rule '{}' cannot define allowances or unlock policies",
                             app_rule.id
                         )));
                     }

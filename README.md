@@ -94,16 +94,16 @@ Build the current Debian package from the repository root:
 ./scripts/package-deb.sh
 ```
 
-The default package version is currently `0.1.0-8`, and the artifact path is:
+The default package version is currently `0.1.0-9`, and the artifact path is:
 
 ```bash
-target/debian/blockuntu_0.1.0-8_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-9_$(dpkg --print-architecture).deb
 ```
 
 Install it on the target Ubuntu/Debian machine with `apt`, not raw `dpkg -i`:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-8_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-9_$(dpkg --print-architecture).deb
 sudo usermod -aG blockuntu "$USER"
 ```
 

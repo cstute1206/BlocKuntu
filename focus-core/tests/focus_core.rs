@@ -183,6 +183,57 @@ fn controlled_app_rules_can_be_unlocked_by_rule_or_matcher_value() {
 }
 
 #[test]
+fn controlled_app_allowances_use_recorded_runtime() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "game-daily"
+        daily_minutes = 1
+
+        [[app_rules]]
+        id = "game-controlled"
+        name = "Game controlled"
+        tier = "controlled_access"
+        allowance_id = "game-daily"
+        matchers = [
+          { kind = "command_name", value = "game-bin" }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let process = ProcessIdentity {
+        pid: Some(1234),
+        executable_path: None,
+        executable_basename: None,
+        command_name: Some("game-bin".to_string()),
+        desktop_id: None,
+        window_titles: Vec::new(),
+    };
+
+    let before_usage = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    assert_eq!(evaluate_app(&process, &before_usage), Decision::Allow);
+
+    database
+        .insert_app_usage_interval(
+            "game-controlled",
+            at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc),
+            at_utc(2026, 5, 18, 10, 1).with_timezone(&Utc),
+        )
+        .expect("app usage interval should insert");
+
+    let after_allowance = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
+    assert_eq!(
+        evaluate_app(&process, &after_allowance),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id: "game-controlled".to_string(),
+            rule_name: "Game controlled".to_string(),
+            reason: ControlledBlockReason::AllowanceExhausted,
+        })
+    );
+}
+
+#[test]
 fn detox_sessions_block_site_rules_until_the_absolute_end_time() {
     let config = Config::from_toml_str(
         r#"
@@ -870,6 +921,7 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
         "allowances",
         "unlocks",
         "visits",
+        "app_usage_sessions",
         "events",
         "heartbeats",
         "service_state",
@@ -1119,8 +1171,30 @@ fn corrupt_and_unsafe_configurations_fail_safely() {
           { kind = "command_name", value = "app" }
         ]
         "#,
+    )
+    .expect("controlled app allowances should parse");
+    assert_eq!(
+        app_with_allowance.app_rules[0].allowance_id.as_deref(),
+        Some("daily")
     );
-    assert!(app_with_allowance.is_err());
+
+    let hard_app_with_allowance = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "daily"
+        daily_minutes = 15
+
+        [[app_rules]]
+        id = "app"
+        name = "App"
+        tier = "hard"
+        allowance_id = "daily"
+        matchers = [
+          { kind = "command_name", value = "app" }
+        ]
+        "#,
+    );
+    assert!(hard_app_with_allowance.is_err());
 
     let shared_allowance = Config::from_toml_str(
         r#"

@@ -33,6 +33,12 @@ impl ControlledRuleStrictness {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ControlledUsage<'a> {
+    SiteRule(&'a RuleConfig),
+    AppRule,
+}
+
 pub struct PolicyEngine<'a> {
     config: &'a Config,
     database: &'a Database,
@@ -112,24 +118,28 @@ impl<'a> PolicyEngine<'a> {
             }
         }
 
+        let mut controlled_block: Option<(Decision, ControlledRuleStrictness)> = None;
         for rule in self.matching_app_rules(process, RuleTier::ControlledAccess) {
             if !self.app_rule_is_active(rule, context) {
                 continue;
             }
 
-            let decision = self.evaluate_controlled_rule_fields(
-                &rule.id,
-                &rule.name,
-                rule.allowance_id.as_deref(),
-                None,
-                context,
-            );
+            let decision = self.evaluate_controlled_app_rule(rule, context);
             if decision.is_block() {
-                return decision;
+                let strictness = self.controlled_app_rule_strictness(rule);
+                let should_replace = controlled_block
+                    .as_ref()
+                    .map(|(_, current)| strictness.is_stricter_than(*current))
+                    .unwrap_or(true);
+                if should_replace {
+                    controlled_block = Some((decision, strictness));
+                }
             }
         }
 
-        Decision::Allow
+        controlled_block
+            .map(|(decision, _)| decision)
+            .unwrap_or(Decision::Allow)
     }
 
     pub fn request_unlock(
@@ -238,6 +248,32 @@ impl<'a> PolicyEngine<'a> {
         self.database.end_visit(visit_id, context.now_utc())
     }
 
+    pub fn metered_app_rule_ids_for_process(
+        &self,
+        process: &ProcessIdentity,
+        context: &EvaluationContext<'_>,
+    ) -> Result<Vec<String>, Error> {
+        if self.detox_block_for_app(process, context)?.is_some() {
+            return Ok(Vec::new());
+        }
+
+        if self
+            .matching_app_rules(process, RuleTier::Hard)
+            .any(|rule| self.app_rule_is_active(rule, context))
+        {
+            return Ok(Vec::new());
+        }
+
+        Ok(self
+            .matching_app_rules(process, RuleTier::ControlledAccess)
+            .filter(|rule| {
+                self.app_rule_is_active(rule, context)
+                    && self.app_rule_allowance_minutes(rule).is_some()
+            })
+            .map(|rule| rule.id.clone())
+            .collect())
+    }
+
     fn evaluate_controlled_rule(
         &self,
         rule: &RuleConfig,
@@ -247,7 +283,21 @@ impl<'a> PolicyEngine<'a> {
             &rule.id,
             &rule.name,
             rule.allowance_id.as_deref(),
-            Some(rule),
+            ControlledUsage::SiteRule(rule),
+            context,
+        )
+    }
+
+    fn evaluate_controlled_app_rule(
+        &self,
+        rule: &AppRuleConfig,
+        context: &EvaluationContext<'_>,
+    ) -> Decision {
+        self.evaluate_controlled_rule_fields(
+            &rule.id,
+            &rule.name,
+            rule.allowance_id.as_deref(),
+            ControlledUsage::AppRule,
             context,
         )
     }
@@ -257,7 +307,7 @@ impl<'a> PolicyEngine<'a> {
         rule_id: &str,
         rule_name: &str,
         allowance_id: Option<&str>,
-        usage_rule: Option<&RuleConfig>,
+        usage: ControlledUsage<'_>,
         context: &EvaluationContext<'_>,
     ) -> Decision {
         let now = context.now_utc();
@@ -289,11 +339,13 @@ impl<'a> PolicyEngine<'a> {
             });
         };
 
-        let used_seconds = match usage_rule {
-            Some(rule) => self.used_seconds_for_site_rule_on_day(rule, context.now_utc()),
-            None => self
+        let used_seconds = match usage {
+            ControlledUsage::SiteRule(rule) => {
+                self.used_seconds_for_site_rule_on_day(rule, context.now_utc())
+            }
+            ControlledUsage::AppRule => self
                 .database
-                .used_seconds_for_rule_on_day(rule_id, context.now_utc()),
+                .used_seconds_for_app_rule_on_day(rule_id, context.now_utc()),
         };
 
         match used_seconds {
@@ -454,6 +506,22 @@ impl<'a> PolicyEngine<'a> {
     }
 
     fn rule_allowance_minutes(&self, rule: &RuleConfig) -> Option<u32> {
+        let allowance_id = rule.allowance_id.as_deref()?;
+        self.config
+            .allowances
+            .iter()
+            .find(|allowance| allowance.id == allowance_id)
+            .map(|allowance| allowance.daily_minutes)
+    }
+
+    fn controlled_app_rule_strictness(&self, rule: &AppRuleConfig) -> ControlledRuleStrictness {
+        ControlledRuleStrictness {
+            allowance_minutes: self.app_rule_allowance_minutes(rule),
+            pattern_specificity: 0,
+        }
+    }
+
+    fn app_rule_allowance_minutes(&self, rule: &AppRuleConfig) -> Option<u32> {
         let allowance_id = rule.allowance_id.as_deref()?;
         self.config
             .allowances
@@ -674,6 +742,14 @@ pub fn evaluate_url(url: &str, context: &EvaluationContext<'_>) -> Decision {
 
 pub fn evaluate_app(process: &ProcessIdentity, context: &EvaluationContext<'_>) -> Decision {
     PolicyEngine::new(context.config, context.database).evaluate_app(process, context)
+}
+
+pub fn metered_app_rule_ids_for_process(
+    process: &ProcessIdentity,
+    context: &EvaluationContext<'_>,
+) -> Result<Vec<String>, Error> {
+    PolicyEngine::new(context.config, context.database)
+        .metered_app_rule_ids_for_process(process, context)
 }
 
 pub fn request_unlock(

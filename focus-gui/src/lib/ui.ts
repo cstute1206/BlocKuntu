@@ -49,6 +49,13 @@ export const appMatcherKinds: Array<{ id: AppMatcher["kind"]; label: string }> =
 
 export const defaultDailyAllowanceMinutes = 30;
 
+interface AllowanceOwner {
+  id: string;
+  name: string;
+  tier: "hard" | "controlled_access";
+  allowance_id?: string | null;
+}
+
 export function cloneRule(rule: Rule): Rule {
   return {
     ...rule,
@@ -66,7 +73,7 @@ export function cloneAllowance(allowance: Allowance): Allowance {
   };
 }
 
-export function defaultAllowanceForRule(rule: Rule): Allowance {
+export function defaultAllowanceForRule(rule: AllowanceOwner): Allowance {
   return {
     id: linkedAllowanceIdForRule(rule),
     name: allowanceNameForRule(rule),
@@ -75,7 +82,7 @@ export function defaultAllowanceForRule(rule: Rule): Allowance {
 }
 
 export function cloneAllowanceForRule(
-  rule: Rule,
+  rule: AllowanceOwner,
   snapshot: ConfigSnapshot | null
 ): Allowance | null {
   if (rule.tier !== "controlled_access") return null;
@@ -129,7 +136,7 @@ export function normalizeRuleDraft(rule: Rule): Rule {
   };
 }
 
-export function normalizeAllowanceDraft(allowance: Allowance, rule: Rule): Allowance {
+export function normalizeAllowanceDraft(allowance: Allowance, rule: AllowanceOwner): Allowance {
   const dailyMinutes = Number(allowance.daily_minutes);
 
   return {
@@ -145,7 +152,8 @@ export function normalizeAppRuleDraft(rule: AppRule): AppRule {
     ...rule,
     id: rule.id.trim(),
     name: rule.name.trim(),
-    allowance_id: null,
+    allowance_id:
+      rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
     unlock_policy: null,
     matchers: rule.matchers.map((matcher) => ({
       ...matcher,
@@ -241,12 +249,12 @@ export function markFirstRunOverviewDismissed(): void {
   }
 }
 
-function linkedAllowanceIdForRule(rule: Rule): string {
+function linkedAllowanceIdForRule(rule: AllowanceOwner): string {
   return `${rule.id.trim()}-daily`;
 }
 
-function allowanceNameForRule(rule: Rule): string {
-  const name = rule.name.trim() || rule.id.trim() || "Site list";
+function allowanceNameForRule(rule: AllowanceOwner): string {
+  const name = rule.name.trim() || rule.id.trim() || "Rule";
   return `${name} daily allowance`;
 }
 

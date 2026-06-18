@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -1008,7 +1009,7 @@ impl Database {
         Ok(count.try_into().unwrap_or(u32::MAX))
     }
 
-    pub(crate) fn used_seconds_for_rule_on_day(
+    pub(crate) fn used_seconds_for_app_rule_on_day(
         &self,
         rule_id: &str,
         now: DateTime<Utc>,
@@ -1023,7 +1024,7 @@ impl Database {
         let mut statement = self.conn.prepare(
             r#"
             SELECT started_at, ended_at
-            FROM visits
+            FROM app_usage_sessions
             WHERE rule_id = ?1
               AND started_at < ?2
               AND COALESCE(ended_at, ?3) > ?4
@@ -1057,6 +1058,124 @@ impl Database {
         }
 
         Ok(used_seconds)
+    }
+
+    pub fn sync_app_usage_sessions(
+        &self,
+        active_rule_ids: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<(), Error> {
+        self.close_duplicate_open_app_usage_sessions()?;
+
+        let active_rule_ids = active_rule_ids
+            .iter()
+            .map(|rule_id| rule_id.as_str())
+            .collect::<HashSet<_>>();
+        let open_rule_ids = self.open_app_usage_rule_ids()?;
+
+        for rule_id in &active_rule_ids {
+            if open_rule_ids.contains(*rule_id) {
+                self.conn.execute(
+                    r#"
+                    UPDATE app_usage_sessions
+                    SET last_seen_at = ?2
+                    WHERE rule_id = ?1 AND ended_at IS NULL
+                    "#,
+                    params![rule_id, format_time(now)],
+                )?;
+            } else {
+                self.conn.execute(
+                    r#"
+                    INSERT INTO app_usage_sessions (rule_id, started_at, last_seen_at)
+                    VALUES (?1, ?2, ?2)
+                    "#,
+                    params![rule_id, format_time(now)],
+                )?;
+            }
+        }
+
+        for rule_id in open_rule_ids {
+            if !active_rule_ids.contains(rule_id.as_str()) {
+                self.end_open_app_usage_session(&rule_id, now)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn end_open_app_usage_sessions(&self, now: DateTime<Utc>) -> Result<(), Error> {
+        self.conn.execute(
+            r#"
+            UPDATE app_usage_sessions
+            SET ended_at = ?1, last_seen_at = ?1
+            WHERE ended_at IS NULL
+            "#,
+            params![format_time(now)],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_app_usage_interval(
+        &self,
+        rule_id: &str,
+        started_at: DateTime<Utc>,
+        ended_at: DateTime<Utc>,
+    ) -> Result<i64, Error> {
+        self.conn.execute(
+            r#"
+            INSERT INTO app_usage_sessions (rule_id, started_at, last_seen_at, ended_at)
+            VALUES (?1, ?2, ?3, ?3)
+            "#,
+            params![rule_id, format_time(started_at), format_time(ended_at)],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    fn open_app_usage_rule_ids(&self) -> Result<HashSet<String>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT DISTINCT rule_id
+            FROM app_usage_sessions
+            WHERE ended_at IS NULL
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+
+        let mut rule_ids = HashSet::new();
+        for row in rows {
+            rule_ids.insert(row?);
+        }
+        Ok(rule_ids)
+    }
+
+    fn end_open_app_usage_session(&self, rule_id: &str, now: DateTime<Utc>) -> Result<(), Error> {
+        self.conn.execute(
+            r#"
+            UPDATE app_usage_sessions
+            SET ended_at = ?2, last_seen_at = ?2
+            WHERE rule_id = ?1 AND ended_at IS NULL
+            "#,
+            params![rule_id, format_time(now)],
+        )?;
+        Ok(())
+    }
+
+    fn close_duplicate_open_app_usage_sessions(&self) -> Result<(), Error> {
+        self.conn.execute(
+            r#"
+            UPDATE app_usage_sessions
+            SET ended_at = last_seen_at
+            WHERE ended_at IS NULL
+              AND id NOT IN (
+                SELECT MAX(id)
+                FROM app_usage_sessions
+                WHERE ended_at IS NULL
+                GROUP BY rule_id
+              )
+            "#,
+            [],
+        )?;
+        Ok(())
     }
 
     pub(crate) fn visit_usage_for_day(&self, now: DateTime<Utc>) -> Result<Vec<VisitUsage>, Error> {
@@ -1272,6 +1391,19 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
 
         CREATE INDEX IF NOT EXISTS idx_visits_rule_started
             ON visits(rule_id, started_at);
+
+        CREATE TABLE IF NOT EXISTS app_usage_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            ended_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_app_usage_sessions_rule_started
+            ON app_usage_sessions(rule_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_app_usage_sessions_open
+            ON app_usage_sessions(rule_id, ended_at);
 
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
