@@ -18,8 +18,7 @@ use crate::error::{DaemonError, Result};
 use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
 use crate::process_scan::{
-    attach_window_titles, kill_processes, scan_procfs, LinuxSignalKiller, ProcessInfo,
-    WmctrlWindowTitleProvider,
+    attach_detected_window_titles, kill_processes, scan_procfs, LinuxSignalKiller, ProcessInfo,
 };
 use crate::rpc::{handle_payload, RpcContext};
 use crate::socket::listener_from_systemd_or_path;
@@ -212,7 +211,7 @@ impl DaemonApp {
         }
 
         let mut processes = scan_procfs(Path::new("/proc"))?;
-        attach_window_titles(&mut processes, &WmctrlWindowTitleProvider)?;
+        attach_detected_window_titles(&mut processes);
         let now = chrono::Local::now().fixed_offset();
         let mut blocked_pids = Vec::new();
         let mut kill_details_by_pid = HashMap::new();
@@ -223,7 +222,10 @@ impl DaemonApp {
             sync_metered_app_usage_sessions(&core, &processes, now)?;
             let context = EvaluationContext::new(core.config(), core.database(), now);
             for process in &processes {
-                if process.pid <= 1 || process.pid == std::process::id() {
+                if process.pid <= 1
+                    || process.pid == std::process::id()
+                    || is_blockuntu_process(&process.identity())
+                {
                     continue;
                 }
                 let decision = focus_core::evaluate_app(&process.identity(), &context);
@@ -581,6 +583,32 @@ fn matches_normalized(value: &str, expected_values: &[&str]) -> bool {
     expected_values.iter().any(|expected| value == *expected)
 }
 
+pub(crate) fn is_blockuntu_process(process: &ProcessIdentity) -> bool {
+    if process
+        .executable_path
+        .as_deref()
+        .and_then(|path| Path::new(path).file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(is_blockuntu_name)
+    {
+        return true;
+    }
+
+    [
+        process.executable_basename.as_deref(),
+        process.command_name.as_deref(),
+        process.desktop_id.as_deref(),
+    ]
+    .iter()
+    .flatten()
+    .any(|value| is_blockuntu_name(value))
+}
+
+fn is_blockuntu_name(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value.starts_with("blockuntu")
+}
+
 fn sync_metered_app_usage_sessions(
     core: &FocusCore,
     processes: &[ProcessInfo],
@@ -590,7 +618,10 @@ fn sync_metered_app_usage_sessions(
     let mut rule_ids = HashSet::new();
 
     for process in processes {
-        if process.pid <= 1 || process.pid == std::process::id() {
+        if process.pid <= 1
+            || process.pid == std::process::id()
+            || is_blockuntu_process(&process.identity())
+        {
             continue;
         }
 
@@ -751,8 +782,9 @@ mod tests {
     };
 
     use super::{
-        ensure_mandatory_app_rules, strict_browser_kill_details, supported_browser_for_process,
-        sync_metered_app_usage_sessions, SupportedBrowser, UNSUPPORTED_BROWSER_RULE_ID,
+        ensure_mandatory_app_rules, is_blockuntu_process, strict_browser_kill_details,
+        supported_browser_for_process, sync_metered_app_usage_sessions, SupportedBrowser,
+        UNSUPPORTED_BROWSER_RULE_ID,
     };
     use crate::process_scan::ProcessInfo;
 
@@ -797,6 +829,14 @@ mod tests {
             Some(SupportedBrowser::Chrome)
         );
         assert_eq!(supported_browser_for_process(&process("chromium")), None);
+    }
+
+    #[test]
+    fn blockuntu_processes_are_protected_from_app_blocking() {
+        assert!(is_blockuntu_process(&process("blockuntu-gui")));
+        assert!(is_blockuntu_process(&process("blockuntud")));
+        assert!(is_blockuntu_process(&process("blockuntu-native")));
+        assert!(!is_blockuntu_process(&process("vlc")));
     }
 
     #[test]
@@ -857,6 +897,50 @@ mod tests {
 
         sync_metered_app_usage_sessions(&core, &[], exhausted_at + Duration::minutes(1))
             .expect("usage sync should end the session");
+    }
+
+    #[test]
+    fn process_scan_sync_ignores_blockuntu_processes() {
+        let config = Config::from_toml_str(
+            r#"
+            [[allowances]]
+            id = "gui-daily"
+            daily_minutes = 1
+
+            [[app_rules]]
+            id = "gui-controlled"
+            name = "GUI"
+            tier = "controlled_access"
+            allowance_id = "gui-daily"
+            schedule_ids = ["always"]
+            matchers = [
+              { kind = "command_name", value = "blockuntu-gui" }
+            ]
+
+            [[schedules]]
+            id = "always"
+
+            [[schedules.windows]]
+            weekday = "everyday"
+            start = "00:00"
+            end = "23:59"
+            "#,
+        )
+        .expect("config should parse");
+        let database = Database::in_memory().expect("database should initialize");
+        let core = focus_core::FocusCore::new(config, database).expect("core should initialize");
+
+        let rule_ids = sync_metered_app_usage_sessions(
+            &core,
+            &[process_info(1234, "blockuntu-gui")],
+            Utc.with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+                .single()
+                .expect("timestamp should be valid")
+                .fixed_offset(),
+        )
+        .expect("usage sync should pass");
+
+        assert!(rule_ids.is_empty());
     }
 
     #[test]

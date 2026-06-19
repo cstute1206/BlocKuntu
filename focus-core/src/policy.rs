@@ -795,15 +795,9 @@ fn unlock_rule_from_app(rule: &AppRuleConfig, target: &str) -> Result<ResolvedUn
 }
 
 fn app_rule_target_matches(rule: &AppRuleConfig, target: &str) -> bool {
-    rule.matchers.iter().any(|matcher| {
-        matcher.value == target
-            || matches!(
-                matcher.kind,
-                AppMatcherKind::ExecutableBasename
-                    | AppMatcherKind::CommandName
-                    | AppMatcherKind::DesktopId
-            ) && matcher.value.eq_ignore_ascii_case(target)
-    })
+    rule.matchers
+        .iter()
+        .any(|matcher| app_matcher_value_matches(matcher.kind, &matcher.value, target))
 }
 
 fn app_matcher_matches(matcher: &AppMatcherConfig, process: &ProcessIdentity) -> bool {
@@ -811,27 +805,27 @@ fn app_matcher_matches(matcher: &AppMatcherConfig, process: &ProcessIdentity) ->
         AppMatcherKind::ExecutablePath => process
             .executable_path
             .as_deref()
-            .map(|value| value == matcher.value)
+            .map(|value| app_matcher_value_matches(matcher.kind, value, &matcher.value))
             .unwrap_or(false),
         AppMatcherKind::ExecutableBasename => process
             .executable_basename
             .as_deref()
-            .map(|value| value == matcher.value)
+            .map(|value| app_matcher_value_matches(matcher.kind, value, &matcher.value))
             .unwrap_or(false),
         AppMatcherKind::CommandName => process
             .command_name
             .as_deref()
-            .map(|value| value == matcher.value)
+            .map(|value| app_matcher_value_matches(matcher.kind, value, &matcher.value))
             .unwrap_or(false),
         AppMatcherKind::DesktopId => process
             .desktop_id
             .as_deref()
-            .map(|value| value == matcher.value)
+            .map(|value| app_matcher_value_matches(matcher.kind, value, &matcher.value))
             .unwrap_or(false),
         AppMatcherKind::WindowTitleExact => process
             .window_titles
             .iter()
-            .any(|title| title == &matcher.value),
+            .any(|title| app_matcher_value_matches(matcher.kind, title, &matcher.value)),
         AppMatcherKind::WindowTitleContains => {
             let needle = matcher.value.to_ascii_lowercase();
             process
@@ -839,6 +833,14 @@ fn app_matcher_matches(matcher: &AppMatcherConfig, process: &ProcessIdentity) ->
                 .iter()
                 .any(|title| title.to_ascii_lowercase().contains(&needle))
         }
+    }
+}
+
+fn app_matcher_value_matches(kind: AppMatcherKind, actual: &str, expected: &str) -> bool {
+    if kind.matches_case_insensitively() {
+        actual.eq_ignore_ascii_case(expected)
+    } else {
+        actual == expected
     }
 }
 

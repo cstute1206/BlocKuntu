@@ -55,6 +55,26 @@ export interface AppRule {
   unlock_policy?: UnlockPolicy | null;
 }
 
+export interface RunningApp {
+  pid: number;
+  display_name: string;
+  executable_path?: string | null;
+  executable_basename?: string | null;
+  command_name?: string | null;
+  desktop_id?: string | null;
+  window_titles: string[];
+  decision: "allow" | "block";
+  blocking_rule_id?: string | null;
+  blocking_rule_name?: string | null;
+}
+
+export interface WindowDetectionStatus {
+  available: boolean;
+  provider?: string | null;
+  session_type?: string | null;
+  detail: string;
+}
+
 export interface UnlockPolicy {
   max_session_minutes: number;
   cooldown_minutes: number;
@@ -138,6 +158,11 @@ export interface RecentEvent {
 
 export interface EventsResponse {
   events: RecentEvent[];
+}
+
+export interface RunningAppsResponse {
+  apps: RunningApp[];
+  window_detection: WindowDetectionStatus;
 }
 
 export interface HealthCheck {

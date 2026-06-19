@@ -3,6 +3,7 @@ import type {
   AppMatcher,
   AppRule,
   ConfigSnapshot,
+  RunningApp,
   Rule,
   RulePattern,
   Schedule,
@@ -157,12 +158,24 @@ export function normalizeAppRuleDraft(rule: AppRule): AppRule {
     allowance_id:
       rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
     unlock_policy: null,
-    matchers: rule.matchers.map((matcher) => ({
-      ...matcher,
-      value: matcher.value.trim()
-    })),
+    matchers: rule.matchers.map(normalizeAppMatcherDraft),
     schedule_ids: [...rule.schedule_ids]
   };
+}
+
+export function detectedMatchersForRunningApp(app: RunningApp): AppMatcher[] {
+  const candidates: Array<AppMatcher | null> = [
+    app.command_name ? { kind: "command_name", value: app.command_name } : null,
+    app.executable_basename ? { kind: "executable_basename", value: app.executable_basename } : null,
+    app.desktop_id ? { kind: "desktop_id", value: app.desktop_id } : null,
+    app.executable_path ? { kind: "executable_path", value: app.executable_path } : null
+  ];
+
+  return dedupeAppMatchers(candidates.filter((matcher): matcher is AppMatcher => matcher !== null));
+}
+
+export function mergeAppMatchers(existing: AppMatcher[], incoming: AppMatcher[]): AppMatcher[] {
+  return dedupeAppMatchers([...existing, ...incoming]);
 }
 
 export function normalizeScheduleDraft(schedule: Schedule): Schedule {
@@ -258,6 +271,36 @@ function linkedAllowanceIdForRule(rule: AllowanceOwner): string {
 function allowanceNameForRule(rule: AllowanceOwner): string {
   const name = rule.name.trim() || rule.id.trim() || "Rule";
   return `${name} daily allowance`;
+}
+
+function normalizeAppMatcherDraft(matcher: AppMatcher): AppMatcher {
+  const value = matcher.value.trim();
+  if (
+    matcher.kind === "command_name" ||
+    matcher.kind === "executable_basename" ||
+    matcher.kind === "desktop_id"
+  ) {
+    return {
+      ...matcher,
+      value: value.toLowerCase()
+    };
+  }
+
+  return {
+    ...matcher,
+    value
+  };
+}
+
+function dedupeAppMatchers(matchers: AppMatcher[]): AppMatcher[] {
+  const unique = new Map<string, AppMatcher>();
+  for (const matcher of matchers.map(normalizeAppMatcherDraft)) {
+    const key = `${matcher.kind}:${matcher.value}`;
+    if (!unique.has(key)) {
+      unique.set(key, matcher);
+    }
+  }
+  return [...unique.values()];
 }
 
 function minutesAfterMidnight(value: string): number {

@@ -198,6 +198,39 @@ fn controlled_app_rules_can_be_unlocked_by_rule_or_matcher_value() {
 }
 
 #[test]
+fn app_rules_match_stable_process_identifiers_case_insensitively() {
+    let config = Config::from_toml_str(
+        r#"
+        [[app_rules]]
+        id = "vlc-hard"
+        name = "VLC"
+        tier = "hard"
+        matchers = [
+          { kind = "command_name", value = "VLC" },
+          { kind = "executable_basename", value = "VLC" },
+          { kind = "desktop_id", value = "ORG.VIDEOLAN.VLC.DESKTOP" }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let process = ProcessIdentity {
+        pid: Some(4242),
+        executable_path: Some("/usr/bin/vlc".to_string()),
+        executable_basename: Some("vlc".to_string()),
+        command_name: Some("vlc".to_string()),
+        desktop_id: Some("org.videolan.vlc.desktop".to_string()),
+        window_titles: vec!["VLC media player".to_string()],
+    };
+
+    let ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    assert!(matches!(
+        evaluate_app(&process, &ctx),
+        Decision::Block(BlockReason::HardBlock { rule_id, .. }) if rule_id == "vlc-hard"
+    ));
+}
+
+#[test]
 fn controlled_app_allowances_use_recorded_runtime() {
     let config = Config::from_toml_str(
         r#"

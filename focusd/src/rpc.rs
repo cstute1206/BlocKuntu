@@ -3,18 +3,22 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelike, Utc};
 use focus_core::{
-    evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
-    AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision,
-    DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState, RuleConfig,
-    RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
+    evaluate_app, evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start,
+    request_unlock, AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason,
+    Decision, DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState,
+    RuleConfig, RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::app::is_blockuntu_process;
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
 use crate::error::{DaemonError, Result};
 use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
+use crate::process_scan::{
+    attach_detected_window_titles, scan_procfs, ProcessInfo, WindowTitleSupport,
+};
 
 const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
 const CHROME_EXTENSION_HEARTBEAT_COMPONENT: &str = "chrome_extension";
@@ -219,6 +223,12 @@ struct RecentEventsParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct ListRunningAppsParams {
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UpsertSiteListParams {
     rule: RuleConfig,
     #[serde(default)]
@@ -258,6 +268,26 @@ struct DeleteAppRuleParams {
     id: String,
     #[serde(default)]
     now: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunningAppSnapshot {
+    pid: u32,
+    display_name: String,
+    executable_path: Option<String>,
+    executable_basename: Option<String>,
+    command_name: Option<String>,
+    desktop_id: Option<String>,
+    window_titles: Vec<String>,
+    decision: &'static str,
+    blocking_rule_id: Option<String>,
+    blocking_rule_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunningAppsResponse {
+    apps: Vec<RunningAppSnapshot>,
+    window_detection: WindowTitleSupport,
 }
 
 #[derive(Debug, Deserialize)]
@@ -394,6 +424,10 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
         "recent_events" => {
             let params = parse_params::<RecentEventsParams>(params)?;
             recent_events(context, params)
+        }
+        "running_apps" => {
+            let params = parse_params::<ListRunningAppsParams>(params)?;
+            running_apps_method(context, params)
         }
         "evaluate_url" => {
             let params = parse_params::<EvaluateUrlParams>(params)?;
@@ -1263,6 +1297,99 @@ fn recent_events(context: &RpcContext, params: RecentEventsParams) -> Result<Val
     }
 
     Ok(json!({ "events": events }))
+}
+
+fn running_apps_method(context: &RpcContext, params: ListRunningAppsParams) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let mut processes = scan_procfs(Path::new("/proc"))?;
+    let window_snapshot = attach_detected_window_titles(&mut processes);
+
+    Ok(serde_json::to_value(RunningAppsResponse {
+        apps: running_app_snapshots_from_processes(context, &processes, now)?,
+        window_detection: window_snapshot.support,
+    })?)
+}
+
+fn running_app_snapshots_from_processes(
+    context: &RpcContext,
+    processes: &[ProcessInfo],
+    now: DateTime<FixedOffset>,
+) -> Result<Vec<RunningAppSnapshot>> {
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let eval_context = EvaluationContext::new(core.config(), core.database(), now);
+    let mut apps = processes
+        .iter()
+        .filter(|process| process.pid > 1 && process.pid != std::process::id())
+        .filter_map(|process| {
+            let identity = process.identity();
+            if is_blockuntu_process(&identity) {
+                return None;
+            }
+            running_app_snapshot_from_identity(process.pid, identity, &eval_context)
+        })
+        .collect::<Vec<_>>();
+
+    apps.sort_by(|left, right| {
+        left.display_name
+            .to_ascii_lowercase()
+            .cmp(&right.display_name.to_ascii_lowercase())
+            .then(left.pid.cmp(&right.pid))
+    });
+
+    Ok(apps)
+}
+
+fn running_app_snapshot_from_identity(
+    pid: u32,
+    identity: focus_core::ProcessIdentity,
+    context: &EvaluationContext<'_>,
+) -> Option<RunningAppSnapshot> {
+    let display_name = running_app_display_name(&identity)?;
+    let decision = evaluate_app(&identity, context);
+    let (decision_label, blocking_rule_id, blocking_rule_name) =
+        running_app_decision_details(&decision);
+
+    Some(RunningAppSnapshot {
+        pid,
+        display_name,
+        executable_path: identity.executable_path,
+        executable_basename: identity.executable_basename,
+        command_name: identity.command_name,
+        desktop_id: identity.desktop_id,
+        window_titles: identity.window_titles,
+        decision: decision_label,
+        blocking_rule_id,
+        blocking_rule_name,
+    })
+}
+
+fn running_app_display_name(process: &focus_core::ProcessIdentity) -> Option<String> {
+    process
+        .command_name
+        .clone()
+        .or_else(|| process.executable_basename.clone())
+        .or_else(|| process.desktop_id.clone())
+        .or_else(|| process.window_titles.first().cloned())
+}
+
+fn running_app_decision_details(
+    decision: &Decision,
+) -> (&'static str, Option<String>, Option<String>) {
+    match decision {
+        Decision::Allow => ("allow", None, None),
+        Decision::Block(BlockReason::HardBlock { rule_id, rule_name }) => {
+            ("block", Some(rule_id.clone()), Some(rule_name.clone()))
+        }
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id, rule_name, ..
+        }) => ("block", Some(rule_id.clone()), Some(rule_name.clone())),
+        Decision::Block(BlockReason::Detox {
+            rule_id, rule_name, ..
+        }) => ("block", Some(rule_id.clone()), Some(rule_name.clone())),
+        Decision::Block(BlockReason::InvalidUrl { .. } | BlockReason::RuntimeError { .. }) => {
+            ("block", None, None)
+        }
+    }
 }
 
 fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Result<Value> {
@@ -2264,7 +2391,10 @@ mod tests {
     use crate::firefox_policy::FirefoxPolicyManager;
     use crate::hosts::HostsManager;
 
-    use super::{handle_payload, parse_optional_now, RpcContext};
+    use super::{
+        handle_payload, parse_optional_now, running_app_snapshots_from_processes, RpcContext,
+    };
+    use crate::process_scan::ProcessInfo;
 
     fn rpc_context() -> RpcContext {
         rpc_context_with_config_toml(
@@ -2853,6 +2983,53 @@ mod tests {
             .expect("app rules should be an array")
             .iter()
             .any(|rule| rule["id"] == "kmines-hard"));
+    }
+
+    #[test]
+    fn running_apps_reports_detected_identity_and_block_state() {
+        let context = rpc_context_with_config_toml(
+            r#"
+            [[app_rules]]
+            id = "vlc-hard"
+            name = "VLC"
+            tier = "hard"
+            matchers = [
+              { kind = "command_name", value = "VLC" },
+              { kind = "desktop_id", value = "ORG.VIDEOLAN.VLC.DESKTOP" }
+            ]
+            "#,
+        );
+        let processes = vec![
+            ProcessInfo {
+                pid: 7,
+                executable_path: Some("/usr/bin/blockuntu-gui".into()),
+                executable_basename: Some("blockuntu-gui".into()),
+                command_name: Some("blockuntu-gui".into()),
+                desktop_id: Some("blockuntu.desktop".into()),
+                window_titles: vec!["BlocKuntu".into()],
+            },
+            ProcessInfo {
+                pid: 4242,
+                executable_path: Some("/usr/bin/vlc".into()),
+                executable_basename: Some("vlc".into()),
+                command_name: Some("vlc".into()),
+                desktop_id: Some("org.videolan.vlc.desktop".into()),
+                window_titles: vec!["VLC media player".into()],
+            },
+        ];
+
+        let apps = running_app_snapshots_from_processes(
+            &context,
+            &processes,
+            parse_optional_now(Some("2026-06-19T10:00:00Z".to_string())).unwrap(),
+        )
+        .expect("running app snapshots should build");
+
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].display_name, "vlc");
+        assert_eq!(apps[0].decision, "block");
+        assert_eq!(apps[0].blocking_rule_id.as_deref(), Some("vlc-hard"));
+        assert_eq!(apps[0].blocking_rule_name.as_deref(), Some("VLC"));
     }
 
     #[test]

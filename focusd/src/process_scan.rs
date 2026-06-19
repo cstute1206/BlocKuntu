@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{DaemonError, Result};
 use focus_core::ProcessIdentity;
+use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessInfo {
@@ -32,6 +34,20 @@ pub trait ProcessKiller {
 
 pub trait WindowTitleProvider {
     fn titles_by_pid(&self) -> Result<HashMap<u32, Vec<String>>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WindowTitleSupport {
+    pub available: bool,
+    pub provider: Option<String>,
+    pub session_type: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowTitleSnapshot {
+    pub titles_by_pid: HashMap<u32, Vec<String>>,
+    pub support: WindowTitleSupport,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -103,6 +119,12 @@ pub fn scan_procfs(proc_root: &Path) -> Result<Vec<ProcessInfo>> {
     }
 
     Ok(processes)
+}
+
+pub fn attach_detected_window_titles(processes: &mut [ProcessInfo]) -> WindowTitleSnapshot {
+    let snapshot = detect_window_titles(processes);
+    merge_titles_into_processes(processes, &snapshot.titles_by_pid);
+    snapshot
 }
 
 pub fn attach_window_titles<P: WindowTitleProvider>(
@@ -237,6 +259,47 @@ fn parse_wmctrl_titles(output: &str) -> HashMap<u32, Vec<String>> {
         titles.entry(pid).or_default().push(title);
     }
     titles
+}
+
+fn detect_window_titles(_processes: &[ProcessInfo]) -> WindowTitleSnapshot {
+    let session_type = env::var("XDG_SESSION_TYPE")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let available = matches!(session_type.as_deref(), Some("x11"));
+    let titles_by_pid = if available {
+        WmctrlWindowTitleProvider
+            .titles_by_pid()
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
+    let detail = if available {
+        "Open windows uses wmctrl and is only supported on X11.".to_string()
+    } else {
+        "Open windows is unavailable in this session. BlocKuntu only supports window-based filtering on X11 via wmctrl.".to_string()
+    };
+
+    WindowTitleSnapshot {
+        titles_by_pid,
+        support: WindowTitleSupport {
+            available,
+            provider: available.then_some("wmctrl".to_string()),
+            session_type,
+            detail,
+        },
+    }
+}
+
+fn merge_titles_into_processes(
+    processes: &mut [ProcessInfo],
+    titles_by_pid: &HashMap<u32, Vec<String>>,
+) {
+    for process in processes {
+        if let Some(process_titles) = titles_by_pid.get(&process.pid) {
+            process.window_titles = process_titles.clone();
+        }
+    }
 }
 
 #[cfg(test)]

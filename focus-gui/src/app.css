@@ -454,6 +454,10 @@ button:disabled {
   gap: 10px;
 }
 
+.compact-row {
+  flex-wrap: wrap;
+}
+
 .unlock-grid,
 .form-grid {
   display: grid;
@@ -476,6 +480,11 @@ button:disabled {
 
 .danger-text {
   color: #8b1d1d;
+}
+
+.detected-app-note {
+  color: #5f6d67;
+  margin-top: 8px;
 }
 
 .split-view {
@@ -512,6 +521,14 @@ button:disabled {
   font-weight: 800;
   margin: 14px 0 8px;
   text-transform: uppercase;
+}
+
+.section-label-spaced {
+  margin-top: 18px;
+}
+
+.section-label-tight {
+  margin-top: 4px;
 }
 
 .check-row,
@@ -702,6 +719,60 @@ button:disabled {
   color: #65746d;
   font-size: 0.76rem;
   font-style: normal;
+}
+
+.detected-app-list {
+  max-height: 360px;
+  margin-top: 10px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.detected-app-item {
+  background: #f5f7f5;
+  border: 1px solid #dfe6e1;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.detected-app-header {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.detected-app-header strong {
+  color: #26312c;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detected-app-meta {
+  color: #65746d;
+  font-size: 0.82rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detected-app-toolbar {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(180px, 1fr) repeat(2, max-content) max-content max-content;
+}
+
+.detected-search-field input {
+  width: 100%;
+}
+
+.detected-app-summary {
+  color: #65746d;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  justify-self: end;
 }
 
 .tier-dot {
@@ -1054,6 +1125,7 @@ pre {
     .split-view,
     .setup-grid,
     .allowance-editor,
+    .detected-app-toolbar,
     .detox-form,
     .tier1-edit-form,
     .uninstall-form {
@@ -1067,6 +1139,10 @@ pre {
 
   .detox-session-meta {
     justify-items: start;
+  }
+
+  .detected-app-summary {
+    justify-self: start;
   }
 
   .topbar {

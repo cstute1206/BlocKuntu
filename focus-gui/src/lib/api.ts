@@ -8,6 +8,7 @@ import type {
   DetoxSessionsResponse,
   EnforcementStatus,
   EventsResponse,
+  RunningAppsResponse,
   AppRule,
   Allowance,
   Rule,
@@ -154,6 +155,10 @@ export function cancelDetox(id: string, socketPath?: string): Promise<DetoxMutat
 
 export function recentEvents(limit = 50, socketPath?: string): Promise<EventsResponse> {
   return invoke("recent_events", { limit, socketPath });
+}
+
+export function runningApps(socketPath?: string): Promise<RunningAppsResponse> {
+  return daemonRpc("running_apps", { now: new Date().toISOString() }, socketPath) as Promise<RunningAppsResponse>;
 }
 
 export function systemHealth(socketPath?: string): Promise<SystemHealth> {

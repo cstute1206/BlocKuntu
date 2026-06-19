@@ -347,6 +347,15 @@ pub enum AppMatcherKind {
     WindowTitleContains,
 }
 
+impl AppMatcherKind {
+    pub fn matches_case_insensitively(self) -> bool {
+        matches!(
+            self,
+            Self::ExecutableBasename | Self::CommandName | Self::DesktopId
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleTier {

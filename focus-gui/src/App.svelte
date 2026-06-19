@@ -33,6 +33,7 @@
     enforcementStatus,
     evaluateUrl,
     recentEvents,
+    runningApps as fetchRunningApps,
     requestUnlock,
     startDetox,
     systemHealth,
@@ -52,10 +53,12 @@
     cloneAppRule,
     cloneRule,
     cloneSchedule,
+    detectedMatchersForRunningApp,
     defaultAllowanceForRule,
     firstRunOverviewDismissed,
     formatError,
     markFirstRunOverviewDismissed,
+    mergeAppMatchers,
     nextAvailableIndexedId,
     normalizeAllowanceDraft,
     normalizeAppRuleDraft,
@@ -71,6 +74,8 @@
     DetoxSession,
     EnforcementStatus,
     RecentEvent,
+    RunningApp,
+    WindowDetectionStatus,
     Rule,
     Schedule,
     SystemHealth,
@@ -105,6 +110,11 @@
   let config = $state<ConfigSnapshot | null>(null);
   let detoxSessionList = $state<DetoxSession[]>([]);
   let events = $state<RecentEvent[]>([]);
+  let runningApps = $state<RunningApp[]>([]);
+  let runningAppsWindowDetection = $state<WindowDetectionStatus | null>(null);
+  let runningAppsLoading = $state(false);
+  let runningAppsError: string | null = $state(null);
+  let runningAppsLoadedOnce = $state(false);
   let loading = $state(false);
   let lastError: string | null = $state(null);
   let lastRefresh: string | null = $state(null);
@@ -203,7 +213,7 @@
 
     void listen<string>(TRAY_OPEN_VIEW_EVENT, (event) => {
       if (isViewId(event.payload)) {
-        activeView = event.payload;
+        setActiveView(event.payload);
         void refreshAll({ silent: true });
       }
     }).then((unlisten) => {
@@ -241,6 +251,14 @@
     return undefined;
   }
 
+  function setActiveView(view: ViewId): void {
+    activeView = view;
+    if (view === "apps" && !runningAppsLoadedOnce && !runningAppsLoading) {
+      runningAppsLoadedOnce = true;
+      void refreshRunningApps({ silent: true });
+    }
+  }
+
   async function refreshRuntime(options: RefreshOptions = {}): Promise<void> {
     if (refreshInFlight) return;
 
@@ -275,6 +293,9 @@
         healthResult,
         tier1EditStatusResult
       );
+      if (activeView === "apps") {
+        void refreshRunningApps({ silent: true });
+      }
       lastRefresh = new Date().toLocaleTimeString();
     } finally {
       refreshInFlight = false;
@@ -326,6 +347,10 @@
         syncConfigSelection(configResult.value);
       }
 
+      if (activeView === "apps" || runningAppsLoadedOnce) {
+        void refreshRunningApps({ silent: true });
+      }
+
       lastRefresh = new Date().toLocaleTimeString();
     } finally {
       refreshInFlight = false;
@@ -372,6 +397,26 @@
       tier1EditUnlockedUntil = tier1EditStatusResult.value.active
         ? (tier1EditStatusResult.value.expires_at ?? null)
         : null;
+    }
+  }
+
+  async function refreshRunningApps(options: RefreshOptions = {}): Promise<void> {
+    if (runningAppsLoading) return;
+
+    runningAppsLoading = true;
+    if (!options.silent) {
+      runningAppsError = null;
+    }
+
+    try {
+      const response = await fetchRunningApps(socketArg());
+      runningApps = response.apps;
+      runningAppsWindowDetection = response.window_detection;
+      runningAppsError = null;
+    } catch (error) {
+      runningAppsError = formatError(error);
+    } finally {
+      runningAppsLoading = false;
     }
   }
 
@@ -770,6 +815,27 @@
     appRuleMessage = null;
   }
 
+  function startNewAppRuleFromRunningApp(app: RunningApp): void {
+    startNewAppRule();
+    if (!appRuleDraft) return;
+    appRuleDraft.name = app.display_name;
+    appRuleDraft.matchers = detectedMatchersForRunningApp(app);
+    appRuleMessage = `Loaded detected matchers from PID ${app.pid}.`;
+  }
+
+  function addDetectedMatchersToDraft(app: RunningApp): void {
+    if (!appRuleDraft) {
+      startNewAppRuleFromRunningApp(app);
+      return;
+    }
+
+    appRuleDraft.matchers = mergeAppMatchers(
+      appRuleDraft.matchers,
+      detectedMatchersForRunningApp(app)
+    );
+    appRuleMessage = `Merged detected matchers from PID ${app.pid}.`;
+  }
+
   async function saveAppRuleDraft(): Promise<void> {
     if (!appRuleDraft) return;
     appRuleSaving = true;
@@ -912,7 +978,7 @@
         <button
           class:active={activeView === item.id}
           title={item.label}
-          onclick={() => (activeView = item.id)}
+          onclick={() => setActiveView(item.id)}
         >
           <IconComponent size={18} aria-hidden="true" />
           <span>{item.label}</span>
@@ -994,6 +1060,10 @@
     {:else if activeView === "apps"}
       <AppRulesView
         {config}
+        {runningApps}
+        runningAppsWindowDetection={runningAppsWindowDetection}
+        {runningAppsLoading}
+        {runningAppsError}
         bind:appRuleDraft
         bind:appRuleAllowanceDraft
         {appRuleSaving}
@@ -1001,6 +1071,9 @@
         {activeDetoxAppRuleIds}
         onSelectAppRule={selectAppRule}
         onStartNewAppRule={startNewAppRule}
+        onStartNewAppRuleFromRunningApp={startNewAppRuleFromRunningApp}
+        onAddDetectedMatchers={addDetectedMatchersToDraft}
+        onRefreshRunningApps={() => refreshRunningApps()}
         onSaveAppRuleDraft={saveAppRuleDraft}
         onRemoveAppRuleDraft={removeAppRuleDraft}
       />

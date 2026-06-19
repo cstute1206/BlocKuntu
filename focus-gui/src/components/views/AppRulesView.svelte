@@ -1,10 +1,20 @@
 <script lang="ts">
-  import { AlertTriangle, Gamepad2, Plus, Save, Trash2 } from "@lucide/svelte";
+  import { AlertTriangle, Gamepad2, Plus, RefreshCw, Save, Trash2 } from "@lucide/svelte";
   import { appMatcherKinds, appRuleIsActive, defaultAllowanceForRule } from "../../lib/ui";
-  import type { Allowance, AppRule, ConfigSnapshot } from "../../lib/types";
+  import type {
+    Allowance,
+    AppRule,
+    ConfigSnapshot,
+    RunningApp,
+    WindowDetectionStatus
+  } from "../../lib/types";
 
   interface Props {
     config: ConfigSnapshot | null;
+    runningApps: RunningApp[];
+    runningAppsWindowDetection: WindowDetectionStatus | null;
+    runningAppsLoading: boolean;
+    runningAppsError: string | null;
     appRuleDraft?: AppRule | null;
     appRuleAllowanceDraft?: Allowance | null;
     appRuleSaving: boolean;
@@ -12,12 +22,19 @@
     activeDetoxAppRuleIds?: string[];
     onSelectAppRule: (rule: AppRule) => void;
     onStartNewAppRule: () => void;
+    onStartNewAppRuleFromRunningApp: (app: RunningApp) => void;
+    onAddDetectedMatchers: (app: RunningApp) => void;
+    onRefreshRunningApps: () => void | Promise<void>;
     onSaveAppRuleDraft: () => void | Promise<void>;
     onRemoveAppRuleDraft: () => void | Promise<void>;
   }
 
   let {
     config,
+    runningApps,
+    runningAppsWindowDetection,
+    runningAppsLoading,
+    runningAppsError,
     appRuleDraft = $bindable<AppRule | null>(null),
     appRuleAllowanceDraft = $bindable<Allowance | null>(null),
     appRuleSaving,
@@ -25,6 +42,9 @@
     activeDetoxAppRuleIds = [],
     onSelectAppRule,
     onStartNewAppRule,
+    onStartNewAppRuleFromRunningApp,
+    onAddDetectedMatchers,
+    onRefreshRunningApps,
     onSaveAppRuleDraft,
     onRemoveAppRuleDraft
   }: Props = $props();
@@ -42,6 +62,39 @@
         (appRuleDraftDetoxLocked || appRuleIsActive(savedAppRule, config?.schedules ?? []))
     )
   );
+  let detectedSearch = $state("");
+  let detectedOpenWindowsRequested = $state(false);
+  let detectedOpenWindowsOnly = $derived(
+    Boolean(runningAppsWindowDetection?.available) && detectedOpenWindowsRequested
+  );
+  let detectedBlockedOnly = $state(false);
+
+  let filteredRunningApps = $derived.by(() => {
+    const query = detectedSearch.trim().toLowerCase();
+
+    return runningApps.filter((app) => {
+      if (detectedOpenWindowsOnly && app.window_titles.length === 0) {
+        return false;
+      }
+      if (detectedBlockedOnly && app.decision !== "block") {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+
+      return [
+        app.display_name,
+        app.command_name,
+        app.executable_basename,
+        app.executable_path,
+        app.desktop_id,
+        ...app.window_titles
+      ]
+        .filter((value): value is string => Boolean(value))
+        .some((value) => value.toLowerCase().includes(query));
+    });
+  });
 
   function addAppMatcher(): void {
     if (!appRuleDraft) return;
@@ -81,24 +134,84 @@
   <article class="panel list-panel">
     <div class="panel-title">
       <Gamepad2 size={18} aria-hidden="true" />
-      <h2>Applications</h2>
+      <h2>Detected apps</h2>
     </div>
-    <button class="secondary wide-button" onclick={onStartNewAppRule}>
-      <Plus size={17} aria-hidden="true" />
-      <span>New application</span>
-    </button>
-    <div class="rule-list">
-      {#each config?.app_rules ?? [] as rule (rule.id)}
-        <button
-          class:active={appRuleDraft?.id === rule.id}
-          onclick={() => onSelectAppRule(rule)}
-        >
-          <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
-          <span>{rule.name}</span>
-          <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
-        </button>
+    <div class="detected-app-toolbar">
+      <label class="detected-search-field">
+        <input bind:value={detectedSearch} placeholder="Search" />
+      </label>
+      <label class="chip-check">
+        <input
+          type="checkbox"
+          checked={detectedOpenWindowsOnly}
+          disabled={!runningAppsWindowDetection?.available}
+          onchange={(event) => {
+            detectedOpenWindowsRequested = event.currentTarget.checked;
+          }}
+        />
+        <span>Open windows</span>
+      </label>
+      <label class="chip-check">
+        <input type="checkbox" bind:checked={detectedBlockedOnly} />
+        <span>Blocked</span>
+      </label>
+      <button class="secondary" onclick={onRefreshRunningApps} disabled={runningAppsLoading}>
+        <RefreshCw size={16} aria-hidden="true" />
+        <span>{runningAppsLoading ? "Refreshing" : "Refresh"}</span>
+      </button>
+      <span class="detected-app-summary">{filteredRunningApps.length} / {runningApps.length}</span>
+    </div>
+    {#if runningAppsError}
+      <p class="danger-text">{runningAppsError}</p>
+    {/if}
+    {#if runningAppsWindowDetection && !runningAppsWindowDetection.available}
+      <p class="result-text detected-app-note">{runningAppsWindowDetection.detail}</p>
+    {/if}
+    <div class="rule-list detected-app-list">
+      {#each filteredRunningApps as app (`${app.pid}-${app.display_name}`)}
+        <article class="detected-app-item">
+          <div class="detected-app-header">
+            <strong>{app.display_name}</strong>
+            <em>{app.decision === "block" ? "Blocked" : "Allowed"}</em>
+          </div>
+          <p class="detected-app-meta">PID {app.pid}</p>
+          {#if app.command_name}
+            <p class="detected-app-meta">Command: {app.command_name}</p>
+          {/if}
+          {#if app.executable_basename}
+            <p class="detected-app-meta">Binary: {app.executable_basename}</p>
+          {/if}
+          {#if app.executable_path}
+            <p class="detected-app-meta">Path: {app.executable_path}</p>
+          {/if}
+          {#if app.desktop_id}
+            <p class="detected-app-meta">Desktop ID: {app.desktop_id}</p>
+          {/if}
+          {#if app.window_titles.length > 0}
+            <p class="detected-app-meta">Title: {app.window_titles[0]}</p>
+          {/if}
+          {#if app.blocking_rule_name}
+            <p class="detected-app-meta">Rule: {app.blocking_rule_name}</p>
+          {/if}
+          <div class="button-row compact-row">
+            <button class="secondary" onclick={() => onStartNewAppRuleFromRunningApp(app)}>
+              <Plus size={16} aria-hidden="true" />
+              <span>New rule</span>
+            </button>
+            {#if appRuleDraft}
+              <button
+                class="secondary"
+                onclick={() => onAddDetectedMatchers(app)}
+                disabled={appRuleDraftLocked}
+              >
+                <Plus size={16} aria-hidden="true" />
+                <span>Merge</span>
+              </button>
+            {/if}
+          </div>
+        </article>
       {:else}
-        <p class="empty-state">No applications reported by the daemon.</p>
+        <p class="empty-state">No running apps match the current filters.</p>
       {/each}
     </div>
   </article>
@@ -108,6 +221,10 @@
       <Gamepad2 size={18} aria-hidden="true" />
       <h2>{appRuleDraft?.name || "Application"}</h2>
     </div>
+    <button class="secondary wide-button" onclick={onStartNewAppRule}>
+      <Plus size={17} aria-hidden="true" />
+      <span>New application</span>
+    </button>
     {#if appRuleDraft}
       {#if appRuleDraftLocked}
         <section class="inline-warning">
@@ -182,7 +299,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each appRuleDraft.matchers as matcher, index (matcher)}
+            {#each appRuleDraft.matchers as matcher, index (index)}
               <tr>
                 <td>
                   <select bind:value={matcher.kind} disabled={appRuleDraftLocked}>
@@ -236,5 +353,21 @@
         <p class="result-text">{appRuleMessage}</p>
       {/if}
     {/if}
+
+    <div class="section-label">Saved applications</div>
+    <div class="rule-list">
+      {#each config?.app_rules ?? [] as rule (rule.id)}
+        <button
+          class:active={appRuleDraft?.id === rule.id}
+          onclick={() => onSelectAppRule(rule)}
+        >
+          <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
+          <span>{rule.name}</span>
+          <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
+        </button>
+      {:else}
+        <p class="empty-state">No saved application rules yet.</p>
+      {/each}
+    </div>
   </article>
 </section>
