@@ -124,6 +124,7 @@ export function normalizeRuleDraft(rule: Rule): Rule {
     ...rule,
     id: rule.id.trim(),
     name: rule.name.trim(),
+    enabled: true,
     allowance_id:
       rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
     unlock_policy: null,
@@ -152,6 +153,7 @@ export function normalizeAppRuleDraft(rule: AppRule): AppRule {
     ...rule,
     id: rule.id.trim(),
     name: rule.name.trim(),
+    enabled: true,
     allowance_id:
       rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
     unlock_policy: null,
@@ -173,8 +175,8 @@ export function normalizeScheduleDraft(schedule: Schedule): Schedule {
 }
 
 export function ruleIsActive(rule: Rule, schedules: Schedule[]): boolean {
-  if (!rule.enabled) return false;
-  if (rule.schedule_ids.length === 0) return true;
+  if (rule.tier === "hard") return true;
+  if (rule.schedule_ids.length === 0) return false;
 
   return rule.schedule_ids.some((scheduleId) => {
     const schedule = schedules.find((candidate) => candidate.id === scheduleId);
@@ -183,8 +185,8 @@ export function ruleIsActive(rule: Rule, schedules: Schedule[]): boolean {
 }
 
 export function appRuleIsActive(rule: AppRule, schedules: Schedule[]): boolean {
-  if (!rule.enabled) return false;
-  if (rule.schedule_ids.length === 0) return true;
+  if (rule.tier === "hard") return true;
+  if (rule.schedule_ids.length === 0) return false;
 
   return rule.schedule_ids.some((scheduleId) => {
     const schedule = schedules.find((candidate) => candidate.id === scheduleId);

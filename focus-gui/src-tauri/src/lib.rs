@@ -1080,9 +1080,9 @@ fn unsupported_browser_rule_check(socket_path: &str) -> HealthCheck {
                     HealthState::Error
                 },
                 detail: if hard_enabled {
-                    format!("Tier 1 hard app rule active with {matcher_count} matcher(s)")
+                    format!("Tier 1 hard application rule active with {matcher_count} matcher(s)")
                 } else {
-                    "mandatory Tier 1 hard app rule is missing or disabled".to_string()
+                    "mandatory Tier 1 hard application rule is missing".to_string()
                 },
             }
         }

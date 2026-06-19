@@ -238,7 +238,7 @@ write managed policy once the integration is proven alive.
 
 ### Hosts Fallback
 
-`focusd` renders a managed block in the hosts file for enabled Tier 1 domain
+`focusd` renders a managed block in the hosts file for Tier 1 domain
 patterns:
 
 ```text

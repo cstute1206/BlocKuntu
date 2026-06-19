@@ -90,11 +90,11 @@
   <article class="panel list-panel">
     <div class="panel-title">
       <ListChecks size={18} aria-hidden="true" />
-      <h2>Site Lists</h2>
+      <h2>Websites</h2>
     </div>
     <button class="secondary wide-button" onclick={onStartNewRule}>
       <Plus size={17} aria-hidden="true" />
-      <span>New list</span>
+      <span>New website</span>
     </button>
     <div class="rule-list">
       {#each config?.rules ?? [] as rule (rule.id)}
@@ -104,7 +104,7 @@
           <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
         </button>
       {:else}
-        <p class="empty-state">No lists reported by the daemon.</p>
+        <p class="empty-state">No websites reported by the daemon.</p>
       {/each}
     </div>
   </article>
@@ -112,7 +112,7 @@
   <article class="panel detail-panel">
     <div class="panel-title">
       <Shield size={18} aria-hidden="true" />
-      <h2>{ruleDraft?.name || "Site list"}</h2>
+      <h2>{ruleDraft?.name || "Website"}</h2>
     </div>
     {#if ruleDraft}
       {#if ruleDraftLocked}
@@ -120,8 +120,8 @@
           <AlertTriangle size={17} aria-hidden="true" />
           <span>
             {ruleDraftDetoxLocked
-              ? "This list is covered by an active detox session."
-              : "This list is active right now."}
+              ? "This website is covered by an active detox session."
+              : "This website is active right now."}
           </span>
         </section>
       {/if}
@@ -142,11 +142,6 @@
           </select>
         </label>
       </div>
-
-      <label class="check-row">
-        <input type="checkbox" bind:checked={ruleDraft.enabled} disabled={ruleDraftLocked} />
-        <span>Enabled</span>
-      </label>
 
       {#if ruleDraft.tier === "controlled_access"}
         <div class="section-label">Daily allowance</div>

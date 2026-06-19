@@ -133,9 +133,9 @@ impl HostsManager {
             normalize_line_endings(&current) == normalize_line_endings(&expected);
         let (immutable_state, immutable_detail) = self.immutable_status();
         let detail = if managed_block_compliant {
-            "managed hosts block matches enabled Tier 1 domain rules".to_string()
+            "managed hosts block matches Tier 1 domain rules".to_string()
         } else {
-            "managed hosts block is missing or differs from enabled Tier 1 domain rules".to_string()
+            "managed hosts block is missing or differs from Tier 1 domain rules".to_string()
         };
 
         HostsFileStatus {
@@ -230,7 +230,7 @@ fn managed_domains(config: &Config) -> BTreeSet<String> {
     for rule in config
         .rules
         .iter()
-        .filter(|rule| rule.enabled && rule.tier == RuleTier::Hard)
+        .filter(|rule| rule.tier == RuleTier::Hard)
     {
         for pattern in rule
             .patterns

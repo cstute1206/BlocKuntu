@@ -90,8 +90,8 @@
 
   const navItems: Array<{ id: ViewId; label: string; icon: Icon }> = [
     { id: "overview", label: "Dashboard", icon: LayoutDashboard },
-    { id: "blocks", label: "Lists", icon: ListChecks },
-    { id: "apps", label: "Apps", icon: Gamepad2 },
+    { id: "blocks", label: "Websites", icon: ListChecks },
+    { id: "apps", label: "Applications", icon: Gamepad2 },
     { id: "detox", label: "Detox", icon: Timer },
     { id: "schedule", label: "Schedule", icon: CalendarDays },
     { id: "statistics", label: "Statistics", icon: BarChart3 },
@@ -410,10 +410,10 @@
     }
 
     selectedDetoxSiteRuleIds = selectedDetoxSiteRuleIds.filter((ruleId) =>
-      snapshot.rules.some((rule) => rule.id === ruleId && rule.enabled)
+      snapshot.rules.some((rule) => rule.id === ruleId && rule.tier === "controlled_access")
     );
     selectedDetoxAppRuleIds = selectedDetoxAppRuleIds.filter((ruleId) =>
-      snapshot.app_rules.some((rule) => rule.id === ruleId && rule.enabled)
+      snapshot.app_rules.some((rule) => rule.id === ruleId && rule.tier === "controlled_access")
     );
   }
 
@@ -666,7 +666,7 @@
     selectedRuleId = null;
     const newRule: Rule = {
       id,
-      name: `Site list ${index}`,
+      name: `Website ${index}`,
       tier: "controlled_access",
       enabled: true,
       patterns: [{ kind: "domain", value: "example.com", match_subdomains: true }],
@@ -758,7 +758,7 @@
     selectedAppRuleId = null;
     appRuleDraft = {
       id,
-      name: `App rule ${index}`,
+      name: `Application ${index}`,
       tier: "hard",
       enabled: true,
       matchers: [{ kind: "command_name", value: "kmines" }],

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-9"
+VERSION="0.1.0-10"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
@@ -22,7 +22,7 @@ time; policy repair is deferred until the first browser-extension heartbeat.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-9.
+  --version VERSION   Package version, default 0.1.0-10.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE

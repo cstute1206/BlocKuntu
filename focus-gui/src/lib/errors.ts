@@ -115,6 +115,18 @@ function errorDataToMessage(data: unknown): string | null {
   }
 }
 
+function humanizePolicyNouns(message: string): string {
+  return message
+    .replace(/Site lists/g, "Websites")
+    .replace(/site lists/g, "websites")
+    .replace(/Site list/g, "Website")
+    .replace(/site list/g, "website")
+    .replace(/App rules/g, "Applications")
+    .replace(/app rules/g, "applications")
+    .replace(/App rule/g, "Application")
+    .replace(/app rule/g, "application");
+}
+
 function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string {
   const normalized = stripKnownPrefixes(detail.trim(), [
     "invalid request:",
@@ -126,28 +138,28 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
     /^site list '([^']+)' is currently active and cannot be edited$/
   );
   if (activeSiteList) {
-    return `Site list "${activeSiteList[1]}" is active right now, so it cannot be edited. Wait until it is inactive, then try again.`;
+    return `Website "${activeSiteList[1]}" is active right now, so it cannot be edited. Wait until it is inactive, then try again.`;
   }
 
   const activeAppRule = normalized.match(
     /^app rule '([^']+)' is currently active and cannot be edited$/
   );
   if (activeAppRule) {
-    return `App rule "${activeAppRule[1]}" is active right now, so it cannot be edited. Wait until it is inactive, then try again.`;
+    return `Application "${activeAppRule[1]}" is active right now, so it cannot be edited. Wait until it is inactive, then try again.`;
   }
 
   const detoxSiteList = normalized.match(
     /^site list '([^']+)' is covered by an active detox session and cannot be edited$/
   );
   if (detoxSiteList) {
-    return `Site list "${detoxSiteList[1]}" is covered by an active detox session. Cancel the detox session from Admin-unlocked Detox before editing it.`;
+    return `Website "${detoxSiteList[1]}" is covered by an active detox session. Cancel the detox session from Admin-unlocked Detox before editing it.`;
   }
 
   const detoxAppRule = normalized.match(
     /^app rule '([^']+)' is covered by an active detox session and cannot be edited$/
   );
   if (detoxAppRule) {
-    return `App rule "${detoxAppRule[1]}" is covered by an active detox session. Cancel the detox session from Admin-unlocked Detox before editing it.`;
+    return `Application "${detoxAppRule[1]}" is covered by an active detox session. Cancel the detox session from Admin-unlocked Detox before editing it.`;
   }
 
   const activeSchedule = normalized.match(
@@ -166,12 +178,12 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
 
   const missingSiteList = normalized.match(/^site list '([^']+)' does not exist$/);
   if (missingSiteList) {
-    return `Site list "${missingSiteList[1]}" no longer exists. Refresh the GUI and try again.`;
+    return `Website "${missingSiteList[1]}" no longer exists. Refresh the GUI and try again.`;
   }
 
   const missingAppRule = normalized.match(/^app rule '([^']+)' does not exist$/);
   if (missingAppRule) {
-    return `App rule "${missingAppRule[1]}" no longer exists. Refresh the GUI and try again.`;
+    return `Application "${missingAppRule[1]}" no longer exists. Refresh the GUI and try again.`;
   }
 
   const missingSchedule = normalized.match(/^schedule '([^']+)' does not exist$/);
@@ -188,14 +200,14 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
     /^allowance '([^']+)' is still used by site list '([^']+)'$/
   );
   if (allowanceUsedBySiteList) {
-    return `Allowance "${allowanceUsedBySiteList[1]}" is still used by site list "${allowanceUsedBySiteList[2]}". Remove it from that list before deleting it.`;
+    return `Allowance "${allowanceUsedBySiteList[1]}" is still used by website "${allowanceUsedBySiteList[2]}". Remove it from that website before deleting it.`;
   }
 
   const allowanceUsedByAppRule = normalized.match(
     /^allowance '([^']+)' is still used by app rule '([^']+)'$/
   );
   if (allowanceUsedByAppRule) {
-    return `Allowance "${allowanceUsedByAppRule[1]}" is still used by app rule "${allowanceUsedByAppRule[2]}". Remove it from that app rule before deleting it.`;
+    return `Allowance "${allowanceUsedByAppRule[1]}" is still used by application "${allowanceUsedByAppRule[2]}". Remove it from that application before deleting it.`;
   }
 
   const hardBlockedTarget = normalized.match(
@@ -233,7 +245,7 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   }
 
   if (normalized === "unlock target is empty") {
-    return "Enter a website URL or app rule target before requesting an unlock.";
+    return "Enter a website URL or application target before requesting an unlock.";
   }
 
   if (normalized === "unlock reason is required") {
@@ -257,7 +269,7 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   }
 
   if (normalized === "detox needs at least one site list or app rule") {
-    return "Select at least one site list or app rule before starting detox.";
+    return "Select at least one website or application before starting detox.";
   }
 
   const missingDetox = normalized.match(/^detox session '([^']+)' does not exist$/);
@@ -274,26 +286,26 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   }
 
   if (normalized.startsWith("rule ") || normalized.startsWith("app rule ")) {
-    return `Policy validation failed: ${capitalizeSentence(normalized)}.`;
+    return `Policy validation failed: ${capitalizeSentence(humanizePolicyNouns(normalized))}.`;
   }
 
   if (rpcMessage === "invalid params") {
-    return capitalizeSentence(normalized);
+    return capitalizeSentence(humanizePolicyNouns(normalized));
   }
 
   if (rpcMessage === "method not found") {
-    return `The daemon does not support this request yet: ${normalized}.`;
+    return `The daemon does not support this request yet: ${humanizePolicyNouns(normalized)}.`;
   }
 
   if (rpcMessage === "internal error") {
-    return `The daemon hit an internal error: ${normalized}.`;
+    return `The daemon hit an internal error: ${humanizePolicyNouns(normalized)}.`;
   }
 
-  return humanizeErrorMessage(normalized);
+  return humanizeErrorMessage(humanizePolicyNouns(normalized));
 }
 
 function humanizeErrorMessage(message: string): string {
-  const normalized = message.trim();
+  const normalized = humanizePolicyNouns(message.trim());
 
   if (!normalized) {
     return "Something went wrong, but no error message was returned.";

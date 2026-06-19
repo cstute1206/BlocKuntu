@@ -41,8 +41,12 @@
     { label: "4h", minutes: 240 }
   ];
 
-  let enabledSiteRules = $derived(config?.rules.filter((rule) => rule.enabled) ?? []);
-  let enabledAppRules = $derived(config?.app_rules.filter((rule) => rule.enabled) ?? []);
+  let detoxSiteRules = $derived(
+    config?.rules.filter((rule) => rule.tier === "controlled_access") ?? []
+  );
+  let detoxAppRules = $derived(
+    config?.app_rules.filter((rule) => rule.tier === "controlled_access") ?? []
+  );
   let activeSessions = $derived(
     detoxSessions.filter(
       (session) =>
@@ -101,8 +105,9 @@
     const siteCount = session.site_rule_ids.length;
     const appCount = session.app_rule_ids.length;
     const parts = [];
-    if (siteCount > 0) parts.push(`${siteCount} site ${siteCount === 1 ? "list" : "lists"}`);
-    if (appCount > 0) parts.push(`${appCount} app ${appCount === 1 ? "rule" : "rules"}`);
+    if (siteCount > 0) parts.push(`${siteCount} ${siteCount === 1 ? "website" : "websites"}`);
+    if (appCount > 0)
+      parts.push(`${appCount} ${appCount === 1 ? "application" : "applications"}`);
     return parts.join(", ");
   }
 </script>
@@ -137,9 +142,9 @@
       {/each}
     </div>
 
-    <div class="section-label">Site lists</div>
+    <div class="section-label">Websites</div>
     <div class="chip-grid detox-chip-grid">
-      {#each enabledSiteRules as rule (rule.id)}
+      {#each detoxSiteRules as rule (rule.id)}
         <label class="chip-check">
           <input
             type="checkbox"
@@ -149,13 +154,13 @@
           <span>{ruleLabel(rule)}</span>
         </label>
       {:else}
-        <p class="empty-state">No enabled site lists.</p>
+        <p class="empty-state">No Tier 2 websites.</p>
       {/each}
     </div>
 
-    <div class="section-label">App rules</div>
+    <div class="section-label">Applications</div>
     <div class="chip-grid detox-chip-grid">
-      {#each enabledAppRules as rule (rule.id)}
+      {#each detoxAppRules as rule (rule.id)}
         <label class="chip-check">
           <input
             type="checkbox"
@@ -165,7 +170,7 @@
           <span>{ruleLabel(rule)}</span>
         </label>
       {:else}
-        <p class="empty-state">No enabled app rules.</p>
+        <p class="empty-state">No Tier 2 applications.</p>
       {/each}
     </div>
 

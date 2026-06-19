@@ -812,9 +812,18 @@ mod tests {
             name = "KMines"
             tier = "controlled_access"
             allowance_id = "kmines-daily"
+            schedule_ids = ["always"]
             matchers = [
               { kind = "command_name", value = "kmines" }
             ]
+
+            [[schedules]]
+            id = "always"
+
+            [[schedules.windows]]
+            weekday = "everyday"
+            start = "00:00"
+            end = "23:59"
             "#,
         )
         .expect("config should parse");

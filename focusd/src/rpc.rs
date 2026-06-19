@@ -1965,9 +1965,9 @@ fn validate_detox_targets(
                 rule_id
             )));
         };
-        if !rule.enabled {
+        if rule.tier != RuleTier::ControlledAccess {
             return Err(DaemonError::InvalidRequest(format!(
-                "site list '{}' is disabled and cannot be used for detox",
+                "site list '{}' is Tier 1 and cannot be used for detox",
                 rule_id
             )));
         }
@@ -1980,9 +1980,9 @@ fn validate_detox_targets(
                 rule_id
             )));
         };
-        if !rule.enabled {
+        if rule.tier != RuleTier::ControlledAccess {
             return Err(DaemonError::InvalidRequest(format!(
-                "app rule '{}' is disabled and cannot be used for detox",
+                "app rule '{}' is Tier 1 and cannot be used for detox",
                 rule_id
             )));
         }
@@ -2200,11 +2200,10 @@ fn app_rule_in_active_detox(
 }
 
 fn rule_is_active_at(rule: &RuleConfig, config: &Config, now: DateTime<FixedOffset>) -> bool {
-    if !rule.enabled {
-        return false;
+    match rule.tier {
+        RuleTier::Hard => true,
+        RuleTier::ControlledAccess => schedule_ids_are_active_at(&rule.schedule_ids, config, now),
     }
-
-    schedule_ids_are_active_at(&rule.schedule_ids, config, now)
 }
 
 fn app_rule_is_active_at(
@@ -2212,11 +2211,10 @@ fn app_rule_is_active_at(
     config: &Config,
     now: DateTime<FixedOffset>,
 ) -> bool {
-    if !rule.enabled {
-        return false;
+    match rule.tier {
+        RuleTier::Hard => true,
+        RuleTier::ControlledAccess => schedule_ids_are_active_at(&rule.schedule_ids, config, now),
     }
-
-    schedule_ids_are_active_at(&rule.schedule_ids, config, now)
 }
 
 fn schedule_ids_are_active_at(
@@ -2224,18 +2222,15 @@ fn schedule_ids_are_active_at(
     config: &Config,
     now: DateTime<FixedOffset>,
 ) -> bool {
-    if schedule_ids.is_empty() {
-        return true;
-    }
-
-    schedule_ids.iter().any(|schedule_id| {
-        config
-            .schedules
-            .iter()
-            .find(|schedule| schedule.id == *schedule_id)
-            .map(|schedule| schedule_is_active_at(schedule, now))
-            .unwrap_or(true)
-    })
+    !schedule_ids.is_empty()
+        && schedule_ids.iter().any(|schedule_id| {
+            config
+                .schedules
+                .iter()
+                .find(|schedule| schedule.id == *schedule_id)
+                .map(|schedule| schedule_is_active_at(schedule, now))
+                .unwrap_or(true)
+        })
 }
 
 fn schedule_is_active_at(schedule: &ScheduleConfig, now: DateTime<FixedOffset>) -> bool {

@@ -81,11 +81,11 @@
   <article class="panel list-panel">
     <div class="panel-title">
       <Gamepad2 size={18} aria-hidden="true" />
-      <h2>App Rules</h2>
+      <h2>Applications</h2>
     </div>
     <button class="secondary wide-button" onclick={onStartNewAppRule}>
       <Plus size={17} aria-hidden="true" />
-      <span>New app</span>
+      <span>New application</span>
     </button>
     <div class="rule-list">
       {#each config?.app_rules ?? [] as rule (rule.id)}
@@ -98,7 +98,7 @@
           <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
         </button>
       {:else}
-        <p class="empty-state">No app rules reported by the daemon.</p>
+        <p class="empty-state">No applications reported by the daemon.</p>
       {/each}
     </div>
   </article>
@@ -106,7 +106,7 @@
   <article class="panel detail-panel">
     <div class="panel-title">
       <Gamepad2 size={18} aria-hidden="true" />
-      <h2>{appRuleDraft?.name || "App rule"}</h2>
+      <h2>{appRuleDraft?.name || "Application"}</h2>
     </div>
     {#if appRuleDraft}
       {#if appRuleDraftLocked}
@@ -114,8 +114,8 @@
           <AlertTriangle size={17} aria-hidden="true" />
           <span>
             {appRuleDraftDetoxLocked
-              ? "This app rule is covered by an active detox session."
-              : "This app rule is active right now."}
+              ? "This application is covered by an active detox session."
+              : "This application is active right now."}
           </span>
         </section>
       {/if}
@@ -136,15 +136,6 @@
           </select>
         </label>
       </div>
-
-      <label class="check-row">
-        <input
-          type="checkbox"
-          bind:checked={appRuleDraft.enabled}
-          disabled={appRuleDraftLocked}
-        />
-        <span>Enabled</span>
-      </label>
 
       {#if appRuleDraft.tier === "controlled_access"}
         <div class="section-label">Daily allowance</div>

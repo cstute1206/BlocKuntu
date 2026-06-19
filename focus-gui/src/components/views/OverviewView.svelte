@@ -245,11 +245,11 @@
     </div>
     <div class="metric-line">
       <span class="metric-value">{status?.rules ?? "?"}</span>
-      <span>site lists</span>
+      <span>websites</span>
     </div>
     <div class="metric-line">
       <span class="metric-value">{status?.app_rules ?? "?"}</span>
-      <span>app rules</span>
+      <span>applications</span>
     </div>
     <div class="metric-line">
       <span class="metric-value">{status?.schedules ?? "?"}</span>

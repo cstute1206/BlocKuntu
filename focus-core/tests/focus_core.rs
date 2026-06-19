@@ -134,7 +134,13 @@ fn app_rules_match_process_identity_and_respect_schedules() {
     );
 
     let inactive_ctx = context(&config, &database, at_utc(2026, 5, 18, 18, 0));
-    assert_eq!(evaluate_app(&process, &inactive_ctx), Decision::Allow);
+    assert_eq!(
+        evaluate_app(&process, &inactive_ctx),
+        Decision::Block(BlockReason::HardBlock {
+            rule_id: "kmines-hard".to_string(),
+            rule_name: "KMines".to_string(),
+        })
+    );
 }
 
 #[test]
@@ -145,6 +151,7 @@ fn controlled_app_rules_can_be_unlocked_by_rule_or_matcher_value() {
         id = "game-controlled"
         name = "Game controlled"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         matchers = [
           { kind = "command_name", value = "game-bin" }
         ]
@@ -153,6 +160,14 @@ fn controlled_app_rules_can_be_unlocked_by_rule_or_matcher_value() {
         max_session_minutes = 5
         cooldown_minutes = 30
         max_unlocks_per_hour = 2
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
         "#,
     )
     .expect("config should parse");
@@ -195,9 +210,18 @@ fn controlled_app_allowances_use_recorded_runtime() {
         name = "Game controlled"
         tier = "controlled_access"
         allowance_id = "game-daily"
+        schedule_ids = ["always"]
         matchers = [
           { kind = "command_name", value = "game-bin" }
         ]
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
         "#,
     )
     .expect("config should parse");
@@ -254,6 +278,12 @@ fn detox_sessions_block_site_rules_until_the_absolute_end_time() {
     .expect("config should parse");
     let database = Database::in_memory().expect("database should initialize");
     let starts_at = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
+    let before = context(&config, &database, at_utc(2026, 5, 18, 9, 59));
+    assert_eq!(
+        evaluate_url("https://watch.video.example/", &before),
+        Decision::Allow
+    );
+
     database
         .insert_detox_session(&DetoxSession {
             id: "detox-test".to_string(),
@@ -294,6 +324,7 @@ fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
         id = "social"
         name = "Social"
         tier = "controlled_access"
+        schedule_ids = ["work-hours"]
         patterns = [
           { kind = "domain", value = "social.example", match_subdomains = false }
         ]
@@ -310,7 +341,7 @@ fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
         [[app_rules]]
         id = "game"
         name = "Game"
-        tier = "hard"
+        tier = "controlled_access"
         schedule_ids = ["work-hours"]
         matchers = [
           { kind = "command_name", value = "game-bin" }
@@ -441,10 +472,19 @@ fn zero_minute_allowance_blocks_immediately() {
         id = "zero-controlled"
         name = "Zero controlled access"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         allowance_id = "zero-daily"
         patterns = [
           { kind = "domain", value = "zero.example", match_subdomains = false }
         ]
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
         "#,
     )
     .expect("zero-minute allowance should parse");
@@ -495,7 +535,7 @@ fn grouped_schedule_days_apply_as_single_windows() {
         [[rules]]
         id = "workday-rule"
         name = "Workday rule"
-        tier = "hard"
+        tier = "controlled_access"
         schedule_ids = ["workday-hours"]
         patterns = [
           { kind = "domain", value = "workday.example", match_subdomains = true }
@@ -504,7 +544,7 @@ fn grouped_schedule_days_apply_as_single_windows() {
         [[rules]]
         id = "weekend-rule"
         name = "Weekend rule"
-        tier = "hard"
+        tier = "controlled_access"
         schedule_ids = ["weekend-hours"]
         patterns = [
           { kind = "domain", value = "weekend.example", match_subdomains = true }
@@ -513,7 +553,7 @@ fn grouped_schedule_days_apply_as_single_windows() {
         [[rules]]
         id = "daily-rule"
         name = "Daily rule"
-        tier = "hard"
+        tier = "controlled_access"
         schedule_ids = ["daily-hours"]
         patterns = [
           { kind = "domain", value = "daily.example", match_subdomains = true }
@@ -558,10 +598,19 @@ fn overlapping_rules_apply_the_strictest_active_result() {
         id = "permissive-daily"
         daily_minutes = 60
 
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
+
         [[rules]]
         id = "broad-controlled"
         name = "Broad controlled"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         allowance_id = "broad-daily"
         patterns = [
           { kind = "domain", value = "overlap.example", match_subdomains = true }
@@ -571,6 +620,7 @@ fn overlapping_rules_apply_the_strictest_active_result() {
         id = "strict-controlled"
         name = "Strict controlled"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         patterns = [
           { kind = "exact_url", value = "https://overlap.example/watch" }
         ]
@@ -587,6 +637,7 @@ fn overlapping_rules_apply_the_strictest_active_result() {
         id = "permissive-overlap"
         name = "Permissive overlap"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         allowance_id = "permissive-daily"
         patterns = [
           { kind = "domain", value = "hard-overlap.example", match_subdomains = true }
@@ -639,10 +690,19 @@ fn overlapping_allowances_report_the_strictest_matching_rule() {
         id = "strict-daily"
         daily_minutes = 1
 
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
+
         [[rules]]
         id = "broad-controlled"
         name = "Broad controlled"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         allowance_id = "broad-daily"
         patterns = [
           { kind = "domain", value = "overlap.example", match_subdomains = false }
@@ -652,6 +712,7 @@ fn overlapping_allowances_report_the_strictest_matching_rule() {
         id = "strict-controlled"
         name = "Strict controlled"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         allowance_id = "strict-daily"
         patterns = [
           { kind = "domain", value = "overlap.example", match_subdomains = false }
@@ -694,10 +755,19 @@ fn overlapping_allowance_visits_are_metered_against_the_strictest_rule() {
         id = "strict-daily"
         daily_minutes = 1
 
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
+
         [[rules]]
         id = "broad-controlled"
         name = "Broad controlled"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         allowance_id = "broad-daily"
         patterns = [
           { kind = "domain", value = "overlap.example", match_subdomains = false }
@@ -707,6 +777,7 @@ fn overlapping_allowance_visits_are_metered_against_the_strictest_rule() {
         id = "strict-controlled"
         name = "Strict controlled"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         allowance_id = "strict-daily"
         patterns = [
           { kind = "domain", value = "overlap.example", match_subdomains = false }
@@ -745,8 +816,8 @@ fn overnight_schedule_windows_remain_active_after_midnight() {
 
         [[rules]]
         id = "late-hard"
-        name = "Late hard block"
-        tier = "hard"
+        name = "Late controlled block"
+        tier = "controlled_access"
         schedule_ids = ["late"]
         patterns = [
           { kind = "domain", value = "late.example", match_subdomains = false }
@@ -776,9 +847,18 @@ fn unlocks_apply_to_the_matched_site_rule_and_use_fixed_quota() {
         id = "controlled-no-allowance"
         name = "Controlled without allowance"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         patterns = [
           { kind = "domain", value = "focus.example", match_subdomains = true }
         ]
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
         "#,
     )
     .expect("config should parse");
@@ -869,9 +949,18 @@ fn hourly_unlock_quota_applies_to_site_rules() {
         id = "quota-controlled"
         name = "Quota controlled"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         patterns = [
           { kind = "domain", value = "quota.example", match_subdomains = false }
         ]
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
         "#,
     )
     .expect("config should parse");
@@ -1244,10 +1333,19 @@ fn visit_lifecycle_records_start_heartbeat_and_end() {
         id = "visit-rule"
         name = "Visit rule"
         tier = "controlled_access"
+        schedule_ids = ["always"]
         allowance_id = "daily"
         patterns = [
           { kind = "domain", value = "visit.example", match_subdomains = false }
         ]
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
         "#,
     )
     .expect("config should parse");

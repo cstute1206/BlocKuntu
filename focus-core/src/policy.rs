@@ -369,9 +369,12 @@ impl<'a> PolicyEngine<'a> {
         target: &str,
         context: &EvaluationContext<'_>,
     ) -> Result<ResolvedUnlockRule, Error> {
-        if let Some(rule) = self.config.app_rules.iter().find(|rule| {
-            rule.enabled && rule.id == target && self.app_rule_is_active(rule, context)
-        }) {
+        if let Some(rule) = self
+            .config
+            .app_rules
+            .iter()
+            .find(|rule| rule.id == target && self.app_rule_is_active(rule, context))
+        {
             return unlock_rule_from_app(rule, target);
         }
 
@@ -395,8 +398,7 @@ impl<'a> PolicyEngine<'a> {
         }
 
         if let Some(rule) = self.config.app_rules.iter().find(|rule| {
-            rule.enabled
-                && rule.tier == RuleTier::Hard
+            rule.tier == RuleTier::Hard
                 && self.app_rule_is_active(rule, context)
                 && app_rule_target_matches(rule, target)
         }) {
@@ -407,9 +409,7 @@ impl<'a> PolicyEngine<'a> {
         }
 
         for rule in self.config.app_rules.iter().filter(|rule| {
-            rule.enabled
-                && rule.tier == RuleTier::ControlledAccess
-                && self.app_rule_is_active(rule, context)
+            rule.tier == RuleTier::ControlledAccess && self.app_rule_is_active(rule, context)
         }) {
             if app_rule_target_matches(rule, target) {
                 return unlock_rule_from_app(rule, target);
@@ -577,7 +577,7 @@ impl<'a> PolicyEngine<'a> {
         let active_sessions = self.database.active_detox_sessions(context.now_utc())?;
         let mut block: Option<(&DetoxSession, &RuleConfig)> = None;
 
-        for rule in self.config.rules.iter().filter(|rule| rule.enabled) {
+        for rule in &self.config.rules {
             if !rule
                 .patterns
                 .iter()
@@ -628,7 +628,7 @@ impl<'a> PolicyEngine<'a> {
         let active_sessions = self.database.active_detox_sessions(context.now_utc())?;
         let mut block: Option<(&DetoxSession, &AppRuleConfig)> = None;
 
-        for rule in self.config.app_rules.iter().filter(|rule| rule.enabled) {
+        for rule in &self.config.app_rules {
             if !rule
                 .matchers
                 .iter()
@@ -679,7 +679,7 @@ impl<'a> PolicyEngine<'a> {
         self.config
             .rules
             .iter()
-            .filter(move |rule| rule.enabled && rule.tier == tier)
+            .filter(move |rule| rule.tier == tier)
             .filter(move |rule| {
                 rule.patterns
                     .iter()
@@ -695,7 +695,7 @@ impl<'a> PolicyEngine<'a> {
         self.config
             .app_rules
             .iter()
-            .filter(move |rule| rule.enabled && rule.tier == tier)
+            .filter(move |rule| rule.tier == tier)
             .filter(move |rule| {
                 rule.matchers
                     .iter()
@@ -704,11 +704,17 @@ impl<'a> PolicyEngine<'a> {
     }
 
     fn rule_is_active(&self, rule: &RuleConfig, context: &EvaluationContext<'_>) -> bool {
-        self.schedule_ids_are_active(&rule.schedule_ids, context)
+        match rule.tier {
+            RuleTier::Hard => true,
+            RuleTier::ControlledAccess => self.schedule_ids_are_active(&rule.schedule_ids, context),
+        }
     }
 
     fn app_rule_is_active(&self, rule: &AppRuleConfig, context: &EvaluationContext<'_>) -> bool {
-        self.schedule_ids_are_active(&rule.schedule_ids, context)
+        match rule.tier {
+            RuleTier::Hard => true,
+            RuleTier::ControlledAccess => self.schedule_ids_are_active(&rule.schedule_ids, context),
+        }
     }
 
     fn schedule_ids_are_active(
@@ -716,18 +722,15 @@ impl<'a> PolicyEngine<'a> {
         schedule_ids: &[String],
         context: &EvaluationContext<'_>,
     ) -> bool {
-        if schedule_ids.is_empty() {
-            return true;
-        }
-
-        schedule_ids.iter().any(|schedule_id| {
-            self.config
-                .schedules
-                .iter()
-                .find(|schedule| schedule.id == *schedule_id)
-                .map(|schedule| schedule_is_active(schedule, context))
-                .unwrap_or(true)
-        })
+        !schedule_ids.is_empty()
+            && schedule_ids.iter().any(|schedule_id| {
+                self.config
+                    .schedules
+                    .iter()
+                    .find(|schedule| schedule.id == *schedule_id)
+                    .map(|schedule| schedule_is_active(schedule, context))
+                    .unwrap_or(true)
+            })
     }
 }
 
