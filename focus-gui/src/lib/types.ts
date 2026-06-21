@@ -17,7 +17,7 @@ export interface DaemonStatus {
 }
 
 export interface RulePattern {
-  kind: "domain" | "exact_url" | "url_prefix" | "path_prefix";
+  kind: "domain" | "exact_url" | "url_prefix" | "url_contains" | "path_prefix";
   value: string;
   match_subdomains: boolean;
 }
@@ -263,6 +263,8 @@ export interface Tier1EditStatus {
   active: boolean;
   expires_at?: string | null;
   remaining_seconds?: number | null;
+  operator_window_open?: boolean;
+  operator_window_label?: string;
 }
 
 export interface UninstallConfirmation {

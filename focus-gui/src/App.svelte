@@ -79,6 +79,7 @@
     Rule,
     Schedule,
     SystemHealth,
+    Tier1EditStatus,
     UninstallResult,
     UnlockResult,
     ViewId
@@ -88,6 +89,7 @@
   const AUTO_REFRESH_INTERVAL_MS = 5_000;
   const TRAY_OPEN_VIEW_EVENT = "blockuntu-open-view";
   const TRAY_RUNTIME_REFRESH_EVENT = "blockuntu-runtime-refresh";
+  const OPERATOR_WINDOW_LABEL = "Sunday 20:00-23:59";
 
   interface RefreshOptions {
     silent?: boolean;
@@ -181,6 +183,7 @@
   let tier1EditRemainingSeconds = $derived(
     tier1EditUnlockedUntil ? Math.max(0, Math.ceil((Date.parse(tier1EditUnlockedUntil) - nowMs) / 1000)) : 0
   );
+  let operatorWindowOpen = $derived(operatorWindowOpenAt(nowMs));
   let activeDetoxSessions = $derived(
     detoxSessionList.filter(
       (session) =>
@@ -366,7 +369,7 @@
     detoxResult: PromiseSettledResult<{ sessions: DetoxSession[] }>,
     eventsResult: PromiseSettledResult<{ events: RecentEvent[] }>,
     healthResult: PromiseSettledResult<SystemHealth>,
-    tier1EditStatusResult: PromiseSettledResult<{ active: boolean; expires_at?: string | null }>
+    tier1EditStatusResult: PromiseSettledResult<Tier1EditStatus>
   ): void {
     if (statusResult.status === "fulfilled") {
       status = statusResult.value;
@@ -659,7 +662,7 @@
   }
 
   async function runUnlockTier1Edit(): Promise<void> {
-    if (!tier1EditPhraseInput.trim()) return;
+    if (!tier1EditPhraseInput.trim() || !operatorWindowOpen) return;
     tier1EditUnlocking = true;
     tier1EditMessage = null;
     lastError = null;
@@ -679,7 +682,7 @@
   }
 
   async function runUninstallBlockuntu(): Promise<void> {
-    if (!uninstallPhrase || !uninstallPhraseInput.trim()) return;
+    if (!uninstallPhrase || !uninstallPhraseInput.trim() || !operatorWindowOpen) return;
     uninstallRunning = true;
     uninstallResult = null;
     lastError = null;
@@ -690,6 +693,12 @@
     } finally {
       uninstallRunning = false;
     }
+  }
+
+  function operatorWindowOpenAt(timestampMs: number): boolean {
+    const date = new Date(timestampMs);
+    const currentMinute = date.getHours() * 60 + date.getMinutes();
+    return date.getDay() === 0 && currentMinute >= 20 * 60 && currentMinute <= 23 * 60 + 59;
   }
 
   function setRuleDraft(rule: Rule | null, snapshot: ConfigSnapshot | null = config): void {
@@ -1119,6 +1128,8 @@
         {tier1EditUnlocked}
         {tier1EditUnlockedUntil}
         {tier1EditRemainingSeconds}
+        {operatorWindowOpen}
+        operatorWindowLabel={OPERATOR_WINDOW_LABEL}
         {tier1EditMessage}
         {tier1EditKeyError}
         onRunUninstallBlockuntu={runUninstallBlockuntu}

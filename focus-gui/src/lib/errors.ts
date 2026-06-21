@@ -306,6 +306,7 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
 
 function humanizeErrorMessage(message: string): string {
   const normalized = humanizePolicyNouns(message.trim());
+  const lowerNormalized = normalized.toLowerCase();
 
   if (!normalized) {
     return "Something went wrong, but no error message was returned.";
@@ -333,6 +334,13 @@ function humanizeErrorMessage(message: string): string {
 
   if (normalized === "uninstall confirmation phrase does not match") {
     return "The uninstall phrase does not match. Use the displayed phrase exactly, or the recovery phrase from /etc/blockuntu/uninstall-recovery.txt.";
+  }
+
+  if (
+    lowerNormalized === "operator actions are only available during sunday 20:00-23:59" ||
+    lowerNormalized.includes("only available during sunday 20:00-23:59")
+  ) {
+    return "This action is only available on Sunday between 20:00 and 23:59.";
   }
 
   if (normalized === "GUI uninstall requires pkexec, but pkexec was not found") {

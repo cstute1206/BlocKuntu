@@ -378,6 +378,7 @@ pub enum RulePatternKind {
     Domain,
     ExactUrl,
     UrlPrefix,
+    UrlContains,
     PathPrefix,
 }
 
@@ -635,6 +636,7 @@ fn validate_pattern(rule_id: &str, pattern: &RulePatternConfig) -> Result<(), Co
                 ))
             })?;
         }
+        RulePatternKind::UrlContains => {}
         RulePatternKind::PathPrefix => {
             if !value.starts_with('/') && !value.contains('/') {
                 return Err(ConfigError::Validation(format!(

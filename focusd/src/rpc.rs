@@ -34,6 +34,8 @@ const BROWSER_EXTENSION_MODE_UNINSTALLING: &str = "uninstalling";
 const TIER1_EDIT_KEY_PATH: &str = "/etc/blockuntu/tier1-edit-key.txt";
 const TIER1_EDIT_UNLOCK_UNTIL_KEY: &str = "tier1_edit_unlocked_until";
 const TIER1_EDIT_UNLOCK_MINUTES: i64 = 5;
+const OPERATOR_WINDOW_START_MINUTE: u16 = 20 * 60;
+const OPERATOR_WINDOW_END_MINUTE: u16 = 23 * 60 + 59;
 const MAX_DETOX_DURATION_MINUTES: u32 = 7 * 24 * 60;
 
 #[derive(Clone)]
@@ -773,6 +775,7 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
             }
             if current_rule != &params.rule
                 && rule_is_active_at(current_rule, core.config(), now)
+                && !site_list_edit_is_additive(current_rule, &params.rule)
                 && !active_tier1_site_list_edit_allowed(&core, current_rule, now)?
             {
                 return Err(active_site_list_edit_error(&current_rule.id));
@@ -830,9 +833,7 @@ fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -
     if site_rule_in_active_detox(&core, &current_rule.id, now)? {
         return Err(active_detox_site_list_edit_error(&current_rule.id));
     }
-    if rule_is_active_at(current_rule, core.config(), now)
-        && !active_tier1_site_list_edit_allowed(&core, current_rule, now)?
-    {
+    if rule_is_active_at(current_rule, core.config(), now) {
         return Err(active_site_list_edit_error(&current_rule.id));
     }
     let removed = next.rules.remove(index);
@@ -987,6 +988,7 @@ fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> 
             }
             if current_rule != &params.rule
                 && app_rule_is_active_at(current_rule, core.config(), now)
+                && !app_rule_edit_is_additive(current_rule, &params.rule)
             {
                 return Err(active_app_rule_edit_error(&current_rule.id));
             }
@@ -1437,6 +1439,9 @@ fn unlock_tier1_edit_method(context: &RpcContext, params: Tier1EditUnlockParams)
         return Err(DaemonError::InvalidRequest(
             "Tier 1 edit key does not match".to_string(),
         ));
+    }
+    if !operator_window_open(now) {
+        return Err(operator_window_closed_error("Tier 1 edits"));
     }
 
     let expires_at = now_utc + Duration::minutes(TIER1_EDIT_UNLOCK_MINUTES);
@@ -2192,8 +2197,27 @@ fn tier1_edit_status_json(core: &FocusCore, now: DateTime<FixedOffset>) -> Resul
     Ok(json!({
         "active": active,
         "expires_at": expires_at,
-        "remaining_seconds": remaining_seconds
+        "remaining_seconds": remaining_seconds,
+        "operator_window_open": operator_window_open(now),
+        "operator_window_label": operator_window_label()
     }))
+}
+
+fn operator_window_open(now: DateTime<FixedOffset>) -> bool {
+    let current_minute = (now.hour() as u16) * 60 + now.minute() as u16;
+    matches!(Weekday::from(now.weekday()), Weekday::Sun)
+        && (OPERATOR_WINDOW_START_MINUTE..=OPERATOR_WINDOW_END_MINUTE).contains(&current_minute)
+}
+
+fn operator_window_label() -> &'static str {
+    "Sunday 20:00-23:59"
+}
+
+fn operator_window_closed_error(action: &str) -> DaemonError {
+    DaemonError::InvalidRequest(format!(
+        "{action} are only available during {}",
+        operator_window_label()
+    ))
 }
 
 fn tier1_edit_key_matches(path: &Path, candidate: &str) -> Result<bool> {
@@ -2300,6 +2324,38 @@ fn allowance_is_active_at(allowance_id: &str, config: &Config, now: DateTime<Fix
         rule.allowance_id.as_deref() == Some(allowance_id)
             && app_rule_is_active_at(rule, config, now)
     })
+}
+
+fn site_list_edit_is_additive(current: &RuleConfig, proposed: &RuleConfig) -> bool {
+    current.id == proposed.id
+        && current.name == proposed.name
+        && current.tier == proposed.tier
+        && current.enabled == proposed.enabled
+        && current.schedule_ids == proposed.schedule_ids
+        && current.allowance_id == proposed.allowance_id
+        && current.unlock_policy == proposed.unlock_policy
+        && proposed.patterns.len() >= current.patterns.len()
+        && current
+            .patterns
+            .iter()
+            .zip(proposed.patterns.iter())
+            .all(|(current, proposed)| current == proposed)
+}
+
+fn app_rule_edit_is_additive(current: &AppRuleConfig, proposed: &AppRuleConfig) -> bool {
+    current.id == proposed.id
+        && current.name == proposed.name
+        && current.tier == proposed.tier
+        && current.enabled == proposed.enabled
+        && current.schedule_ids == proposed.schedule_ids
+        && current.allowance_id == proposed.allowance_id
+        && current.unlock_policy == proposed.unlock_policy
+        && proposed.matchers.len() >= current.matchers.len()
+        && current
+            .matchers
+            .iter()
+            .zip(proposed.matchers.iter())
+            .all(|(current, proposed)| current == proposed)
 }
 
 fn site_rule_in_active_detox(
@@ -2458,6 +2514,54 @@ mod tests {
         )
     }
 
+    fn active_sunday_scheduled_rpc_context() -> RpcContext {
+        rpc_context_with_config_toml(
+            r#"
+            [[schedules]]
+            id = "work-hours"
+            name = "Work hours"
+
+            [[schedules.windows]]
+            weekday = "sun"
+            start = "20:00"
+            end = "23:59"
+
+            [[rules]]
+            id = "controlled"
+            name = "Controlled"
+            tier = "controlled_access"
+            schedule_ids = ["work-hours"]
+            patterns = [
+              { kind = "domain", value = "controlled.example", match_subdomains = true }
+            ]
+            "#,
+        )
+    }
+
+    fn active_app_rule_rpc_context() -> RpcContext {
+        rpc_context_with_config_toml(
+            r#"
+            [[schedules]]
+            id = "work-hours"
+            name = "Work hours"
+
+            [[schedules.windows]]
+            weekday = "fri"
+            start = "09:00"
+            end = "17:00"
+
+            [[app_rules]]
+            id = "kmines-controlled"
+            name = "KMines"
+            tier = "controlled_access"
+            schedule_ids = ["work-hours"]
+            matchers = [
+              { kind = "command_name", value = "kmines" }
+            ]
+            "#,
+        )
+    }
+
     fn rpc_context_with_config_toml(toml: &str) -> RpcContext {
         let config = Config::from_toml_str(toml).expect("config should parse");
         let database = Database::in_memory().expect("database should initialize");
@@ -2505,7 +2609,7 @@ mod tests {
             "method": "evaluate_url",
             "params": {
                 "url": "https://sub.blocked.example/",
-                "now": "2026-05-22T10:00:00Z"
+                "now": "2026-05-24T20:00:00+02:00"
             }
         });
         let response: Value = serde_json::from_slice(&handle_payload(
@@ -2534,7 +2638,7 @@ mod tests {
             "method": "evaluate_url",
             "params": {
                 "url": "https://blocked.example/",
-                "now": "2026-05-22T10:00:00Z"
+                "now": "2026-05-24T20:00:00+02:00"
             }
         });
         let response: Value = serde_json::from_slice(&handle_payload(
@@ -2850,7 +2954,7 @@ mod tests {
             "method": "evaluate_url",
             "params": {
                 "url": "https://new.example/",
-                "now": "2026-05-22T10:00:00Z"
+                "now": "2026-05-24T20:00:00+02:00"
             }
         });
         let eval_response: Value = serde_json::from_slice(&handle_payload(
@@ -2983,6 +3087,84 @@ mod tests {
             .expect("app rules should be an array")
             .iter()
             .any(|rule| rule["id"] == "kmines-hard"));
+    }
+
+    #[test]
+    fn rejects_active_app_rule_edits() {
+        let context = active_app_rule_rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 118,
+            "method": "upsert_app_rule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "kmines-controlled",
+                    "name": "KMines edited",
+                    "tier": "controlled_access",
+                    "enabled": true,
+                    "matchers": [
+                        { "kind": "command_name", "value": "different" }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("app rule 'kmines-controlled' is currently active"));
+    }
+
+    #[test]
+    fn allows_additive_active_app_rule_edits() {
+        let context = active_app_rule_rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 119,
+            "method": "upsert_app_rule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "kmines-controlled",
+                    "name": "KMines",
+                    "tier": "controlled_access",
+                    "enabled": true,
+                    "matchers": [
+                        { "kind": "command_name", "value": "kmines" },
+                        { "kind": "window_title_contains", "value": "KMines" }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        let app_rule = response["result"]["config"]["app_rules"]
+            .as_array()
+            .expect("app rules should be an array")
+            .iter()
+            .find(|rule| rule["id"] == "kmines-controlled")
+            .expect("app rule should exist");
+        assert_eq!(
+            app_rule["matchers"]
+                .as_array()
+                .expect("matchers should be an array")
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -3150,6 +3332,50 @@ mod tests {
     }
 
     #[test]
+    fn allows_additive_active_site_list_edits() {
+        let context = active_scheduled_rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 116,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "controlled",
+                    "name": "Controlled",
+                    "tier": "controlled_access",
+                    "enabled": true,
+                    "patterns": [
+                        { "kind": "domain", "value": "controlled.example", "match_subdomains": true },
+                        { "kind": "url_contains", "value": "watch?v=shorts", "match_subdomains": false }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        let controlled_rule = response["result"]["config"]["rules"]
+            .as_array()
+            .expect("rules should be an array")
+            .iter()
+            .find(|rule| rule["id"] == "controlled")
+            .expect("controlled rule should exist");
+        assert_eq!(
+            controlled_rule["patterns"]
+                .as_array()
+                .expect("patterns should be an array")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn rejects_active_tier1_site_list_edits_without_unlock() {
         let context = rpc_context();
         let request = json!({
@@ -3184,6 +3410,50 @@ mod tests {
     }
 
     #[test]
+    fn allows_additive_active_tier1_site_list_edits_without_unlock() {
+        let context = rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 117,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "hard",
+                    "name": "Hard",
+                    "tier": "hard",
+                    "enabled": true,
+                    "patterns": [
+                        { "kind": "domain", "value": "blocked.example", "match_subdomains": true },
+                        { "kind": "domain", "value": "extra-blocked.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": []
+                }
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        let hard_rule = response["result"]["config"]["rules"]
+            .as_array()
+            .expect("rules should be an array")
+            .iter()
+            .find(|rule| rule["id"] == "hard")
+            .expect("hard rule should exist");
+        assert_eq!(
+            hard_rule["patterns"]
+                .as_array()
+                .expect("patterns should be an array")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn tier1_edit_unlock_allows_active_tier1_site_list_edits() {
         let (_temp, context) = rpc_context_with_tier1_edit_key(rpc_context());
         let unlock_request = json!({
@@ -3192,7 +3462,7 @@ mod tests {
             "method": "unlock_tier1_edit",
             "params": {
                 "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
-                "now": "2026-05-22T10:00:00Z"
+                "now": "2026-05-24T20:00:00+02:00"
             }
         });
         let unlock_response: Value = serde_json::from_slice(&handle_payload(
@@ -3209,7 +3479,7 @@ mod tests {
             "id": 113,
             "method": "upsert_site_list",
             "params": {
-                "now": "2026-05-22T10:04:00Z",
+                "now": "2026-05-24T20:04:00+02:00",
                 "rule": {
                     "id": "hard",
                     "name": "Hard edited",
@@ -3237,15 +3507,61 @@ mod tests {
     }
 
     #[test]
+    fn tier1_edit_unlock_is_limited_to_sunday_evening_operator_window() {
+        let (_temp, context) = rpc_context_with_tier1_edit_key(rpc_context());
+        let unlock_request = json!({
+            "jsonrpc": "2.0",
+            "id": 127,
+            "method": "unlock_tier1_edit",
+            "params": {
+                "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
+                "now": "2026-05-24T19:59:00+02:00"
+            }
+        });
+        let unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&unlock_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(unlock_response["error"]["code"], -32602);
+        assert!(unlock_response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("Sunday 20:00-23:59"));
+
+        let status_request = json!({
+            "jsonrpc": "2.0",
+            "id": 128,
+            "method": "tier1_edit_status",
+            "params": {
+                "now": "2026-05-24T20:00:00+02:00"
+            }
+        });
+        let status_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&status_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(
+            status_response["result"]["operator_window_label"],
+            "Sunday 20:00-23:59"
+        );
+        assert_eq!(status_response["result"]["operator_window_open"], true);
+    }
+
+    #[test]
     fn tier1_edit_unlock_does_not_allow_active_tier2_site_list_edits() {
-        let (_temp, context) = rpc_context_with_tier1_edit_key(active_scheduled_rpc_context());
+        let (_temp, context) =
+            rpc_context_with_tier1_edit_key(active_sunday_scheduled_rpc_context());
         let unlock_request = json!({
             "jsonrpc": "2.0",
             "id": 114,
             "method": "unlock_tier1_edit",
             "params": {
                 "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
-                "now": "2026-05-22T10:00:00Z"
+                "now": "2026-05-24T20:00:00+02:00"
             }
         });
         let unlock_response: Value = serde_json::from_slice(&handle_payload(
@@ -3260,7 +3576,7 @@ mod tests {
             "id": 115,
             "method": "upsert_site_list",
             "params": {
-                "now": "2026-05-22T10:01:00Z",
+                "now": "2026-05-24T20:01:00+02:00",
                 "rule": {
                     "id": "controlled",
                     "name": "Controlled edited",
@@ -3297,7 +3613,7 @@ mod tests {
                 "name": "Deep work",
                 "duration_minutes": 90,
                 "site_rule_ids": ["controlled"],
-                "now": "2026-05-22T18:00:00Z"
+                "now": "2026-05-24T20:00:00+02:00"
             }
         });
         let start_response: Value = serde_json::from_slice(&handle_payload(
@@ -3319,7 +3635,7 @@ mod tests {
             "method": "evaluate_url",
             "params": {
                 "url": "https://controlled.example/",
-                "now": "2026-05-22T18:10:00Z"
+                "now": "2026-05-24T20:10:00+02:00"
             }
         });
         let eval_response: Value = serde_json::from_slice(&handle_payload(
@@ -3338,7 +3654,7 @@ mod tests {
             "id": 123,
             "method": "upsert_site_list",
             "params": {
-                "now": "2026-05-22T18:11:00Z",
+                "now": "2026-05-24T20:11:00+02:00",
                 "rule": {
                     "id": "controlled",
                     "name": "Controlled edited",
@@ -3368,7 +3684,7 @@ mod tests {
             "method": "cancel_detox",
             "params": {
                 "id": session_id.clone(),
-                "now": "2026-05-22T18:12:00Z"
+                "now": "2026-05-24T20:12:00+02:00"
             }
         });
         let cancel_response: Value = serde_json::from_slice(&handle_payload(
@@ -3388,7 +3704,7 @@ mod tests {
             "method": "unlock_tier1_edit",
             "params": {
                 "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
-                "now": "2026-05-22T18:13:00Z"
+                "now": "2026-05-24T20:13:00+02:00"
             }
         });
         let unlock_response: Value = serde_json::from_slice(&handle_payload(
@@ -3404,7 +3720,7 @@ mod tests {
             "method": "cancel_detox",
             "params": {
                 "id": session_id.clone(),
-                "now": "2026-05-22T18:14:00Z"
+                "now": "2026-05-24T20:14:00+02:00"
             }
         });
         let cancel_response: Value = serde_json::from_slice(&handle_payload(

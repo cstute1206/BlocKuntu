@@ -42,14 +42,29 @@
   let ruleDraftDetoxLocked = $derived(
     Boolean(savedRule && activeDetoxSiteRuleIds.includes(savedRule.id))
   );
-  let ruleDraftLocked = $derived(
+  let ruleDraftActive = $derived(
+    Boolean(savedRule && ruleIsActive(savedRule, config?.schedules ?? []))
+  );
+  let ruleDraftEditLocked = $derived(
     Boolean(
       savedRule &&
         (ruleDraftDetoxLocked ||
-          (ruleIsActive(savedRule, config?.schedules ?? []) &&
-            !(savedRule.tier === "hard" && tier1EditUnlocked)))
+          (ruleDraftActive && !(savedRule.tier === "hard" && tier1EditUnlocked)))
     )
   );
+  let savedPatternCount = $derived(savedRule?.patterns.length ?? 0);
+
+  function patternIsSaved(index: number): boolean {
+    return Boolean(savedRule && index < savedPatternCount);
+  }
+
+  function patternEditLocked(index: number): boolean {
+    return ruleDraftDetoxLocked || (patternIsSaved(index) && ruleDraftEditLocked);
+  }
+
+  function patternRemoveLocked(index: number): boolean {
+    return ruleDraftDetoxLocked || (ruleDraftActive && patternIsSaved(index));
+  }
 
   function addPattern(): void {
     if (!ruleDraft) return;
@@ -115,7 +130,7 @@
       <h2>{ruleDraft?.name || "Website"}</h2>
     </div>
     {#if ruleDraft}
-      {#if ruleDraftLocked}
+      {#if ruleDraftDetoxLocked || ruleDraftActive}
         <section class="inline-warning">
           <AlertTriangle size={17} aria-hidden="true" />
           <span>
@@ -128,13 +143,13 @@
       <div class="form-grid">
         <label>
           <span>Name</span>
-          <input bind:value={ruleDraft.name} disabled={ruleDraftLocked} />
+          <input bind:value={ruleDraft.name} disabled={ruleDraftEditLocked} />
         </label>
         <label>
           <span>Tier</span>
           <select
             value={ruleDraft.tier}
-            disabled={ruleDraftLocked}
+            disabled={ruleDraftEditLocked}
             onchange={(event) => setRuleTier(event.currentTarget.value as Rule["tier"])}
           >
             <option value="controlled_access">Tier 2</option>
@@ -154,7 +169,7 @@
                 min="0"
                 max="1440"
                 bind:value={ruleAllowanceDraft.daily_minutes}
-                disabled={ruleDraftLocked}
+                disabled={ruleDraftEditLocked}
               />
             </label>
           {/if}
@@ -168,7 +183,7 @@
             <input
               type="checkbox"
               checked={ruleDraft.schedule_ids.includes(schedule.id)}
-              disabled={ruleDraftLocked}
+              disabled={ruleDraftEditLocked}
               onchange={() => toggleDraftSchedule(schedule.id)}
             />
             <span>{schedule.name ?? schedule.id}</span>
@@ -192,20 +207,26 @@
             {#each ruleDraft.patterns as pattern, index (pattern)}
               <tr>
                 <td>
-                  <select bind:value={pattern.kind} disabled={ruleDraftLocked}>
+                  <select
+                    bind:value={pattern.kind}
+                    disabled={patternEditLocked(index)}
+                  >
                     {#each patternKinds as kind (kind.id)}
                       <option value={kind.id}>{kind.label}</option>
                     {/each}
                   </select>
                 </td>
                 <td>
-                  <input bind:value={pattern.value} disabled={ruleDraftLocked} />
+                  <input
+                    bind:value={pattern.value}
+                    disabled={patternEditLocked(index)}
+                  />
                 </td>
                 <td>
                   <input
                     type="checkbox"
                     bind:checked={pattern.match_subdomains}
-                    disabled={ruleDraftLocked || pattern.kind !== "domain"}
+                    disabled={patternEditLocked(index) || pattern.kind !== "domain"}
                   />
                 </td>
                 <td>
@@ -213,7 +234,9 @@
                     class="icon-button"
                     title="Remove pattern"
                     onclick={() => removePattern(index)}
-                    disabled={ruleDraftLocked || ruleDraft.patterns.length <= 1}
+                    disabled={
+                      patternRemoveLocked(index) || ruleDraft.patterns.length <= 1
+                    }
                   >
                     <Trash2 size={16} aria-hidden="true" />
                   </button>
@@ -225,19 +248,19 @@
       </div>
 
       <div class="button-row">
-        <button class="secondary" onclick={addPattern} disabled={ruleDraftLocked}>
+        <button class="secondary" onclick={addPattern} disabled={ruleDraftDetoxLocked}>
           <Plus size={17} aria-hidden="true" />
           <span>Pattern</span>
         </button>
         <button
           class="secondary"
           onclick={onRemoveRuleDraft}
-          disabled={ruleSaving || ruleDraftLocked || !ruleDraftIsExisting}
+          disabled={ruleSaving || ruleDraftDetoxLocked || ruleDraftActive || !ruleDraftIsExisting}
         >
           <Trash2 size={17} aria-hidden="true" />
           <span>Delete</span>
         </button>
-        <button class="primary" onclick={onSaveRuleDraft} disabled={ruleSaving || ruleDraftLocked}>
+        <button class="primary" onclick={onSaveRuleDraft} disabled={ruleSaving || ruleDraftDetoxLocked}>
           <Save size={17} aria-hidden="true" />
           <span>Save</span>
         </button>

@@ -24,6 +24,8 @@
     tier1EditUnlocked: boolean;
     tier1EditUnlockedUntil: string | null;
     tier1EditRemainingSeconds: number;
+    operatorWindowOpen: boolean;
+    operatorWindowLabel: string;
     tier1EditMessage: string | null;
     tier1EditKeyError: string | null;
     onRunUninstallBlockuntu: () => void | Promise<void>;
@@ -42,6 +44,8 @@
     tier1EditUnlocked,
     tier1EditUnlockedUntil,
     tier1EditRemainingSeconds,
+    operatorWindowOpen,
+    operatorWindowLabel,
     tier1EditMessage,
     tier1EditKeyError,
     onRunUninstallBlockuntu,
@@ -52,8 +56,10 @@
   let okHealthCount = $derived(healthChecks.filter((check) => check.state === "ok").length);
   let warnHealthCount = $derived(healthChecks.filter((check) => check.state === "warn").length);
   let errorHealthCount = $derived(healthChecks.filter((check) => check.state === "error").length);
-  let canRunUninstall = $derived(Boolean(uninstallPhrase && uninstallPhraseInput.trim()));
-  let canUnlockTier1Edit = $derived(Boolean(tier1EditPhraseInput.trim()));
+  let canRunUninstall = $derived(
+    Boolean(operatorWindowOpen && uninstallPhrase && uninstallPhraseInput.trim())
+  );
+  let canUnlockTier1Edit = $derived(Boolean(operatorWindowOpen && tier1EditPhraseInput.trim()));
 
   function checkIcon(check: HealthCheck): Icon {
     if (check.state === "ok") return CheckCircle2;
@@ -107,6 +113,16 @@
     </div>
     <div class="status-list">
       <div class="status-row">
+        <span>Allowed</span>
+        <strong data-state={operatorWindowOpen ? "active" : "stopped"}>
+          {operatorWindowOpen ? "open" : "closed"}
+        </strong>
+      </div>
+      <div class="status-row">
+        <span>Time</span>
+        <small>{operatorWindowLabel}</small>
+      </div>
+      <div class="status-row">
         <span>Window</span>
         <strong data-state={tier1EditUnlocked ? "active" : "stopped"}>
           {tier1EditUnlocked ? "active" : "locked"}
@@ -156,6 +172,18 @@
       <h2>Uninstall</h2>
     </div>
     <div class="uninstall-form">
+      <div class="status-list">
+        <div class="status-row">
+          <span>Allowed</span>
+          <strong data-state={operatorWindowOpen ? "active" : "stopped"}>
+            {operatorWindowOpen ? "open" : "closed"}
+          </strong>
+        </div>
+        <div class="status-row">
+          <span>Time</span>
+          <small>{operatorWindowLabel}</small>
+        </div>
+      </div>
       <label>
         <span>Confirmation phrase</span>
         <input

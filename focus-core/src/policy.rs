@@ -879,6 +879,10 @@ fn pattern_matches(pattern: &RulePatternConfig, parsed: &NormalizedUrl) -> bool 
         RulePatternKind::UrlPrefix => normalize_url_pattern(&pattern.value)
             .map(|pattern| parsed.url_without_fragment.starts_with(&pattern))
             .unwrap_or(false),
+        RulePatternKind::UrlContains => parsed
+            .url_without_fragment
+            .to_ascii_lowercase()
+            .contains(&pattern.value.to_ascii_lowercase()),
         RulePatternKind::PathPrefix => path_prefix_matches(&pattern.value, parsed),
     }
 }
@@ -896,6 +900,7 @@ fn pattern_specificity(pattern: &RulePatternConfig) -> u8 {
     match pattern.kind {
         RulePatternKind::ExactUrl => 4,
         RulePatternKind::PathPrefix | RulePatternKind::UrlPrefix => 3,
+        RulePatternKind::UrlContains => 2,
         RulePatternKind::Domain if !pattern.match_subdomains => 2,
         RulePatternKind::Domain => 1,
     }

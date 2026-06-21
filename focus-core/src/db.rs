@@ -1517,7 +1517,7 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
         CREATE TABLE IF NOT EXISTS policy_site_list_patterns (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             list_id TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK (kind IN ('domain', 'exact_url', 'url_prefix', 'path_prefix')),
+            kind TEXT NOT NULL CHECK (kind IN ('domain', 'exact_url', 'url_prefix', 'url_contains', 'path_prefix')),
             value TEXT NOT NULL,
             match_subdomains INTEGER NOT NULL DEFAULT 0,
             position INTEGER NOT NULL DEFAULT 0,
@@ -1579,6 +1579,7 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
     )?;
     migrate_policy_allowances_zero_minutes(conn)?;
     migrate_policy_schedule_windows_day_groups(conn)?;
+    migrate_policy_site_list_patterns_url_contains(conn)?;
     Ok(())
 }
 
@@ -1694,6 +1695,72 @@ fn migrate_policy_schedule_windows_day_groups(conn: &Connection) -> Result<(), E
     Ok(())
 }
 
+fn migrate_policy_site_list_patterns_url_contains(conn: &Connection) -> Result<(), Error> {
+    let table_sql: Option<String> = conn
+        .query_row(
+            r#"
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'policy_site_list_patterns'
+            "#,
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let Some(table_sql) = table_sql else {
+        return Ok(());
+    };
+
+    if table_sql.contains("'url_contains'") {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = OFF;
+
+        ALTER TABLE policy_site_list_patterns RENAME TO policy_site_list_patterns_old;
+
+        CREATE TABLE policy_site_list_patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            list_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('domain', 'exact_url', 'url_prefix', 'url_contains', 'path_prefix')),
+            value TEXT NOT NULL,
+            match_subdomains INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(list_id) REFERENCES policy_site_lists(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO policy_site_list_patterns (
+            id,
+            list_id,
+            kind,
+            value,
+            match_subdomains,
+            position
+        )
+        SELECT
+            id,
+            list_id,
+            kind,
+            value,
+            match_subdomains,
+            position
+        FROM policy_site_list_patterns_old;
+
+        DROP TABLE policy_site_list_patterns_old;
+
+        CREATE INDEX IF NOT EXISTS idx_policy_site_list_patterns_list
+            ON policy_site_list_patterns(list_id, position);
+
+        PRAGMA foreign_keys = ON;
+        "#,
+    )?;
+
+    Ok(())
+}
+
 pub(crate) fn format_time(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(SecondsFormat::Micros, true)
 }
@@ -1766,6 +1833,7 @@ fn pattern_kind_to_str(value: RulePatternKind) -> &'static str {
         RulePatternKind::Domain => "domain",
         RulePatternKind::ExactUrl => "exact_url",
         RulePatternKind::UrlPrefix => "url_prefix",
+        RulePatternKind::UrlContains => "url_contains",
         RulePatternKind::PathPrefix => "path_prefix",
     }
 }
@@ -1775,6 +1843,7 @@ fn pattern_kind_from_str(value: &str) -> Result<RulePatternKind, Error> {
         "domain" => Ok(RulePatternKind::Domain),
         "exact_url" => Ok(RulePatternKind::ExactUrl),
         "url_prefix" => Ok(RulePatternKind::UrlPrefix),
+        "url_contains" => Ok(RulePatternKind::UrlContains),
         "path_prefix" => Ok(RulePatternKind::PathPrefix),
         _ => Err(ConfigError::Validation(format!("unknown rule pattern kind '{value}'")).into()),
     }

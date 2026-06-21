@@ -36,6 +36,7 @@ export const patternKinds: Array<{ id: RulePattern["kind"]; label: string }> = [
   { id: "domain", label: "Domain" },
   { id: "exact_url", label: "Exact URL" },
   { id: "url_prefix", label: "URL prefix" },
+  { id: "url_contains", label: "URL contains" },
   { id: "path_prefix", label: "Path prefix" }
 ];
 

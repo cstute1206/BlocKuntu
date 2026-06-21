@@ -56,12 +56,13 @@
   let appRuleDraftDetoxLocked = $derived(
     Boolean(savedAppRule && activeDetoxAppRuleIds.includes(savedAppRule.id))
   );
-  let appRuleDraftLocked = $derived(
-    Boolean(
-      savedAppRule &&
-        (appRuleDraftDetoxLocked || appRuleIsActive(savedAppRule, config?.schedules ?? []))
-    )
+  let appRuleDraftActive = $derived(
+    Boolean(savedAppRule && appRuleIsActive(savedAppRule, config?.schedules ?? []))
   );
+  let appRuleDraftEditLocked = $derived(
+    Boolean(savedAppRule && (appRuleDraftDetoxLocked || appRuleDraftActive))
+  );
+  let savedMatcherCount = $derived(savedAppRule?.matchers.length ?? 0);
   let detectedSearch = $state("");
   let detectedOpenWindowsRequested = $state(false);
   let detectedOpenWindowsOnly = $derived(
@@ -95,6 +96,18 @@
         .some((value) => value.toLowerCase().includes(query));
     });
   });
+
+  function matcherIsSaved(index: number): boolean {
+    return Boolean(savedAppRule && index < savedMatcherCount);
+  }
+
+  function matcherEditLocked(index: number): boolean {
+    return appRuleDraftDetoxLocked || (matcherIsSaved(index) && appRuleDraftEditLocked);
+  }
+
+  function matcherRemoveLocked(index: number): boolean {
+    return appRuleDraftDetoxLocked || (appRuleDraftActive && matcherIsSaved(index));
+  }
 
   function addAppMatcher(): void {
     if (!appRuleDraft) return;
@@ -134,8 +147,175 @@
   <article class="panel list-panel">
     <div class="panel-title">
       <Gamepad2 size={18} aria-hidden="true" />
-      <h2>Detected apps</h2>
+      <h2>Applications</h2>
     </div>
+    <button class="secondary wide-button" onclick={onStartNewAppRule}>
+      <Plus size={17} aria-hidden="true" />
+      <span>New application</span>
+    </button>
+    <div class="rule-list">
+      {#each config?.app_rules ?? [] as rule (rule.id)}
+        <button
+          class:active={appRuleDraft?.id === rule.id}
+          onclick={() => onSelectAppRule(rule)}
+        >
+          <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
+          <span>{rule.name}</span>
+          <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
+        </button>
+      {:else}
+        <p class="empty-state">No applications reported by the daemon.</p>
+      {/each}
+    </div>
+  </article>
+
+  <article class="panel detail-panel">
+    <div class="panel-title">
+      <Gamepad2 size={18} aria-hidden="true" />
+      <h2>{appRuleDraft?.name || "Application"}</h2>
+    </div>
+    {#if appRuleDraft}
+      {#if appRuleDraftDetoxLocked || appRuleDraftActive}
+        <section class="inline-warning">
+          <AlertTriangle size={17} aria-hidden="true" />
+          <span>
+            {appRuleDraftDetoxLocked
+              ? "This application is covered by an active detox session."
+              : "This application is active right now."}
+          </span>
+        </section>
+      {/if}
+      <div class="form-grid">
+        <label>
+          <span>Name</span>
+          <input bind:value={appRuleDraft.name} disabled={appRuleDraftEditLocked} />
+        </label>
+        <label>
+          <span>Tier</span>
+          <select
+            value={appRuleDraft.tier}
+            disabled={appRuleDraftEditLocked}
+            onchange={(event) => setAppRuleTier(event.currentTarget.value as AppRule["tier"])}
+          >
+            <option value="hard">Tier 1</option>
+            <option value="controlled_access">Tier 2</option>
+          </select>
+        </label>
+      </div>
+
+      {#if appRuleDraft.tier === "controlled_access"}
+        <div class="section-label">Daily allowance</div>
+        <div class="allowance-editor">
+          {#if appRuleAllowanceDraft}
+            <label>
+              <span>Daily minutes</span>
+              <input
+                type="number"
+                min="0"
+                max="1440"
+                bind:value={appRuleAllowanceDraft.daily_minutes}
+                disabled={appRuleDraftEditLocked}
+              />
+            </label>
+          {/if}
+        </div>
+      {/if}
+
+      <div class="section-label">Schedules</div>
+      <div class="chip-grid">
+        {#each config?.schedules ?? [] as schedule (schedule.id)}
+          <label class="chip-check">
+            <input
+              type="checkbox"
+              checked={appRuleDraft.schedule_ids.includes(schedule.id)}
+              disabled={appRuleDraftEditLocked}
+              onchange={() => toggleAppRuleSchedule(schedule.id)}
+            />
+            <span>{schedule.name ?? schedule.id}</span>
+          </label>
+        {:else}
+          <p class="empty-state">No schedules available.</p>
+        {/each}
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Matcher</th>
+              <th>Value</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each appRuleDraft.matchers as matcher, index (index)}
+              <tr>
+                <td>
+                  <select
+                    bind:value={matcher.kind}
+                    disabled={matcherEditLocked(index)}
+                  >
+                    {#each appMatcherKinds as kind (kind.id)}
+                      <option value={kind.id}>{kind.label}</option>
+                    {/each}
+                  </select>
+                </td>
+                <td>
+                  <input
+                    bind:value={matcher.value}
+                    disabled={matcherEditLocked(index)}
+                  />
+                </td>
+                <td>
+                  <button
+                    class="icon-button"
+                    title="Remove matcher"
+                    onclick={() => removeAppMatcher(index)}
+                    disabled={
+                      matcherRemoveLocked(index) || appRuleDraft.matchers.length <= 1
+                    }
+                  >
+                    <Trash2 size={16} aria-hidden="true" />
+                  </button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="button-row">
+        <button class="secondary" onclick={addAppMatcher} disabled={appRuleDraftDetoxLocked}>
+          <Plus size={17} aria-hidden="true" />
+          <span>Matcher</span>
+        </button>
+        <button
+          class="secondary"
+          onclick={onRemoveAppRuleDraft}
+          disabled={
+            appRuleSaving ||
+            appRuleDraftDetoxLocked ||
+            appRuleDraftActive ||
+            !appRuleDraftIsExisting
+          }
+        >
+          <Trash2 size={17} aria-hidden="true" />
+          <span>Delete</span>
+        </button>
+        <button
+          class="primary"
+          onclick={onSaveAppRuleDraft}
+          disabled={appRuleSaving || appRuleDraftDetoxLocked}
+        >
+          <Save size={17} aria-hidden="true" />
+          <span>Save</span>
+        </button>
+      </div>
+      {#if appRuleMessage}
+        <p class="result-text">{appRuleMessage}</p>
+      {/if}
+    {/if}
+    <div class="section-label section-label-tight">Detected apps</div>
     <div class="detected-app-toolbar">
       <label class="detected-search-field">
         <input bind:value={detectedSearch} placeholder="Search" />
@@ -202,7 +382,7 @@
               <button
                 class="secondary"
                 onclick={() => onAddDetectedMatchers(app)}
-                disabled={appRuleDraftLocked}
+                disabled={appRuleDraftDetoxLocked}
               >
                 <Plus size={16} aria-hidden="true" />
                 <span>Merge</span>
@@ -212,161 +392,6 @@
         </article>
       {:else}
         <p class="empty-state">No running apps match the current filters.</p>
-      {/each}
-    </div>
-  </article>
-
-  <article class="panel detail-panel">
-    <div class="panel-title">
-      <Gamepad2 size={18} aria-hidden="true" />
-      <h2>{appRuleDraft?.name || "Application"}</h2>
-    </div>
-    <button class="secondary wide-button" onclick={onStartNewAppRule}>
-      <Plus size={17} aria-hidden="true" />
-      <span>New application</span>
-    </button>
-    {#if appRuleDraft}
-      {#if appRuleDraftLocked}
-        <section class="inline-warning">
-          <AlertTriangle size={17} aria-hidden="true" />
-          <span>
-            {appRuleDraftDetoxLocked
-              ? "This application is covered by an active detox session."
-              : "This application is active right now."}
-          </span>
-        </section>
-      {/if}
-      <div class="form-grid">
-        <label>
-          <span>Name</span>
-          <input bind:value={appRuleDraft.name} disabled={appRuleDraftLocked} />
-        </label>
-        <label>
-          <span>Tier</span>
-          <select
-            value={appRuleDraft.tier}
-            disabled={appRuleDraftLocked}
-            onchange={(event) => setAppRuleTier(event.currentTarget.value as AppRule["tier"])}
-          >
-            <option value="hard">Tier 1</option>
-            <option value="controlled_access">Tier 2</option>
-          </select>
-        </label>
-      </div>
-
-      {#if appRuleDraft.tier === "controlled_access"}
-        <div class="section-label">Daily allowance</div>
-        <div class="allowance-editor">
-          {#if appRuleAllowanceDraft}
-            <label>
-              <span>Daily minutes</span>
-              <input
-                type="number"
-                min="0"
-                max="1440"
-                bind:value={appRuleAllowanceDraft.daily_minutes}
-                disabled={appRuleDraftLocked}
-              />
-            </label>
-          {/if}
-        </div>
-      {/if}
-
-      <div class="section-label">Schedules</div>
-      <div class="chip-grid">
-        {#each config?.schedules ?? [] as schedule (schedule.id)}
-          <label class="chip-check">
-            <input
-              type="checkbox"
-              checked={appRuleDraft.schedule_ids.includes(schedule.id)}
-              disabled={appRuleDraftLocked}
-              onchange={() => toggleAppRuleSchedule(schedule.id)}
-            />
-            <span>{schedule.name ?? schedule.id}</span>
-          </label>
-        {:else}
-          <p class="empty-state">No schedules available.</p>
-        {/each}
-      </div>
-
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Matcher</th>
-              <th>Value</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each appRuleDraft.matchers as matcher, index (index)}
-              <tr>
-                <td>
-                  <select bind:value={matcher.kind} disabled={appRuleDraftLocked}>
-                    {#each appMatcherKinds as kind (kind.id)}
-                      <option value={kind.id}>{kind.label}</option>
-                    {/each}
-                  </select>
-                </td>
-                <td>
-                  <input bind:value={matcher.value} disabled={appRuleDraftLocked} />
-                </td>
-                <td>
-                  <button
-                    class="icon-button"
-                    title="Remove matcher"
-                    onclick={() => removeAppMatcher(index)}
-                    disabled={appRuleDraftLocked || appRuleDraft.matchers.length <= 1}
-                  >
-                    <Trash2 size={16} aria-hidden="true" />
-                  </button>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-
-      <div class="button-row">
-        <button class="secondary" onclick={addAppMatcher} disabled={appRuleDraftLocked}>
-          <Plus size={17} aria-hidden="true" />
-          <span>Matcher</span>
-        </button>
-        <button
-          class="secondary"
-          onclick={onRemoveAppRuleDraft}
-          disabled={appRuleSaving || appRuleDraftLocked || !appRuleDraftIsExisting}
-        >
-          <Trash2 size={17} aria-hidden="true" />
-          <span>Delete</span>
-        </button>
-        <button
-          class="primary"
-          onclick={onSaveAppRuleDraft}
-          disabled={appRuleSaving || appRuleDraftLocked}
-        >
-          <Save size={17} aria-hidden="true" />
-          <span>Save</span>
-        </button>
-      </div>
-      {#if appRuleMessage}
-        <p class="result-text">{appRuleMessage}</p>
-      {/if}
-    {/if}
-
-    <div class="section-label">Saved applications</div>
-    <div class="rule-list">
-      {#each config?.app_rules ?? [] as rule (rule.id)}
-        <button
-          class:active={appRuleDraft?.id === rule.id}
-          onclick={() => onSelectAppRule(rule)}
-        >
-          <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
-          <span>{rule.name}</span>
-          <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
-        </button>
-      {:else}
-        <p class="empty-state">No saved application rules yet.</p>
       {/each}
     </div>
   </article>

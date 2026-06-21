@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Local, Timelike, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -51,6 +51,8 @@ const SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE: &str = "/etc/blockuntu/uninstall-re
 const TIER1_EDIT_KEY_FILE: &str = "/etc/blockuntu/tier1-edit-key.txt";
 const DEBIAN_PACKAGE_NAME: &str = "blockuntu";
 const BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS: u64 = 6;
+const OPERATOR_WINDOW_START_MINUTE: u32 = 20 * 60;
+const OPERATOR_WINDOW_END_MINUTE: u32 = 23 * 60 + 59;
 const TRAY_REFRESH_INTERVAL_SECONDS: u64 = 5;
 const TRAY_OPEN_VIEW_EVENT: &str = "blockuntu-open-view";
 const TRAY_RUNTIME_REFRESH_EVENT: &str = "blockuntu-runtime-refresh";
@@ -76,6 +78,8 @@ enum GuiError {
     HomeNotSet,
     #[error("uninstall confirmation phrase does not match")]
     InvalidUninstallPhrase,
+    #[error("operator actions are only available during Sunday 20:00-23:59")]
+    OperatorWindowClosed,
     #[error("GUI uninstall requires pkexec, but pkexec was not found")]
     MissingPkexec,
     #[error("uninstall command failed: {0}")]
@@ -251,6 +255,10 @@ fn tier1_edit_key() -> Result<Tier1EditKey, GuiError> {
 
 #[tauri::command]
 fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
+    if !operator_window_open_now() {
+        return Err(GuiError::OperatorWindowClosed);
+    }
+
     if !uninstall_phrase_matches(phrase.trim())? {
         return Err(GuiError::InvalidUninstallPhrase);
     }
@@ -427,6 +435,17 @@ fn phrase_contents_match(candidate: &str, contents: &str) -> bool {
         .lines()
         .map(str::trim)
         .any(|phrase| !phrase.is_empty() && candidate == phrase)
+}
+
+fn operator_window_open_now() -> bool {
+    let now = Local::now();
+    operator_window_open_parts(now.weekday(), now.hour(), now.minute())
+}
+
+fn operator_window_open_parts(weekday: Weekday, hour: u32, minute: u32) -> bool {
+    let current_minute = hour * 60 + minute;
+    weekday == Weekday::Sun
+        && (OPERATOR_WINDOW_START_MINUTE..=OPERATOR_WINDOW_END_MINUTE).contains(&current_minute)
 }
 
 fn write_uninstall_phrase(path: &Path) -> Result<String, GuiError> {
@@ -1556,5 +1575,13 @@ mod tests {
         let _ = fs::remove_file(&path);
         assert!(!empty);
         assert!(!unknown);
+    }
+
+    #[test]
+    fn operator_window_is_sunday_20_to_2359() {
+        assert!(!operator_window_open_parts(Weekday::Sun, 19, 59));
+        assert!(operator_window_open_parts(Weekday::Sun, 20, 0));
+        assert!(operator_window_open_parts(Weekday::Sun, 23, 59));
+        assert!(!operator_window_open_parts(Weekday::Mon, 20, 0));
     }
 }

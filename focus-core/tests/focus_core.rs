@@ -49,6 +49,14 @@ fn url_matching_supports_subdomains_exact_urls_path_prefixes_and_fallback_allow(
         patterns = [
           { kind = "path_prefix", value = "docs.example.net/private" }
         ]
+
+        [[rules]]
+        id = "contains-hard"
+        name = "Contains hard block"
+        tier = "hard"
+        patterns = [
+          { kind = "url_contains", value = "watch?v=shorts" }
+        ]
         "#,
     )
     .expect("config should parse");
@@ -83,6 +91,15 @@ fn url_matching_supports_subdomains_exact_urls_path_prefixes_and_fallback_allow(
     ));
     assert_eq!(
         evaluate_url("https://docs.example.net/public/report", &ctx),
+        Decision::Allow
+    );
+
+    assert!(matches!(
+        evaluate_url("https://video.example/watch?v=SHORTS&clip=1#comments", &ctx),
+        Decision::Block(BlockReason::HardBlock { rule_id, .. }) if rule_id == "contains-hard"
+    ));
+    assert_eq!(
+        evaluate_url("https://video.example/watch#v=shorts", &ctx),
         Decision::Allow
     );
 }
@@ -1078,6 +1095,16 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
         .expect("policy_allowances schema should query");
     assert!(policy_allowances_sql.contains("daily_minutes >= 0"));
 
+    let policy_patterns_sql: String = database
+        .connection()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'policy_site_list_patterns'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("policy_site_list_patterns schema should query");
+    assert!(policy_patterns_sql.contains("'url_contains'"));
+
     let now = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
     database
         .upsert_heartbeat("extension", Some("ok"), now)
@@ -1092,6 +1119,82 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
             .as_deref(),
         Some("enforcing")
     );
+}
+
+#[test]
+fn database_migration_adds_url_contains_to_existing_site_pattern_constraint() {
+    let conn = Connection::open_in_memory().expect("database should open");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE policy_site_list_patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            list_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('domain', 'exact_url', 'url_prefix', 'path_prefix')),
+            value TEXT NOT NULL,
+            match_subdomains INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0
+        );
+
+        INSERT INTO policy_site_list_patterns (
+            list_id,
+            kind,
+            value,
+            match_subdomains,
+            position
+        )
+        VALUES ('legacy', 'url_prefix', 'https://legacy.example/', 0, 7);
+        "#,
+    )
+    .expect("legacy schema should initialize");
+
+    migrate_database(&conn).expect("migration should add url_contains");
+
+    let table_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'policy_site_list_patterns'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("schema should query");
+    assert!(table_sql.contains("'url_contains'"));
+
+    conn.execute(
+        r#"
+        INSERT INTO policy_site_lists (
+            id,
+            name,
+            tier,
+            enabled
+        )
+        VALUES (?1, ?2, ?3, ?4)
+        "#,
+        ("new", "New", "hard", 1_i64),
+    )
+    .expect("site list should insert");
+
+    conn.execute(
+        r#"
+        INSERT INTO policy_site_list_patterns (
+            list_id,
+            kind,
+            value,
+            match_subdomains,
+            position
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+        ("new", "url_contains", "watch?v=shorts", 0_i64, 1_i64),
+    )
+    .expect("url_contains should satisfy migrated constraint");
+
+    let legacy_value: String = conn
+        .query_row(
+            "SELECT value FROM policy_site_list_patterns WHERE list_id = 'legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("legacy row should survive migration");
+    assert_eq!(legacy_value, "https://legacy.example/");
 }
 
 #[test]
