@@ -18,6 +18,8 @@ directories described below.
 - [Production installation](Docs/INSTALLATION.md): build a current `.deb`,
   install it on Ubuntu/Debian, configure Firefox Snap/Flatpak support, and
   understand production runtime paths.
+- [Implemented features](Docs/FEATURES.md): inventory of current website,
+  application, GUI, daemon, browser, packaging, and enforcement capabilities.
 - [Uninstall](Docs/UNINSTALL.md): GUI uninstall, recovery phrases, Debian purge
   behavior, and standalone script cleanup.
 - [Dev and production runbook](Docs/DEV_AND_PROD_RUNBOOK.md): local daemon
