@@ -1,29 +1,26 @@
 # BlocKuntu Implemented Features
 
-This document lists the implemented BlocKuntu features found in the active
-codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
-`browser-extension-firefox`, `browser-extension-chrome`, `packaging`, and
+This document lists the implemented BlocKuntu features found in the active  
+codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,  
+`browser-extension-firefox`, `browser-extension-chrome`, `packaging`, and  
 `scripts`.
 
 ## Policy Model
 
-- Central local policy store owned by the daemon and shared through
-  `focus-core`.
-- Structured policy configuration for website rules, application rules,
-  schedules, allowances, defaults, and strict-mode settings.
-- SQLite-backed runtime state for policy rows, unlocks, visits, events,
-  Detox sessions, service state, and extension heartbeats.
+- Central local policy store owned by the daemon and shared through  
+`focus-core`.
+- Structured policy configuration for website rules, application rules,  
+schedules, allowances, defaults, and strict-mode settings.
+- SQLite-backed runtime state for policy rows, unlocks, visits, events,  
+Detox sessions, service state, and extension heartbeats.
 - TOML config parsing and validation.
 - Database-backed policy loading and replacement.
 - Unique ID validation for site rules, app rules, schedules, and allowances.
 - Validation that referenced schedules and allowances exist.
 - Validation that one allowance is linked to only one site or app rule.
-- Validation that hard-block rules cannot define allowances or unlock
-  policies.
-- Configurable default unlock policy fields:
-  - `max_session_minutes`
-  - `cooldown_minutes`
-  - `max_unlocks_per_hour`
+- Validation that hard-block rules cannot define allowances or unlock  
+policies.
+- Fixed Tier 2 unlock policy enforced by the policy engine.
 - Strict-mode settings:
   - require Firefox extension heartbeat
   - require Chrome extension heartbeat
@@ -48,11 +45,11 @@ codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
 - Invalid URL blocking.
 - Tier 1 rules are always active when enabled.
 - Tier 2 rules are active only during linked schedule windows.
-- Multiple matching Tier 2 site rules are resolved by selecting the stricter
-  applicable rule.
+- Multiple matching Tier 2 site rules are resolved by selecting the stricter  
+applicable rule.
 - Tier 2 strictness accounts for allowance size and pattern specificity.
-- Block reason metadata includes rule ID, rule name, tier, controlled-access
-  reason, schedule details, expected release time, and allowance reset time.
+- Block reason metadata includes rule ID, rule name, tier, controlled-access  
+reason, schedule details, expected release time, and allowance reset time.
 - URL probe support through the GUI and daemon RPC.
 
 ## Application Blocking
@@ -68,27 +65,27 @@ codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
   - desktop ID
   - exact window title
   - window title contains
-- Case-insensitive matching for executable basename, command name, and desktop
-  ID.
+- Case-insensitive matching for executable basename, command name, and desktop  
+ID.
 - `/proc` scanning for running processes.
 - Executable path and basename detection from `/proc/[pid]/exe`.
 - Command-name detection from `/proc/[pid]/comm`.
 - Desktop ID detection from process environment and command-line hints.
 - Window-title detection with `wmctrl -lp` when available.
-- Window-title support status reporting, including provider, session type, and
-  availability details.
+- Window-title support status reporting, including provider, session type, and  
+availability details.
 - Forbidden process termination with `SIGTERM`.
 - `app_killed` style event logging for terminated processes.
-- Running-app snapshot API for the GUI, including decision, blocking rule, and
-  detected identity fields.
+- Running-app snapshot API for the GUI, including decision, blocking rule, and  
+detected identity fields.
 - GUI-assisted creation of app rules from detected running applications.
-- Mandatory hard app rule injection for unsupported browsers to reduce bypass
-  paths.
-- Unsupported browser blocking includes Chromium, Brave, Edge, Opera, Vivaldi,
-  LibreWolf, Waterfox, Epiphany, Falkon, qutebrowser, Midori, Min, Nyxt, and
-  Tor Browser.
-- Supported browser protection can terminate Firefox or Chrome when the
-  required extension heartbeat is stale beyond the configured grace period.
+- Mandatory hard app rule injection for unsupported browsers to reduce bypass  
+paths.
+- Unsupported browser blocking includes Chromium, Brave, Edge, Opera, Vivaldi,  
+LibreWolf, Waterfox, Epiphany, Falkon, qutebrowser, Midori, Min, Nyxt, and  
+Tor Browser.
+- Supported browser protection can terminate Firefox or Chrome when the  
+required extension heartbeat is stale beyond the configured grace period.
 
 ## Schedules
 
@@ -135,8 +132,8 @@ codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
 - Unlock rows persisted in SQLite.
 - `unlock_granted` event logging.
 - GUI manual unlock form.
-- Current code uses a fixed Tier 2 unlock policy of 2 minutes, 0 minute
-  cooldown, and 1 unlock per hour in the policy engine.
+- Current code uses a fixed Tier 2 unlock policy of 2 minutes, 0 minute  
+cooldown, and 1 unlock per hour in the policy engine.
 
 ## Detox Sessions
 
@@ -147,8 +144,8 @@ codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
 - Active, scheduled, expired, and cancelled session status reporting.
 - Remaining time reporting for active sessions.
 - Detox blocks take precedence over normal hard/controlled evaluation.
-- Detox block reasons include session ID, session name, target kind, rule ID,
-  rule name, end time, and expected release time.
+- Detox block reasons include session ID, session name, target kind, rule ID,  
+rule name, end time, and expected release time.
 - GUI Detox start workflow with duration presets.
 - GUI active Detox list and recent Detox history.
 - Detox cancellation support.
@@ -167,16 +164,16 @@ codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
 - Periodic extension heartbeat:
   - Firefox component: `firefox_extension`
   - Chrome component: `chrome_extension`
-- Fail-closed browser behavior when the extension, native host, or daemon
-  heartbeat chain is unhealthy.
-- Block all top-level HTTP/HTTPS navigations when backend health cannot be
-  proven.
+- Fail-closed browser behavior when the extension, native host, or daemon  
+heartbeat chain is unhealthy.
+- Block all top-level HTTP/HTTPS navigations when backend health cannot be  
+proven.
 - Periodic open-tab revalidation.
 - Visit tracking from extensions for allowed navigations.
 - Active visit heartbeats.
 - Visit cleanup when tabs close or navigations change.
-- Local extension setting to disable blocking when daemon reports enforcement
-  stopped or uninstalling.
+- Local extension setting to disable blocking when daemon reports enforcement  
+stopped or uninstalling.
 - Extension uninstall/prep mode support through daemon service state.
 - Blocked-page redirect with structured reason metadata.
 - Blocked page displays:
@@ -243,19 +240,19 @@ codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
 - Firefox enterprise policy repair.
 - Firefox policy status reporting.
 - Firefox policy force-install configuration for the extension.
-- Firefox policy hardening for bypass-sensitive browser pages and developer
-  tooling.
+- Firefox policy hardening for bypass-sensitive browser pages and developer  
+tooling.
 - Firefox private browsing support with extension enabled there.
-- Firefox Flatpak policy support through the Flatpak systemconfig extension
-  path.
+- Firefox Flatpak policy support through the Flatpak systemconfig extension  
+path.
 - Chrome managed policy repair.
 - Chrome policy status reporting.
 - Chrome extension force-install configuration.
 - Chrome extension settings with local update URL override.
 - Local Chrome update manifest generation.
 - Deferred browser policy repair until the first matching extension heartbeat.
-- Optional disabling of Firefox and Chrome policy management through daemon
-  flags.
+- Optional disabling of Firefox and Chrome policy management through daemon  
+flags.
 - Hosts-file fallback for Tier 1 domain patterns.
 - Managed `/etc/hosts` block between BlocKuntu markers.
 - Preservation of user-owned hosts-file content outside the managed block.
@@ -311,32 +308,32 @@ codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
 ## Tier 1 And Operator Guardrails
 
 - Active Tier 1 website list edits are protected.
-- Additive edits to active hard rules are allowed where they do not weaken the
-  rule.
+- Additive edits to active hard rules are allowed where they do not weaken the  
+rule.
 - Removing or weakening active Tier 1 site rules requires a Tier 1 edit unlock.
 - Tier 1 edit key loaded from `/etc/blockuntu/tier1-edit-key.txt`.
-- Tier 1 edit unlock is available only during the operator window:
-  Sunday 20:00-23:59.
+- Tier 1 edit unlock is available only during the operator window:  
+Sunday 20:00-23:59.
 - Tier 1 edit unlock lasts 5 minutes.
 - Tier 1 edit unlock state is stored in daemon service state.
 - Tier 1 edit unlock event logging.
-- Active app rules and active site/app rules in Detox are protected from unsafe
-  edits or deletion.
+- Active app rules and active site/app rules in Detox are protected from unsafe  
+edits or deletion.
 
 ## Health, Status, And Observability
 
-- Daemon status reporting with counts for rules, app rules, schedules, and
-  allowances.
+- Daemon status reporting with counts for rules, app rules, schedules, and  
+allowances.
 - Enforcement status reporting for browser policy and hosts-file state.
 - Firefox extension status from heartbeat freshness.
 - Chrome extension status from heartbeat freshness with a longer Chrome timeout.
-- Browser heartbeat metadata includes browser, extension ID, and extension
-  version.
+- Browser heartbeat metadata includes browser, extension ID, and extension  
+version.
 - System health checks in the GUI.
 - Recent event log view.
 - Event mix summary in the Statistics view.
-- Structured event logging for policy edits, enforcement changes, unlocks,
-  Detox, URL blocks, and uninstall preparation.
+- Structured event logging for policy edits, enforcement changes, unlocks,  
+Detox, URL blocks, and uninstall preparation.
 
 ## Installation, Packaging, And Operations
 
@@ -361,8 +358,8 @@ codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
   - Chrome extension
 - Runtime path documentation for production and development.
 - Uninstall workflow through GUI with `pkexec`.
-- Package purge cleanup for services, runtime paths, browser policies, hosts
-  state, config, and database.
+- Package purge cleanup for services, runtime paths, browser policies, hosts  
+state, config, and database.
 - Recovery uninstall phrase support at `/etc/blockuntu/uninstall-recovery.txt`.
 
 ## Tests And Verification Assets
@@ -373,18 +370,20 @@ codebase: `focus-core`, `focusd`, `focus-gui`, `native-host`,
 - Browser extension build and verification scripts.
 - GUI verification script.
 - Packaging and native-host verification scripts.
-- Historical proof-of-concept code retained under `PoC/`, separate from the
-  active implementation.
+- Historical proof-of-concept code retained under `PoC/`, separate from the  
+active implementation.
 
 ## Known Implemented Limitations
 
-- Hosts-file fallback only represents Tier 1 domain patterns. Exact URL,
-  prefix, contains, and path-level rules are browser-extension enforcement.
-- Window-title app matching depends on `wmctrl` and is mainly useful on
-  X11-compatible sessions.
-- Firefox and Google Chrome are the supported browser enforcement paths;
-  other browsers are handled as blocked applications in strict mode.
-- Current Tier 2 unlock behavior uses the fixed policy in the policy engine
-  even though configurable unlock policy fields exist in the config model.
-- Network-level fallback beyond browser and hosts enforcement is documented as
-  future work.
+- Hosts-file fallback only represents Tier 1 domain patterns. Exact URL,  
+prefix, contains, and path-level rules are browser-extension enforcement.
+- Window-title app matching depends on `wmctrl` and is mainly useful on  
+X11-compatible sessions.
+- Firefox and Google Chrome are the supported browser enforcement paths;  
+other browsers are handled as blocked applications in strict mode.
+- Tier 2 unlock behavior intentionally uses the fixed policy in the policy  
+engine. Unlock timing should stay the same for every Tier 2 rule.
+- The config schema still contains legacy unlock-policy fields from an older  
+design, but they are not intended as user-facing configuration.
+- Network-level fallback beyond browser and hosts enforcement is documented as  
+future work.
