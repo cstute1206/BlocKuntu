@@ -8,6 +8,7 @@ import type {
   DetoxSessionsResponse,
   EnforcementStatus,
   EventsResponse,
+  PolicyFileResult,
   RunningAppsResponse,
   AppRule,
   Allowance,
@@ -39,6 +40,14 @@ export function stopEnforcement(socketPath?: string): Promise<EnforcementStatus>
 
 export function configSnapshot(socketPath?: string): Promise<ConfigSnapshot> {
   return invoke("config_snapshot", { socketPath });
+}
+
+export function exportPolicyToml(socketPath?: string): Promise<PolicyFileResult> {
+  return invoke("export_policy_toml", { socketPath });
+}
+
+export function importPolicyToml(socketPath?: string): Promise<PolicyFileResult> {
+  return invoke("import_policy_toml", { socketPath });
 }
 
 export function upsertSiteList(rule: Rule, socketPath?: string): Promise<ConfigMutationResponse> {

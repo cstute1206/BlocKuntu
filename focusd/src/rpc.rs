@@ -336,6 +336,13 @@ struct DetoxSessionsParams {
     now: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ImportPolicyTomlParams {
+    toml: String,
+    #[serde(default)]
+    now: Option<String>,
+}
+
 pub fn handle_payload(context: &RpcContext, payload: &[u8]) -> Vec<u8> {
     let response = match serde_json::from_slice::<Value>(payload) {
         Ok(value) => handle_json_value(context, value),
@@ -379,6 +386,11 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
         "stop_enforcement" => stop_enforcement(context),
         "prepare_uninstall" => prepare_uninstall(context),
         "config_snapshot" => config_snapshot(context),
+        "export_policy_toml" => export_policy_toml_method(context),
+        "import_policy_toml" => {
+            let params = parse_params::<ImportPolicyTomlParams>(params)?;
+            import_policy_toml_method(context, params)
+        }
         "upsert_site_list" => {
             let params = parse_params::<UpsertSiteListParams>(params)?;
             upsert_site_list_method(context, params)
@@ -747,6 +759,54 @@ fn repair_deferred_policy_after_heartbeat(context: &RpcContext, component: &str)
 fn config_snapshot(context: &RpcContext) -> Result<Value> {
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     serde_json::to_value(core.config()).map_err(DaemonError::from)
+}
+
+fn export_policy_toml_method(context: &RpcContext) -> Result<Value> {
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let toml = core.config().to_toml_string()?;
+    Ok(json!({
+        "status": "ok",
+        "toml": toml,
+        "exported_at": Utc::now()
+    }))
+}
+
+fn import_policy_toml_method(
+    context: &RpcContext,
+    params: ImportPolicyTomlParams,
+) -> Result<Value> {
+    let now = parse_optional_now(params.now)?;
+    let now_utc = now.with_timezone(&Utc);
+    let mut next = Config::from_toml_str(&params.toml).map_err(DaemonError::from)?;
+    crate::app::ensure_mandatory_app_rules(&mut next);
+
+    let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    if !tier1_edit_window_active(&core, now)? {
+        return Err(DaemonError::InvalidRequest(
+            "Tier 1 edit unlock is required to import policy".to_string(),
+        ));
+    }
+    if !core.database().active_detox_sessions(now_utc)?.is_empty() {
+        return Err(DaemonError::InvalidRequest(
+            "cancel active detox sessions before importing policy".to_string(),
+        ));
+    }
+
+    core.database().replace_policy_config(&next)?;
+    core.replace_config(next)?;
+    let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
+    core.database().record_event(
+        "policy_imported",
+        Some("policy"),
+        Some(&format!("TOML import{}", hosts_repair_detail(hosts_repair))),
+        now_utc,
+    )?;
+
+    Ok(json!({
+        "status": "ok",
+        "config": core.config(),
+        "updated_at": now_utc
+    }))
 }
 
 fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -> Result<Value> {
@@ -2449,6 +2509,7 @@ mod tests {
 
     use super::{
         handle_payload, parse_optional_now, running_app_snapshots_from_processes, RpcContext,
+        TIER1_EDIT_UNLOCK_UNTIL_KEY,
     };
     use crate::process_scan::ProcessInfo;
 
@@ -2621,6 +2682,112 @@ mod tests {
         assert_eq!(response["id"], 7);
         assert_eq!(response["result"]["decision"], "block");
         assert_eq!(response["result"]["reason"]["kind"], "hard_block");
+    }
+
+    #[test]
+    fn exports_policy_as_toml() {
+        let context = rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 72,
+            "method": "export_policy_toml",
+            "params": {}
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        let toml = response["result"]["toml"]
+            .as_str()
+            .expect("TOML export should be a string");
+        assert!(toml.contains("[[rules]]"));
+        assert!(toml.contains("blocked.example"));
+    }
+
+    #[test]
+    fn rejects_policy_import_without_tier1_unlock() {
+        let context = rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 73,
+            "method": "import_policy_toml",
+            "params": {
+                "now": "2026-05-24T20:00:00+02:00",
+                "toml": r#"
+                  [[rules]]
+                  id = "replacement"
+                  name = "Replacement"
+                  tier = "hard"
+                  patterns = [
+                    { kind = "domain", value = "replacement.example", match_subdomains = true }
+                  ]
+                "#
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("Tier 1 edit unlock is required"));
+    }
+
+    #[test]
+    fn imports_policy_toml_with_tier1_unlock() {
+        let context = rpc_context();
+        {
+            let core = context.core.lock().expect("core lock should work");
+            core.database()
+                .set_service_state(
+                    TIER1_EDIT_UNLOCK_UNTIL_KEY,
+                    "2026-05-24T19:00:00Z",
+                    Utc::now(),
+                )
+                .expect("unlock state should write");
+        }
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 74,
+            "method": "import_policy_toml",
+            "params": {
+                "now": "2026-05-24T20:30:00+02:00",
+                "toml": r#"
+                  [[rules]]
+                  id = "replacement"
+                  name = "Replacement"
+                  tier = "hard"
+                  patterns = [
+                    { kind = "domain", value = "replacement.example", match_subdomains = true }
+                  ]
+                "#
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["status"], "ok");
+        assert_eq!(
+            response["result"]["config"]["rules"][0]["id"],
+            "replacement"
+        );
+        assert!(response["result"]["config"]["app_rules"]
+            .as_array()
+            .expect("app rules should be an array")
+            .iter()
+            .any(|rule| rule["id"] == "unsupported-browsers-hard"));
     }
 
     #[test]

@@ -3,9 +3,11 @@
     Activity,
     AlertTriangle,
     CheckCircle2,
+    Download,
     Gauge,
     KeyRound,
     Trash2,
+    Upload,
     XCircle
   } from "@lucide/svelte";
   import type { HealthCheck, SystemHealth, UninstallResult } from "../../lib/types";
@@ -28,8 +30,14 @@
     operatorWindowLabel: string;
     tier1EditMessage: string | null;
     tier1EditKeyError: string | null;
+    policyExportRunning: boolean;
+    policyImportRunning: boolean;
+    policyTransferMessage: string | null;
+    policyTransferError: string | null;
     onRunUninstallBlockuntu: () => void | Promise<void>;
     onUnlockTier1Edit: () => void | Promise<void>;
+    onExportPolicyToml: () => void | Promise<void>;
+    onImportPolicyToml: () => void | Promise<void>;
   }
 
   let {
@@ -48,8 +56,14 @@
     operatorWindowLabel,
     tier1EditMessage,
     tier1EditKeyError,
+    policyExportRunning,
+    policyImportRunning,
+    policyTransferMessage,
+    policyTransferError,
     onRunUninstallBlockuntu,
-    onUnlockTier1Edit
+    onUnlockTier1Edit,
+    onExportPolicyToml,
+    onImportPolicyToml
   }: Props = $props();
 
   let healthChecks = $derived(health?.checks ?? []);
@@ -60,6 +74,7 @@
     Boolean(operatorWindowOpen && uninstallPhrase && uninstallPhraseInput.trim())
   );
   let canUnlockTier1Edit = $derived(Boolean(operatorWindowOpen && tier1EditPhraseInput.trim()));
+  let policyActionRunning = $derived(policyExportRunning || policyImportRunning);
 
   function checkIcon(check: HealthCheck): Icon {
     if (check.state === "ok") return CheckCircle2;
@@ -163,6 +178,34 @@
     {/if}
     {#if tier1EditKeyError}
       <p class="result-text danger-text">{tier1EditKeyError}</p>
+    {/if}
+  </article>
+
+  <article class="panel">
+    <div class="panel-title">
+      <Download size={18} aria-hidden="true" />
+      <h2>Policy Files</h2>
+    </div>
+    <div class="policy-file-actions">
+      <button class="secondary" onclick={onExportPolicyToml} disabled={policyActionRunning}>
+        <Download size={17} aria-hidden="true" />
+        <span>{policyExportRunning ? "Exporting" : "Export TOML"}</span>
+      </button>
+      <button
+        class="secondary"
+        onclick={onImportPolicyToml}
+        disabled={policyActionRunning || !tier1EditUnlocked}
+        title={tier1EditUnlocked ? "Import TOML" : "Unlock Tier 1 edits before importing"}
+      >
+        <Upload size={17} aria-hidden="true" />
+        <span>{policyImportRunning ? "Importing" : "Import TOML"}</span>
+      </button>
+    </div>
+    {#if policyTransferMessage}
+      <p class="result-text">{policyTransferMessage}</p>
+    {/if}
+    {#if policyTransferError}
+      <p class="result-text danger-text">{policyTransferError}</p>
     {/if}
   </article>
 

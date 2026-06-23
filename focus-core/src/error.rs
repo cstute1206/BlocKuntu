@@ -21,6 +21,8 @@ pub enum ConfigError {
     Io(#[from] std::io::Error),
     #[error("failed to parse TOML configuration: {0}")]
     Parse(#[from] toml::de::Error),
+    #[error("failed to serialize TOML configuration: {0}")]
+    Serialize(#[from] toml::ser::Error),
     #[error("invalid configuration: {0}")]
     Validation(String),
 }

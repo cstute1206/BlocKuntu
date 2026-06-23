@@ -1340,6 +1340,38 @@ fn policy_config_roundtrips_through_sqlite() {
 }
 
 #[test]
+fn policy_config_roundtrips_through_toml_export() {
+    let config = Config::from_toml_str(
+        r#"
+        [strict_mode]
+        require_firefox_extension = true
+        require_chrome_extension = true
+        kill_supported_browser_if_extension_stale = true
+        block_unsupported_browsers = true
+        grace_seconds = 30
+
+        [[rules]]
+        id = "hard-list"
+        name = "Hard List"
+        tier = "hard"
+        patterns = [
+          { kind = "domain", value = "hard.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+
+    let exported = config
+        .to_toml_string()
+        .expect("config should serialize to TOML");
+    let imported = Config::from_toml_str(&exported).expect("exported TOML should parse");
+
+    assert_eq!(imported, config);
+    assert!(exported.contains("[[rules]]"));
+    assert!(exported.contains("hard.example"));
+}
+
+#[test]
 fn corrupt_and_unsafe_configurations_fail_safely() {
     assert!(Config::from_toml_str("not valid toml =").is_err());
 

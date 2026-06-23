@@ -956,11 +956,20 @@ th {
 }
 
 .tier1-edit-form,
+.policy-file-actions,
 .uninstall-form {
   align-items: end;
   display: grid;
   gap: 12px;
+}
+
+.tier1-edit-form,
+.uninstall-form {
   grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+.policy-file-actions {
+  grid-template-columns: repeat(2, minmax(0, max-content));
 }
 
 .health-summary {
@@ -1127,6 +1136,7 @@ pre {
     .allowance-editor,
     .detected-app-toolbar,
     .detox-form,
+    .policy-file-actions,
     .tier1-edit-form,
     .uninstall-form {
     grid-template-columns: 1fr;

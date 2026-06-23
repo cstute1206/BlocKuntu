@@ -127,6 +127,13 @@ export interface ConfigMutationResponse {
   updated_at: string;
 }
 
+export interface PolicyFileResult {
+  status: "ok" | "cancelled";
+  detail: string;
+  path?: string | null;
+  config?: ConfigSnapshot | null;
+}
+
 export interface DetoxSession {
   id: string;
   name?: string | null;

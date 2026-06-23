@@ -152,6 +152,15 @@ struct UninstallResult {
     detail: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PolicyFileResult {
+    status: String,
+    detail: String,
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config: Option<Value>,
+}
+
 #[derive(Clone)]
 struct TrayMenuState {
     daemon_status: MenuItem<Wry>,
@@ -189,6 +198,63 @@ fn enforcement_status(socket_path: Option<String>) -> Result<Value, GuiError> {
 fn config_snapshot(socket_path: Option<String>) -> Result<Value, GuiError> {
     let socket = resolve_socket_path(socket_path.as_deref());
     call_daemon(&socket, "config_snapshot", json!({}))
+}
+
+#[tauri::command]
+fn export_policy_toml(socket_path: Option<String>) -> Result<PolicyFileResult, GuiError> {
+    let Some(path) = policy_export_path() else {
+        return Ok(PolicyFileResult {
+            status: "cancelled".to_string(),
+            detail: "Export cancelled.".to_string(),
+            path: None,
+            config: None,
+        });
+    };
+    let path = with_toml_extension(path);
+    let socket = resolve_socket_path(socket_path.as_deref());
+    let value = call_daemon(&socket, "export_policy_toml", json!({}))?;
+    let toml = value
+        .get("toml")
+        .and_then(Value::as_str)
+        .ok_or(GuiError::InvalidRpcResponse)?;
+    fs::write(&path, toml)?;
+
+    Ok(PolicyFileResult {
+        status: "ok".to_string(),
+        detail: format!("Policy exported to {}.", path.display()),
+        path: Some(path.display().to_string()),
+        config: None,
+    })
+}
+
+#[tauri::command]
+fn import_policy_toml(socket_path: Option<String>) -> Result<PolicyFileResult, GuiError> {
+    let Some(path) = policy_import_path() else {
+        return Ok(PolicyFileResult {
+            status: "cancelled".to_string(),
+            detail: "Import cancelled.".to_string(),
+            path: None,
+            config: None,
+        });
+    };
+    let toml = fs::read_to_string(&path)?;
+    let socket = resolve_socket_path(socket_path.as_deref());
+    let value = call_daemon(
+        &socket,
+        "import_policy_toml",
+        json!({
+            "toml": toml,
+            "now": Utc::now().to_rfc3339()
+        }),
+    )?;
+    let config = value.get("config").cloned();
+
+    Ok(PolicyFileResult {
+        status: "ok".to_string(),
+        detail: format!("Policy imported from {}.", path.display()),
+        path: Some(path.display().to_string()),
+        config,
+    })
 }
 
 #[tauri::command]
@@ -564,6 +630,28 @@ fn call_daemon(socket_path: &str, method: &str, params: Value) -> Result<Value, 
         .get("result")
         .cloned()
         .ok_or(GuiError::InvalidRpcResponse)
+}
+
+fn policy_export_path() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Export BlocKuntu policy")
+        .set_file_name("blockuntu-policy.toml")
+        .add_filter("TOML policy", &["toml"])
+        .save_file()
+}
+
+fn policy_import_path() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Import BlocKuntu policy")
+        .add_filter("TOML policy", &["toml"])
+        .pick_file()
+}
+
+fn with_toml_extension(mut path: PathBuf) -> PathBuf {
+    if path.extension().is_none() {
+        path.set_extension("toml");
+    }
+    path
 }
 
 fn development_runtime_check() -> HealthCheck {
@@ -1512,6 +1600,8 @@ pub fn run() {
             daemon_status,
             enforcement_status,
             config_snapshot,
+            export_policy_toml,
+            import_policy_toml,
             recent_events,
             evaluate_url,
             request_unlock,

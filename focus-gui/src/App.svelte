@@ -32,6 +32,8 @@
     detoxSessions,
     enforcementStatus,
     evaluateUrl,
+    exportPolicyToml,
+    importPolicyToml,
     recentEvents,
     runningApps as fetchRunningApps,
     requestUnlock,
@@ -73,6 +75,7 @@
     DecisionResult,
     DetoxSession,
     EnforcementStatus,
+    PolicyFileResult,
     RecentEvent,
     RunningApp,
     WindowDetectionStatus,
@@ -172,6 +175,11 @@
   let tier1EditUnlockedUntil: string | null = $state(null);
   let tier1EditMessage: string | null = $state(null);
   let nowMs = $state(Date.now());
+
+  let policyExportRunning = $state(false);
+  let policyImportRunning = $state(false);
+  let policyTransferMessage: string | null = $state(null);
+  let policyTransferError: string | null = $state(null);
 
   let daemonOnline = $derived(status?.status === "ok");
   let activeViewTitle = $derived(
@@ -695,6 +703,42 @@
     }
   }
 
+  async function runExportPolicyToml(): Promise<void> {
+    policyExportRunning = true;
+    policyTransferMessage = null;
+    policyTransferError = null;
+    lastError = null;
+    try {
+      const result = await exportPolicyToml(socketArg());
+      policyTransferMessage = result.detail;
+    } catch (error) {
+      policyTransferError = formatError(error);
+    } finally {
+      policyExportRunning = false;
+    }
+  }
+
+  async function runImportPolicyToml(): Promise<void> {
+    if (!tier1EditUnlocked) return;
+    policyImportRunning = true;
+    policyTransferMessage = null;
+    policyTransferError = null;
+    lastError = null;
+    try {
+      const result: PolicyFileResult = await importPolicyToml(socketArg());
+      policyTransferMessage = result.detail;
+      if (result.config) {
+        config = result.config;
+        syncConfigSelection(result.config);
+      }
+      await refreshAll({ silent: true });
+    } catch (error) {
+      policyTransferError = formatError(error);
+    } finally {
+      policyImportRunning = false;
+    }
+  }
+
   function operatorWindowOpenAt(timestampMs: number): boolean {
     const date = new Date(timestampMs);
     const currentMinute = date.getHours() * 60 + date.getMinutes();
@@ -1132,8 +1176,14 @@
         operatorWindowLabel={OPERATOR_WINDOW_LABEL}
         {tier1EditMessage}
         {tier1EditKeyError}
+        {policyExportRunning}
+        {policyImportRunning}
+        {policyTransferMessage}
+        {policyTransferError}
         onRunUninstallBlockuntu={runUninstallBlockuntu}
         onUnlockTier1Edit={runUnlockTier1Edit}
+        onExportPolicyToml={runExportPolicyToml}
+        onImportPolicyToml={runImportPolicyToml}
       />
     {/if}
 

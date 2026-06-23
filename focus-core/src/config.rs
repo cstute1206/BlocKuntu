@@ -39,6 +39,11 @@ impl Config {
         Ok(config)
     }
 
+    pub fn to_toml_string(&self) -> Result<String, ConfigError> {
+        self.validate()?;
+        Ok(toml::to_string_pretty(self)?)
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         ensure_unique_ids("rule", self.rules.iter().map(|rule| rule.id.as_str()))?;
         ensure_unique_ids(

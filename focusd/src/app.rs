@@ -648,7 +648,7 @@ fn hosts_immutable_enabled(args: &Args) -> bool {
     args.hosts == Path::new(DEFAULT_HOSTS_PATH)
 }
 
-fn ensure_mandatory_app_rules(config: &mut focus_core::Config) -> bool {
+pub(crate) fn ensure_mandatory_app_rules(config: &mut focus_core::Config) -> bool {
     if !config.strict_mode.block_unsupported_browsers {
         if let Some(index) = config
             .app_rules
