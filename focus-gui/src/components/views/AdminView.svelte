@@ -17,6 +17,7 @@
   interface Props {
     health: SystemHealth | null;
     uninstallPhrase: string | null;
+    uninstallPhraseLoading: boolean;
     uninstallPhraseInput?: string;
     uninstallRunning: boolean;
     uninstallResult: UninstallResult | null;
@@ -43,6 +44,7 @@
   let {
     health,
     uninstallPhrase,
+    uninstallPhraseLoading,
     uninstallPhraseInput = $bindable(""),
     uninstallRunning,
     uninstallResult,
@@ -71,7 +73,7 @@
   let warnHealthCount = $derived(healthChecks.filter((check) => check.state === "warn").length);
   let errorHealthCount = $derived(healthChecks.filter((check) => check.state === "error").length);
   let canRunUninstall = $derived(
-    Boolean(operatorWindowOpen && uninstallPhrase && uninstallPhraseInput.trim())
+    Boolean(operatorWindowOpen && uninstallPhrase && uninstallPhraseInput.trim() && !uninstallPhraseLoading)
   );
   let canUnlockTier1Edit = $derived(Boolean(operatorWindowOpen && tier1EditPhraseInput.trim()));
   let policyActionRunning = $derived(policyExportRunning || policyImportRunning);
@@ -154,7 +156,7 @@
         </small>
       </div>
     </div>
-    <div class="tier1-edit-form">
+    <div class="tier1-edit-form admin-action-form">
       <label>
         <span>Edit key</span>
         <input
@@ -214,7 +216,7 @@
       <Trash2 size={18} aria-hidden="true" />
       <h2>Uninstall</h2>
     </div>
-    <div class="uninstall-form">
+    <div class="uninstall-form admin-action-form">
       <div class="status-list">
         <div class="status-row">
           <span>Allowed</span>
@@ -226,6 +228,24 @@
           <span>Time</span>
           <small>{operatorWindowLabel}</small>
         </div>
+        <div class="status-row">
+          <span>Phrase</span>
+          <strong data-state={uninstallPhrase ? "active" : "stopped"}>
+            {#if uninstallPhrase}
+              ready
+            {:else if uninstallPhraseLoading}
+              loading
+            {:else}
+              unavailable
+            {/if}
+          </strong>
+        </div>
+        {#if uninstallPhrase}
+          <div class="status-row status-row-wide">
+            <span>Confirm</span>
+            <code class="phrase-code">{uninstallPhrase}</code>
+          </div>
+        {/if}
       </div>
       <label>
         <span>Confirmation phrase</span>

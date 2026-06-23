@@ -24,6 +24,7 @@ const DEV_FIREFOX_POLICY_PATH: &str = "/tmp/blockuntu/firefox/policies.json";
 const DEFAULT_CHROME_POLICY_PATH: &str = "/etc/opt/chrome/policies/managed/blockuntu.json";
 const DEV_CHROME_POLICY_PATH: &str = "/tmp/blockuntu/chrome/policies/managed/blockuntu.json";
 const FIREFOX_EXTENSION_IDS: [&str; 2] = ["blockuntu@example.local", "blockuntu-poc@example.local"];
+const FIREFOX_COMMANDS: [&str; 2] = ["/usr/bin/firefox", "/bin/firefox"];
 const FIREFOX_USER_NATIVE_HOST_MANIFEST: &str =
     ".mozilla/native-messaging-hosts/blockuntu_native.json";
 const SYSTEM_NATIVE_HOST_MANIFEST: &str =
@@ -37,6 +38,18 @@ const SNAP_FIREFOX_APP_ROOT: &str = "snap/firefox/common";
 const SNAP_FIREFOX_NATIVE_HOST_MANIFEST: &str =
     "snap/firefox/common/.mozilla/native-messaging-hosts/blockuntu_native.json";
 const CHROME_EXTENSION_ID: &str = "odedgejjcdilkoibeljkeohekonmdfea";
+const CHROME_COMMANDS: [&str; 4] = [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/bin/google-chrome",
+    "/bin/google-chrome-stable",
+];
+const CHROMIUM_COMMANDS: [&str; 4] = [
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/bin/chromium",
+    "/bin/chromium-browser",
+];
 const CHROME_USER_NATIVE_HOST_MANIFEST: &str =
     ".config/google-chrome/NativeMessagingHosts/blockuntu_native.json";
 const CHROMIUM_USER_NATIVE_HOST_MANIFEST: &str =
@@ -370,6 +383,8 @@ fn system_health(socket_path: Option<String>) -> SystemHealth {
     let using_dev_socket = socket == DEV_SOCKET_PATH;
     let mut checks = Vec::new();
     let enforcement = call_daemon(&socket, "enforcement_status", json!({})).ok();
+    let system_firefox_present = system_firefox_available();
+    let chrome_family_present = chrome_family_available();
 
     checks.push(socket_check(Path::new(&socket)));
     if using_dev_socket {
@@ -382,37 +397,57 @@ fn system_health(socket_path: Option<String>) -> SystemHealth {
     }
     if let Some(enforcement) = &enforcement {
         checks.push(enforcement_mode_check(enforcement));
-        checks.push(policy_enforcement_check(enforcement));
-        checks.push(chrome_policy_enforcement_check(enforcement));
+        if system_firefox_present {
+            checks.push(policy_enforcement_check(enforcement));
+        }
+        if chrome_family_present {
+            checks.push(chrome_policy_enforcement_check(enforcement));
+        }
         checks.push(hosts_enforcement_check(enforcement));
     } else if using_dev_socket {
-        checks.push(policy_file_check(Path::new(DEV_FIREFOX_POLICY_PATH)));
-        checks.push(chrome_policy_file_check(Path::new(DEV_CHROME_POLICY_PATH)));
+        if system_firefox_present {
+            checks.push(policy_file_check(Path::new(DEV_FIREFOX_POLICY_PATH)));
+        }
+        if chrome_family_present {
+            checks.push(chrome_policy_file_check(Path::new(DEV_CHROME_POLICY_PATH)));
+        }
         checks.push(hosts_file_check(Path::new("/tmp/blockuntu/hosts")));
     } else {
-        checks.push(policy_file_check(Path::new(DEFAULT_FIREFOX_POLICY_PATH)));
-        checks.push(chrome_policy_file_check(Path::new(
-            DEFAULT_CHROME_POLICY_PATH,
-        )));
+        if system_firefox_present {
+            checks.push(policy_file_check(Path::new(DEFAULT_FIREFOX_POLICY_PATH)));
+        }
+        if chrome_family_present {
+            checks.push(chrome_policy_file_check(Path::new(
+                DEFAULT_CHROME_POLICY_PATH,
+            )));
+        }
         checks.push(hosts_file_check(Path::new("/etc/hosts")));
     }
-    checks.push(native_host_manifest_check());
+    if system_firefox_present {
+        checks.push(native_host_manifest_check());
+    }
     checks.extend(confined_firefox_native_host_checks());
     checks.extend(confined_firefox_policy_checks());
-    checks.push(chrome_native_host_manifest_check());
+    if chrome_family_present {
+        checks.push(chrome_native_host_manifest_check());
+    }
     checks.push(unsupported_browser_rule_check(&socket));
-    checks.push(browser_extension_runtime_check(
-        &socket,
-        "firefox_extension",
-        "firefox_extension",
-        "Firefox extension",
-    ));
-    checks.push(browser_extension_runtime_check(
-        &socket,
-        "chrome_extension",
-        "chrome_extension",
-        "Chrome extension",
-    ));
+    if firefox_family_available() {
+        checks.push(browser_extension_runtime_check(
+            &socket,
+            "firefox_extension",
+            "firefox_extension",
+            "Firefox extension",
+        ));
+    }
+    if chrome_family_present {
+        checks.push(browser_extension_runtime_check(
+            &socket,
+            "chrome_extension",
+            "chrome_extension",
+            "Chrome extension",
+        ));
+    }
 
     SystemHealth {
         checked_at: Utc::now(),
@@ -588,6 +623,32 @@ fn command_path(candidates: &[&str]) -> Option<PathBuf> {
         .iter()
         .map(PathBuf::from)
         .find(|path| path.is_file())
+}
+
+fn system_firefox_available() -> bool {
+    command_path(&FIREFOX_COMMANDS).is_some()
+}
+
+fn firefox_family_available() -> bool {
+    system_firefox_available() || flatpak_firefox_available() || snap_firefox_available()
+}
+
+fn chrome_family_available() -> bool {
+    command_path(&CHROME_COMMANDS).is_some() || command_path(&CHROMIUM_COMMANDS).is_some()
+}
+
+fn flatpak_firefox_available() -> bool {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(FLATPAK_FIREFOX_APP_ROOT).exists())
+        .unwrap_or(false)
+}
+
+fn snap_firefox_available() -> bool {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(SNAP_FIREFOX_APP_ROOT).exists())
+        .unwrap_or(false)
 }
 
 fn command_failure_detail(command: &str, output: &std::process::Output) -> String {

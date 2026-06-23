@@ -173,6 +173,8 @@
   let tier1EditPhraseInput = $state("");
   let tier1EditUnlocking = $state(false);
   let tier1EditUnlockedUntil: string | null = $state(null);
+  let operatorWindowOpenFromDaemon: boolean | null = $state(null);
+  let operatorWindowLabelFromDaemon: string | null = $state(null);
   let tier1EditMessage: string | null = $state(null);
   let nowMs = $state(Date.now());
 
@@ -191,7 +193,8 @@
   let tier1EditRemainingSeconds = $derived(
     tier1EditUnlockedUntil ? Math.max(0, Math.ceil((Date.parse(tier1EditUnlockedUntil) - nowMs) / 1000)) : 0
   );
-  let operatorWindowOpen = $derived(operatorWindowOpenAt(nowMs));
+  let operatorWindowOpen = $derived(operatorWindowOpenFromDaemon ?? operatorWindowOpenAt(nowMs));
+  let operatorWindowLabel = $derived(operatorWindowLabelFromDaemon ?? OPERATOR_WINDOW_LABEL);
   let activeDetoxSessions = $derived(
     detoxSessionList.filter(
       (session) =>
@@ -408,6 +411,11 @@
       tier1EditUnlockedUntil = tier1EditStatusResult.value.active
         ? (tier1EditStatusResult.value.expires_at ?? null)
         : null;
+      operatorWindowOpenFromDaemon = tier1EditStatusResult.value.operator_window_open ?? null;
+      operatorWindowLabelFromDaemon = tier1EditStatusResult.value.operator_window_label ?? null;
+    } else {
+      operatorWindowOpenFromDaemon = null;
+      operatorWindowLabelFromDaemon = null;
     }
   }
 
@@ -1065,7 +1073,7 @@
     </header>
 
     {#if lastError}
-      <section class="alert-row" role="status">
+      <section class="alert-row" role="alert">
         <AlertTriangle size={18} aria-hidden="true" />
         <span>{lastError}</span>
       </section>
@@ -1162,6 +1170,7 @@
       <AdminView
         {health}
         {uninstallPhrase}
+        {uninstallPhraseLoading}
         bind:uninstallPhraseInput
         {uninstallRunning}
         {uninstallResult}
@@ -1172,7 +1181,7 @@
         {tier1EditUnlockedUntil}
         {tier1EditRemainingSeconds}
         {operatorWindowOpen}
-        operatorWindowLabel={OPERATOR_WINDOW_LABEL}
+        {operatorWindowLabel}
         {tier1EditMessage}
         {tier1EditKeyError}
         {policyExportRunning}

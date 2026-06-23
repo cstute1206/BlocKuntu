@@ -272,7 +272,20 @@ button:disabled {
   gap: 10px;
   margin-bottom: 14px;
   min-height: 42px;
-  padding: 0 12px;
+  padding: 10px 12px;
+}
+
+.alert-row {
+  box-shadow: 0 8px 18px rgb(29 37 34 / 12%);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.alert-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .decision-row {
@@ -951,6 +964,10 @@ th {
   overflow-wrap: anywhere;
 }
 
+.status-row-wide {
+  align-items: start;
+}
+
 .danger-action {
   color: #7b2727;
 }
@@ -966,6 +983,14 @@ th {
 .tier1-edit-form,
 .uninstall-form {
   grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+.admin-action-form {
+  margin-top: 14px;
+}
+
+.uninstall-form .status-list {
+  grid-column: 1 / -1;
 }
 
 .policy-file-actions {

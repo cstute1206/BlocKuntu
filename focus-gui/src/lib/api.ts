@@ -53,7 +53,7 @@ export function importPolicyToml(socketPath?: string): Promise<PolicyFileResult>
 export function upsertSiteList(rule: Rule, socketPath?: string): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "upsert_site_list",
-    { rule, now: new Date().toISOString() },
+    { rule, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -61,7 +61,7 @@ export function upsertSiteList(rule: Rule, socketPath?: string): Promise<ConfigM
 export function deleteSiteList(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "delete_site_list",
-    { id, now: new Date().toISOString() },
+    { id, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -72,7 +72,7 @@ export function upsertAllowance(
 ): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "upsert_allowance",
-    { allowance, now: new Date().toISOString() },
+    { allowance, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -80,7 +80,7 @@ export function upsertAllowance(
 export function deleteAllowance(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "delete_allowance",
-    { id, now: new Date().toISOString() },
+    { id, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -91,7 +91,7 @@ export function upsertAppRule(
 ): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "upsert_app_rule",
-    { rule, now: new Date().toISOString() },
+    { rule, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -99,7 +99,7 @@ export function upsertAppRule(
 export function deleteAppRule(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "delete_app_rule",
-    { id, now: new Date().toISOString() },
+    { id, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -110,7 +110,7 @@ export function upsertSchedule(
 ): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "upsert_schedule",
-    { schedule, now: new Date().toISOString() },
+    { schedule, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -118,7 +118,7 @@ export function upsertSchedule(
 export function deleteSchedule(id: string, socketPath?: string): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "delete_schedule",
-    { id, now: new Date().toISOString() },
+    { id, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -129,7 +129,7 @@ export function detoxSessions(
 ): Promise<DetoxSessionsResponse> {
   return daemonRpc(
     "detox_sessions",
-    { active_only: activeOnly, limit: 80, now: new Date().toISOString() },
+    { active_only: activeOnly, limit: 80, now: clientNow() },
     socketPath
   ) as Promise<DetoxSessionsResponse>;
 }
@@ -148,7 +148,7 @@ export function startDetox(
       duration_minutes: durationMinutes,
       site_rule_ids: siteRuleIds,
       app_rule_ids: appRuleIds,
-      now: new Date().toISOString()
+      now: clientNow()
     },
     socketPath
   ) as Promise<DetoxMutationResponse>;
@@ -157,7 +157,7 @@ export function startDetox(
 export function cancelDetox(id: string, socketPath?: string): Promise<DetoxMutationResponse> {
   return daemonRpc(
     "cancel_detox",
-    { id, now: new Date().toISOString() },
+    { id, now: clientNow() },
     socketPath
   ) as Promise<DetoxMutationResponse>;
 }
@@ -167,7 +167,7 @@ export function recentEvents(limit = 50, socketPath?: string): Promise<EventsRes
 }
 
 export function runningApps(socketPath?: string): Promise<RunningAppsResponse> {
-  return daemonRpc("running_apps", { now: new Date().toISOString() }, socketPath) as Promise<RunningAppsResponse>;
+  return daemonRpc("running_apps", { now: clientNow() }, socketPath) as Promise<RunningAppsResponse>;
 }
 
 export function systemHealth(socketPath?: string): Promise<SystemHealth> {
@@ -197,7 +197,7 @@ export function tier1EditKey(): Promise<Tier1EditKey> {
 export function tier1EditStatus(socketPath?: string): Promise<Tier1EditStatus> {
   return daemonRpc(
     "tier1_edit_status",
-    { now: new Date().toISOString() },
+    { now: clientNow() },
     socketPath
   ) as Promise<Tier1EditStatus>;
 }
@@ -208,7 +208,7 @@ export function unlockTier1Edit(
 ): Promise<Tier1EditStatus> {
   return daemonRpc(
     "unlock_tier1_edit",
-    { phrase, now: new Date().toISOString() },
+    { phrase, now: clientNow() },
     socketPath
   ) as Promise<Tier1EditStatus>;
 }
@@ -223,4 +223,22 @@ export function uninstallBlockuntu(phrase: string): Promise<UninstallResult> {
 
 export function daemonRpc(method: string, params: unknown, socketPath?: string): Promise<unknown> {
   return invoke("daemon_rpc", { method, params, socketPath });
+}
+
+function clientNow(date = new Date()): string {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffsetMinutes = Math.abs(offsetMinutes);
+  const offsetHours = Math.floor(absOffsetMinutes / 60);
+  const offsetRemainderMinutes = absOffsetMinutes % 60;
+
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(
+    date.getDate()
+  )}T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(
+    date.getSeconds()
+  )}${sign}${padDatePart(offsetHours)}:${padDatePart(offsetRemainderMinutes)}`;
+}
+
+function padDatePart(value: number): string {
+  return value.toString().padStart(2, "0");
 }

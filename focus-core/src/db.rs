@@ -1317,52 +1317,6 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
         r#"
         PRAGMA foreign_keys = ON;
 
-        CREATE TABLE IF NOT EXISTS rules (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            tier TEXT NOT NULL CHECK (tier IN ('hard', 'controlled_access')),
-            enabled INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS rule_patterns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            rule_id TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            value TEXT NOT NULL,
-            match_subdomains INTEGER NOT NULL DEFAULT 0,
-            FOREIGN KEY(rule_id) REFERENCES rules(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS apps (
-            id TEXT PRIMARY KEY,
-            rule_id TEXT,
-            name TEXT NOT NULL,
-            executable_path TEXT,
-            command_name TEXT,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            FOREIGN KEY(rule_id) REFERENCES rules(id) ON DELETE SET NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS schedules (
-            id TEXT PRIMARY KEY,
-            rule_id TEXT,
-            weekday INTEGER,
-            start_minute INTEGER,
-            end_minute INTEGER,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            FOREIGN KEY(rule_id) REFERENCES rules(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS allowances (
-            id TEXT PRIMARY KEY,
-            rule_id TEXT,
-            daily_minutes INTEGER NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            FOREIGN KEY(rule_id) REFERENCES rules(id) ON DELETE CASCADE
-        );
-
         CREATE TABLE IF NOT EXISTS unlocks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             target TEXT NOT NULL,

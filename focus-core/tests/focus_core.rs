@@ -1053,11 +1053,6 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
     tables.sort();
 
     for required in [
-        "rules",
-        "rule_patterns",
-        "apps",
-        "schedules",
-        "allowances",
         "unlocks",
         "visits",
         "app_usage_sessions",

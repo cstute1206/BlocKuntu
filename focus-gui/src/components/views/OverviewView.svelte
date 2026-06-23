@@ -89,6 +89,8 @@
   let chromeExtensionCheck = $derived(
     health?.checks.find((check) => check.key === "chrome_extension") ?? null
   );
+  let showFirefoxSetup = $derived(Boolean(firefoxExtensionCheck));
+  let showChromeSetup = $derived(Boolean(chromeExtensionCheck));
   let firefoxSetupState = $derived(browserSetupState(firefoxExtensionCheck));
   let chromeSetupState = $derived(browserSetupState(chromeExtensionCheck));
   let firefoxPolicyPending = $derived(
@@ -102,6 +104,12 @@
       enforcement?.chrome_policy.deferred_until_heartbeat &&
         !enforcement.chrome_policy.active_after_heartbeat
     )
+  );
+  let showFirefoxPolicy = $derived(
+    Boolean(health?.checks.some((check) => check.key === "firefox_policy"))
+  );
+  let showChromePolicy = $derived(
+    Boolean(health?.checks.some((check) => check.key === "chrome_policy"))
   );
 
   function browserSetupState(check: HealthCheck | null): BrowserSetupState {
@@ -134,67 +142,75 @@
       </button>
     </div>
     <div class="setup-grid">
-      <div class="setup-row" data-state={firefoxSetupState}>
-        {#if firefoxSetupState === "ok"}
-          <CheckCircle2 size={18} aria-hidden="true" />
-        {:else if firefoxSetupState === "error"}
-          <XCircle size={18} aria-hidden="true" />
-        {:else}
-          <AlertTriangle size={18} aria-hidden="true" />
-        {/if}
-        <span>Firefox extension</span>
-        <strong>{setupStateLabel(firefoxSetupState)}</strong>
-        <small>
-          {firefoxExtensionCheck?.detail ??
-            "No heartbeat yet. Install and enable the BlocKuntu Firefox extension."}
-        </small>
-      </div>
+      {#if showFirefoxSetup}
+        <div class="setup-row" data-state={firefoxSetupState}>
+          {#if firefoxSetupState === "ok"}
+            <CheckCircle2 size={18} aria-hidden="true" />
+          {:else if firefoxSetupState === "error"}
+            <XCircle size={18} aria-hidden="true" />
+          {:else}
+            <AlertTriangle size={18} aria-hidden="true" />
+          {/if}
+          <span>Firefox extension</span>
+          <strong>{setupStateLabel(firefoxSetupState)}</strong>
+          <small>
+            {firefoxExtensionCheck?.detail ??
+              "No heartbeat yet. Install and enable the BlocKuntu Firefox extension."}
+          </small>
+        </div>
+      {/if}
 
-      <div class="setup-row" data-state={chromeSetupState}>
-        {#if chromeSetupState === "ok"}
-          <CheckCircle2 size={18} aria-hidden="true" />
-        {:else if chromeSetupState === "error"}
-          <XCircle size={18} aria-hidden="true" />
-        {:else}
-          <AlertTriangle size={18} aria-hidden="true" />
-        {/if}
-        <span>Chrome extension</span>
-        <strong>{setupStateLabel(chromeSetupState)}</strong>
-        <small>
-          {chromeExtensionCheck?.detail ??
-            "No heartbeat yet. Install and enable the BlocKuntu Chrome extension."}
-        </small>
-      </div>
+      {#if showChromeSetup}
+        <div class="setup-row" data-state={chromeSetupState}>
+          {#if chromeSetupState === "ok"}
+            <CheckCircle2 size={18} aria-hidden="true" />
+          {:else if chromeSetupState === "error"}
+            <XCircle size={18} aria-hidden="true" />
+          {:else}
+            <AlertTriangle size={18} aria-hidden="true" />
+          {/if}
+          <span>Chrome extension</span>
+          <strong>{setupStateLabel(chromeSetupState)}</strong>
+          <small>
+            {chromeExtensionCheck?.detail ??
+              "No heartbeat yet. Install and enable the BlocKuntu Chrome extension."}
+          </small>
+        </div>
+      {/if}
 
-      <div class="setup-row" data-state={firefoxPolicyPending ? "warn" : "ok"}>
-        {#if firefoxPolicyPending}
-          <AlertTriangle size={18} aria-hidden="true" />
-        {:else}
-          <CheckCircle2 size={18} aria-hidden="true" />
-        {/if}
-        <span>Firefox policy</span>
-        <strong>{firefoxPolicyPending ? "Deferred" : "Ready"}</strong>
-        <small>
-          {firefoxPolicyPending
-            ? "Managed policy will be written after the first Firefox extension heartbeat."
-            : (enforcement?.firefox_policy.detail ?? "Waiting for daemon status.")}
-        </small>
-      </div>
+      {#if showFirefoxPolicy}
+        <div class="setup-row" data-state={firefoxPolicyPending ? "warn" : "ok"}>
+          {#if firefoxPolicyPending}
+            <AlertTriangle size={18} aria-hidden="true" />
+          {:else}
+            <CheckCircle2 size={18} aria-hidden="true" />
+          {/if}
+          <span>Firefox policy</span>
+          <strong>{firefoxPolicyPending ? "Deferred" : "Ready"}</strong>
+          <small>
+            {firefoxPolicyPending
+              ? "Managed policy will be written after the first Firefox extension heartbeat."
+              : (enforcement?.firefox_policy.detail ?? "Waiting for daemon status.")}
+          </small>
+        </div>
+      {/if}
 
-      <div class="setup-row" data-state={chromePolicyPending ? "warn" : "ok"}>
-        {#if chromePolicyPending}
-          <AlertTriangle size={18} aria-hidden="true" />
-        {:else}
-          <CheckCircle2 size={18} aria-hidden="true" />
-        {/if}
-        <span>Chrome policy</span>
-        <strong>{chromePolicyPending ? "Deferred" : "Ready"}</strong>
-        <small>
-          {chromePolicyPending
-            ? "Managed policy will be written after the first Chrome extension heartbeat."
-            : (enforcement?.chrome_policy.detail ?? "Waiting for daemon status.")}
-        </small>
-      </div>
+      {#if showChromePolicy}
+        <div class="setup-row" data-state={chromePolicyPending ? "warn" : "ok"}>
+          {#if chromePolicyPending}
+            <AlertTriangle size={18} aria-hidden="true" />
+          {:else}
+            <CheckCircle2 size={18} aria-hidden="true" />
+          {/if}
+          <span>Chrome policy</span>
+          <strong>{chromePolicyPending ? "Deferred" : "Ready"}</strong>
+          <small>
+            {chromePolicyPending
+              ? "Managed policy will be written after the first Chrome extension heartbeat."
+              : (enforcement?.chrome_policy.detail ?? "Waiting for daemon status.")}
+          </small>
+        </div>
+      {/if}
 
       <div class="setup-row setup-row-wide" data-state={uninstallPhrase ? "ok" : "warn"}>
         {#if uninstallPhrase}
