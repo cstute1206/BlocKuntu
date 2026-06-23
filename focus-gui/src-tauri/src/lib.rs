@@ -1001,17 +1001,17 @@ fn confined_firefox_native_host_checks() -> Vec<HealthCheck> {
     if home.join(FLATPAK_FIREFOX_APP_ROOT).exists() {
         checks.push(firefox_manifest_check(
             "firefox_flatpak_native_host_manifest",
-            "Firefox Flatpak Native host",
+            "Firefox Flatpak browser integration",
             &home.join(FLATPAK_FIREFOX_NATIVE_HOST_MANIFEST),
-            "Run blockuntu-setup-confined-firefox, then restart Firefox Flatpak.",
+            "To fix this, open a terminal and run `blockuntu-setup-confined-firefox`, then restart Firefox Flatpak.",
         ));
     }
     if home.join(SNAP_FIREFOX_APP_ROOT).exists() {
         checks.push(firefox_manifest_check(
             "firefox_snap_native_host_manifest",
-            "Firefox Snap Native host",
+            "Firefox Snap browser integration",
             &home.join(SNAP_FIREFOX_NATIVE_HOST_MANIFEST),
-            "Run blockuntu-setup-confined-firefox, then restart Firefox Snap.",
+            "To fix this, open a terminal and run `blockuntu-setup-confined-firefox`, then restart Firefox Snap.",
         ));
     }
 
@@ -1073,7 +1073,7 @@ fn firefox_flatpak_policy_check(home: &Path) -> HealthCheck {
             label: "Firefox Flatpak policy".to_string(),
             state: HealthState::Warn,
             detail: format!(
-                "{}: {err}; run blockuntu-setup-confined-firefox, then restart Firefox Flatpak.",
+                "{}: {err}; to fix this, open a terminal and run `blockuntu-setup-confined-firefox`, then restart Firefox Flatpak.",
                 candidate.display()
             ),
         },
@@ -1640,6 +1640,10 @@ pub fn run() {
     let tray_available_for_window = Arc::clone(&tray_available);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+            emit_runtime_refresh(app);
+        }))
         .setup(move |app| {
             match setup_tray(app) {
                 Ok(_) => tray_available_for_setup.store(true, Ordering::SeqCst),

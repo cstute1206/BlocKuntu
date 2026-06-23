@@ -265,6 +265,14 @@ export function markFirstRunOverviewDismissed(): void {
   }
 }
 
+export function clearFirstRunOverviewDismissed(): void {
+  try {
+    window.localStorage.removeItem(firstRunOverviewKey);
+  } catch {
+    // localStorage can be unavailable in restricted WebView profiles.
+  }
+}
+
 function linkedAllowanceIdForRule(rule: AllowanceOwner): string {
   return `${rule.id.trim()}-daily`;
 }

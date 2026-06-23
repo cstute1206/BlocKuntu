@@ -55,6 +55,7 @@
     cloneAppRule,
     cloneRule,
     cloneSchedule,
+    clearFirstRunOverviewDismissed,
     detectedMatchersForRunningApp,
     defaultAllowanceForRule,
     firstRunOverviewDismissed,
@@ -704,6 +705,7 @@
     lastError = null;
     try {
       uninstallResult = await uninstallBlockuntu(uninstallPhraseInput);
+      clearFirstRunOverviewDismissed();
     } catch (error) {
       lastError = formatError(error);
     } finally {
