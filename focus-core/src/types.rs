@@ -74,6 +74,7 @@ pub struct EvaluationContext<'a> {
     pub config: &'a Config,
     pub database: &'a Database,
     pub now: DateTime<FixedOffset>,
+    pub clock_tampered: bool,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -82,11 +83,17 @@ impl<'a> EvaluationContext<'a> {
             config,
             database,
             now,
+            clock_tampered: false,
         }
     }
 
     pub fn local_now(config: &'a Config, database: &'a Database) -> Self {
         Self::new(config, database, Local::now().fixed_offset())
+    }
+
+    pub fn with_clock_tampered(mut self, clock_tampered: bool) -> Self {
+        self.clock_tampered = clock_tampered;
+        self
     }
 
     pub fn now_utc(&self) -> DateTime<Utc> {

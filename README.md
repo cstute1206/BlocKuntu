@@ -22,6 +22,8 @@ directories described below.
   application, GUI, daemon, browser, packaging, and enforcement capabilities.
 - [Uninstall](Docs/UNINSTALL.md): GUI uninstall, recovery phrases, Debian purge
   behavior, and standalone script cleanup.
+- [Hardening tracker](Docs/HARDENING.md): implemented bypass-resistance tactics,
+  fail-closed behavior, and open hardening follow-ups.
 - [Dev and production runbook](Docs/DEV_AND_PROD_RUNBOOK.md): local daemon
   runtime, dev Native Messaging manifests, browser-extension testing, and manual
   commands.

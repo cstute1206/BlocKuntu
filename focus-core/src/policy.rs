@@ -311,11 +311,21 @@ impl<'a> PolicyEngine<'a> {
         context: &EvaluationContext<'_>,
     ) -> Decision {
         let now = context.now_utc();
-        let active_unlock = self.database.active_unlock_for_rule(rule_id, now);
-        match active_unlock {
-            Ok(Some(_)) => return Decision::Allow,
-            Ok(None) => {}
-            Err(err) => return runtime_error(err),
+        if !context.clock_tampered {
+            let active_unlock = self.database.active_unlock_for_rule(rule_id, now);
+            match active_unlock {
+                Ok(Some(_)) => return Decision::Allow,
+                Ok(None) => {}
+                Err(err) => return runtime_error(err),
+            }
+        }
+
+        if context.clock_tampered {
+            return Decision::Block(BlockReason::ControlledAccess {
+                rule_id: rule_id.to_string(),
+                rule_name: rule_name.to_string(),
+                reason: ControlledBlockReason::UnlockRequired,
+            });
         }
 
         let Some(allowance_id) = allowance_id else {
@@ -574,7 +584,11 @@ impl<'a> PolicyEngine<'a> {
         parsed: &NormalizedUrl,
         context: &EvaluationContext<'_>,
     ) -> Result<Option<BlockReason>, Error> {
-        let active_sessions = self.database.active_detox_sessions(context.now_utc())?;
+        let active_sessions = if context.clock_tampered {
+            self.database.uncancelled_detox_sessions()?
+        } else {
+            self.database.active_detox_sessions(context.now_utc())?
+        };
         let mut block: Option<(&DetoxSession, &RuleConfig)> = None;
 
         for rule in &self.config.rules {
@@ -625,7 +639,11 @@ impl<'a> PolicyEngine<'a> {
         process: &ProcessIdentity,
         context: &EvaluationContext<'_>,
     ) -> Result<Option<BlockReason>, Error> {
-        let active_sessions = self.database.active_detox_sessions(context.now_utc())?;
+        let active_sessions = if context.clock_tampered {
+            self.database.uncancelled_detox_sessions()?
+        } else {
+            self.database.active_detox_sessions(context.now_utc())?
+        };
         let mut block: Option<(&DetoxSession, &AppRuleConfig)> = None;
 
         for rule in &self.config.app_rules {
@@ -722,6 +740,10 @@ impl<'a> PolicyEngine<'a> {
         schedule_ids: &[String],
         context: &EvaluationContext<'_>,
     ) -> bool {
+        if context.clock_tampered {
+            return !schedule_ids.is_empty();
+        }
+
         !schedule_ids.is_empty()
             && schedule_ids.iter().any(|schedule_id| {
                 self.config

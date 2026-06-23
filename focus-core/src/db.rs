@@ -836,6 +836,18 @@ impl Database {
         self.load_detox_sessions_from_statement(&mut statement, params![now])
     }
 
+    pub fn uncancelled_detox_sessions(&self) -> Result<Vec<DetoxSession>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT id, name, starts_at, ends_at, cancelled_at
+            FROM detox_sessions
+            WHERE cancelled_at IS NULL
+            ORDER BY ends_at DESC, starts_at DESC, id
+            "#,
+        )?;
+        self.load_detox_sessions_from_statement(&mut statement, [])
+    }
+
     pub fn detox_sessions(&self, limit: u32) -> Result<Vec<DetoxSession>, Error> {
         let mut statement = self.conn.prepare(
             r#"

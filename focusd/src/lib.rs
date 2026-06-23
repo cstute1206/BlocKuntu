@@ -1,6 +1,7 @@
 pub mod app;
 pub mod chrome_policy;
 pub mod cli;
+pub mod clock_guard;
 pub mod error;
 pub mod firefox_policy;
 pub mod hosts;

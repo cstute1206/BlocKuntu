@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, FixedOffset, TimeZone, Timelike, Utc};
 use focus_core::{
     evaluate_app, evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start,
     request_unlock, AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason,
@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 
 use crate::app::is_blockuntu_process;
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
+use crate::clock_guard;
 use crate::error::{DaemonError, Result};
 use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
@@ -50,6 +51,7 @@ pub struct RpcContext {
     defer_firefox_policy_repair_until_heartbeat: bool,
     defer_chrome_policy_repair_until_heartbeat: bool,
     tier1_edit_key_path: PathBuf,
+    trust_client_time: bool,
 }
 
 impl RpcContext {
@@ -65,6 +67,7 @@ impl RpcContext {
             defer_firefox_policy_repair_until_heartbeat: false,
             defer_chrome_policy_repair_until_heartbeat: false,
             tier1_edit_key_path: PathBuf::from(TIER1_EDIT_KEY_PATH),
+            trust_client_time: false,
         }
     }
 
@@ -109,6 +112,12 @@ impl RpcContext {
 
     pub fn with_tier1_edit_key_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.tier1_edit_key_path = path.into();
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_trusted_client_time(mut self) -> Self {
+        self.trust_client_time = true;
         self
     }
 
@@ -396,6 +405,7 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
     match method {
         "status" => status(context),
         "enforcement_status" => enforcement_status(context),
+        "clock_integrity_status" => clock_integrity_status_method(context),
         "start_enforcement" => start_enforcement(context),
         "stop_enforcement" => stop_enforcement(context),
         "prepare_uninstall" => prepare_uninstall(context),
@@ -500,9 +510,12 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
 fn status(context: &RpcContext) -> Result<Value> {
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let enforcement_state = enforcement_state_from_core(&core)?;
+    let clock_integrity =
+        clock_guard::guarded_now(core.database(), None, context.trust_client_time)?.integrity;
     Ok(json!({
         "status": "ok",
         "enforcement_state": enforcement_state,
+        "clock_integrity": clock_integrity,
         "rules": core.config().rules.len(),
         "app_rules": core.config().app_rules.len(),
         "schedules": core.config().schedules.len(),
@@ -520,10 +533,19 @@ fn enforcement_status(context: &RpcContext) -> Result<Value> {
     Ok(json!({
         "status": "ok",
         "enforcement_state": enforcement_state,
+        "clock_integrity": clock_integrity_status_method(context)?,
         "firefox_policy": firefox_policy_status_json(context)?,
         "chrome_policy": chrome_policy_status_json(context)?,
         "hosts_file": hosts.status(&config)
     }))
+}
+
+fn clock_integrity_status_method(context: &RpcContext) -> Result<Value> {
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    serde_json::to_value(
+        clock_guard::guarded_now(core.database(), None, context.trust_client_time)?.integrity,
+    )
+    .map_err(DaemonError::from)
 }
 
 fn start_enforcement(context: &RpcContext) -> Result<Value> {
@@ -789,7 +811,8 @@ fn import_policy_toml_method(
     context: &RpcContext,
     params: ImportPolicyTomlParams,
 ) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let now_utc = now.with_timezone(&Utc);
     let imported = Config::from_toml_str(&params.toml).map_err(DaemonError::from)?;
 
@@ -888,7 +911,8 @@ where
 }
 
 fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let updated_at = Utc::now();
     let rule_id = params.rule.id.clone();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -953,7 +977,8 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
 }
 
 fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let updated_at = Utc::now();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
@@ -999,7 +1024,8 @@ fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -
 }
 
 fn upsert_allowance_method(context: &RpcContext, params: UpsertAllowanceParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let updated_at = Utc::now();
     let allowance_id = params.allowance.id.clone();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -1040,7 +1066,8 @@ fn upsert_allowance_method(context: &RpcContext, params: UpsertAllowanceParams) 
 }
 
 fn delete_allowance_method(context: &RpcContext, params: DeleteAllowanceParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let updated_at = Utc::now();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
@@ -1101,7 +1128,8 @@ fn delete_allowance_method(context: &RpcContext, params: DeleteAllowanceParams) 
 }
 
 fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let updated_at = Utc::now();
     let rule_id = params.rule.id.clone();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -1161,7 +1189,8 @@ fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> 
 }
 
 fn delete_app_rule_method(context: &RpcContext, params: DeleteAppRuleParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let updated_at = Utc::now();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
@@ -1203,7 +1232,8 @@ fn delete_app_rule_method(context: &RpcContext, params: DeleteAppRuleParams) -> 
 }
 
 fn upsert_schedule_method(context: &RpcContext, params: UpsertScheduleParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let updated_at = Utc::now();
     let schedule_id = params.schedule.id.clone();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -1243,7 +1273,8 @@ fn upsert_schedule_method(context: &RpcContext, params: UpsertScheduleParams) ->
 }
 
 fn delete_schedule_method(context: &RpcContext, params: DeleteScheduleParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let updated_at = Utc::now();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
@@ -1281,7 +1312,8 @@ fn delete_schedule_method(context: &RpcContext, params: DeleteScheduleParams) ->
 }
 
 fn start_detox_method(context: &RpcContext, params: StartDetoxParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let now_utc = now.with_timezone(&Utc);
     if params.duration_minutes == 0 {
         return Err(DaemonError::InvalidRequest(
@@ -1339,7 +1371,8 @@ fn start_detox_method(context: &RpcContext, params: StartDetoxParams) -> Result<
 }
 
 fn cancel_detox_method(context: &RpcContext, params: CancelDetoxParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let now_utc = now.with_timezone(&Utc);
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let Some(session) = core.database().detox_session(&params.id)? else {
@@ -1386,7 +1419,7 @@ fn cancel_detox_method(context: &RpcContext, params: CancelDetoxParams) -> Resul
 }
 
 fn detox_sessions_method(context: &RpcContext, params: DetoxSessionsParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
     let now_utc = now.with_timezone(&Utc);
     let limit = params.limit.clamp(1, 200);
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -1440,12 +1473,17 @@ fn recent_events(context: &RpcContext, params: RecentEventsParams) -> Result<Val
 }
 
 fn running_apps_method(context: &RpcContext, params: ListRunningAppsParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let guarded = guarded_now_with_status(context, params.now.as_deref())?;
     let mut processes = scan_procfs(Path::new("/proc"))?;
     let window_snapshot = attach_detected_window_titles(&mut processes);
 
     Ok(serde_json::to_value(RunningAppsResponse {
-        apps: running_app_snapshots_from_processes(context, &processes, now)?,
+        apps: running_app_snapshots_from_processes(
+            context,
+            &processes,
+            guarded.now,
+            guarded.integrity.state == "tampered",
+        )?,
         window_detection: window_snapshot.support,
     })?)
 }
@@ -1454,9 +1492,11 @@ fn running_app_snapshots_from_processes(
     context: &RpcContext,
     processes: &[ProcessInfo],
     now: DateTime<FixedOffset>,
+    clock_tampered: bool,
 ) -> Result<Vec<RunningAppSnapshot>> {
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    let eval_context = EvaluationContext::new(core.config(), core.database(), now);
+    let eval_context = EvaluationContext::new(core.config(), core.database(), now)
+        .with_clock_tampered(clock_tampered);
     let mut apps = processes
         .iter()
         .filter(|process| process.pid > 1 && process.pid != std::process::id())
@@ -1533,7 +1573,8 @@ fn running_app_decision_details(
 }
 
 fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let guarded = guarded_now_with_status(context, params.now.as_deref())?;
+    let now = guarded.now;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     if !enforcement_active_from_core(&core)? {
         return Ok(json!({
@@ -1541,7 +1582,8 @@ fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Resul
             "enforcement_state": ENFORCEMENT_STOPPED
         }));
     }
-    let eval_context = EvaluationContext::new(core.config(), core.database(), now);
+    let eval_context = EvaluationContext::new(core.config(), core.database(), now)
+        .with_clock_tampered(guarded.integrity.state == "tampered");
     let decision = evaluate_url(&params.url, &eval_context);
 
     if decision.is_block() {
@@ -1557,7 +1599,8 @@ fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Resul
 }
 
 fn request_unlock_method(context: &RpcContext, params: RequestUnlockParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let eval_context = EvaluationContext::new(core.config(), core.database(), now);
     let unlock = request_unlock(&params.target, params.minutes, params.reason, &eval_context)?;
@@ -1565,7 +1608,8 @@ fn request_unlock_method(context: &RpcContext, params: RequestUnlockParams) -> R
 }
 
 fn unlock_tier1_edit_method(context: &RpcContext, params: Tier1EditUnlockParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
     let now_utc = now.with_timezone(&Utc);
     let phrase = params.phrase.trim();
     if phrase.is_empty() {
@@ -1600,7 +1644,7 @@ fn unlock_tier1_edit_method(context: &RpcContext, params: Tier1EditUnlockParams)
 }
 
 fn tier1_edit_status_method(context: &RpcContext, params: Tier1EditStatusParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     tier1_edit_status_json(&core, now)
 }
@@ -1609,25 +1653,31 @@ fn record_visit_start_method(
     context: &RpcContext,
     params: RecordVisitStartParams,
 ) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let guarded = guarded_now_with_status(context, params.now.as_deref())?;
+    let now = guarded.now;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    let eval_context = EvaluationContext::new(core.config(), core.database(), now);
+    let eval_context = EvaluationContext::new(core.config(), core.database(), now)
+        .with_clock_tampered(guarded.integrity.state == "tampered");
     let visit = record_visit_start(&params.url, &params.tab_id, &eval_context)?;
     Ok(visit_to_json(&visit))
 }
 
 fn record_visit_heartbeat_method(context: &RpcContext, params: VisitIdParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let guarded = guarded_now_with_status(context, params.now.as_deref())?;
+    let now = guarded.now;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    let eval_context = EvaluationContext::new(core.config(), core.database(), now);
+    let eval_context = EvaluationContext::new(core.config(), core.database(), now)
+        .with_clock_tampered(guarded.integrity.state == "tampered");
     record_visit_heartbeat(params.visit_id, &eval_context)?;
     Ok(json!({ "status": "ok" }))
 }
 
 fn record_visit_end_method(context: &RpcContext, params: VisitIdParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let guarded = guarded_now_with_status(context, params.now.as_deref())?;
+    let now = guarded.now;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    let eval_context = EvaluationContext::new(core.config(), core.database(), now);
+    let eval_context = EvaluationContext::new(core.config(), core.database(), now)
+        .with_clock_tampered(guarded.integrity.state == "tampered");
     record_visit_end(params.visit_id, &eval_context)?;
     Ok(json!({ "status": "ok" }))
 }
@@ -1636,7 +1686,7 @@ fn extension_heartbeat_method(
     context: &RpcContext,
     params: ExtensionHeartbeatParams,
 ) -> Result<Value> {
-    let now = parse_optional_now(params.now)?;
+    let now = guarded_now(context, params.now.as_deref())?;
     let component = extension_component(
         params.component.as_deref(),
         params.browser.as_deref(),
@@ -1670,7 +1720,7 @@ fn extension_heartbeat_method(
 }
 
 fn extension_status_method(context: &RpcContext, params: ExtensionStatusParams) -> Result<Value> {
-    let now = parse_optional_now(params.now)?.with_timezone(&Utc);
+    let now = guarded_now(context, params.now.as_deref())?.with_timezone(&Utc);
     let component = extension_component(params.component.as_deref(), None, None);
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     browser_extension_status_from_core(
@@ -1866,13 +1916,30 @@ fn parse_params<T: for<'de> Deserialize<'de>>(params: Value) -> Result<T> {
     serde_json::from_value(params).map_err(|err| DaemonError::InvalidRequest(err.to_string()))
 }
 
-fn parse_optional_now(now: Option<String>) -> Result<DateTime<FixedOffset>> {
-    match now {
-        Some(now) => DateTime::parse_from_rfc3339(&now)
-            .map(|parsed| parsed.with_timezone(&Local).fixed_offset())
-            .map_err(|err| DaemonError::InvalidRequest(format!("invalid RFC3339 now: {err}"))),
-        None => Ok(Local::now().fixed_offset()),
+fn guarded_now(context: &RpcContext, now: Option<&str>) -> Result<DateTime<FixedOffset>> {
+    Ok(guarded_now_with_status(context, now)?.now)
+}
+
+fn guarded_now_with_status(
+    context: &RpcContext,
+    now: Option<&str>,
+) -> Result<clock_guard::GuardedNow> {
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    clock_guard::guarded_now(core.database(), now, context.trust_client_time)
+}
+
+fn reject_if_clock_tampered(context: &RpcContext) -> Result<()> {
+    if context.trust_client_time {
+        return Ok(());
     }
+
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    clock_guard::ensure_trusted(core.database())
+}
+
+#[cfg(test)]
+fn parse_optional_now(now: Option<String>) -> Result<DateTime<FixedOffset>> {
+    clock_guard::parse_optional_now(now.as_deref())
 }
 
 fn decision_to_json(decision: &Decision, config: &Config, now: DateTime<FixedOffset>) -> Value {
@@ -2325,10 +2392,14 @@ fn tier1_edit_unlocked_until(core: &FocusCore) -> Result<Option<DateTime<Utc>>> 
 fn tier1_edit_status_json(core: &FocusCore, now: DateTime<FixedOffset>) -> Result<Value> {
     let now_utc = now.with_timezone(&Utc);
     let expires_at = tier1_edit_unlocked_until(core)?;
-    let active = expires_at
-        .map(|expires_at| expires_at > now_utc)
-        .unwrap_or(false);
+    let clock_integrity = clock_guard::status(core.database())?;
+    let clock_tampered = clock_integrity.state == "tampered";
+    let active = !clock_tampered
+        && expires_at
+            .map(|expires_at| expires_at > now_utc)
+            .unwrap_or(false);
     let remaining_seconds = expires_at
+        .filter(|_| !clock_tampered)
         .filter(|expires_at| *expires_at > now_utc)
         .map(|expires_at| (expires_at - now_utc).num_seconds());
 
@@ -2336,8 +2407,9 @@ fn tier1_edit_status_json(core: &FocusCore, now: DateTime<FixedOffset>) -> Resul
         "active": active,
         "expires_at": expires_at,
         "remaining_seconds": remaining_seconds,
-        "operator_window_open": operator_window_open(now),
-        "operator_window_label": operator_window_label()
+        "operator_window_open": operator_window_open(now) && !clock_tampered,
+        "operator_window_label": operator_window_label(),
+        "clock_integrity": clock_integrity
     }))
 }
 
@@ -2704,7 +2776,7 @@ mod tests {
         let config = Config::from_toml_str(toml).expect("config should parse");
         let database = Database::in_memory().expect("database should initialize");
         let core = FocusCore::new(config, database).expect("core should initialize");
-        RpcContext::new(Arc::new(Mutex::new(core)))
+        RpcContext::new(Arc::new(Mutex::new(core))).with_trusted_client_time()
     }
 
     fn rpc_context_with_tier1_edit_key(context: RpcContext) -> (tempfile::TempDir, RpcContext) {
@@ -3477,6 +3549,7 @@ mod tests {
             &context,
             &processes,
             parse_optional_now(Some("2026-06-19T10:00:00Z".to_string())).unwrap(),
+            false,
         )
         .expect("running app snapshots should build");
 

@@ -14,6 +14,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
 use crate::cli::{Args, DEFAULT_HOSTS_PATH};
+use crate::clock_guard;
 use crate::error::{DaemonError, Result};
 use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
@@ -212,15 +213,20 @@ impl DaemonApp {
 
         let mut processes = scan_procfs(Path::new("/proc"))?;
         attach_detected_window_titles(&mut processes);
-        let now = chrono::Local::now().fixed_offset();
         let mut blocked_pids = Vec::new();
         let mut kill_details_by_pid = HashMap::new();
         let mut kill_event_kind_by_pid = HashMap::new();
 
         {
             let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-            sync_metered_app_usage_sessions(&core, &processes, now)?;
-            let context = EvaluationContext::new(core.config(), core.database(), now);
+            let guarded = clock_guard::guarded_now(core.database(), None, false)?;
+            let now = guarded.now;
+            let clock_tampered = guarded.integrity.state == "tampered";
+            if !clock_tampered {
+                sync_metered_app_usage_sessions(&core, &processes, now)?;
+            }
+            let context = EvaluationContext::new(core.config(), core.database(), now)
+                .with_clock_tampered(clock_tampered);
             for process in &processes {
                 if process.pid <= 1
                     || process.pid == std::process::id()
@@ -256,7 +262,7 @@ impl DaemonApp {
                 &processes,
                 strict_mode,
                 core.database(),
-                chrono::Utc::now(),
+                now.with_timezone(&Utc),
             )? {
                 if !blocked_pids.contains(&pid) {
                     blocked_pids.push(pid);

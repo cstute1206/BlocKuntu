@@ -446,6 +446,122 @@ fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
 }
 
 #[test]
+fn clock_tamper_evaluation_fails_closed_for_time_sensitive_rules() {
+    let config = Config::from_toml_str(
+        r#"
+        [[schedules]]
+        id = "work-hours"
+        name = "Work hours"
+
+        [[schedules.windows]]
+        weekday = "mon"
+        start = "09:00"
+        end = "17:00"
+
+        [[schedules]]
+        id = "always"
+        name = "Always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
+
+        [[allowances]]
+        id = "short"
+        name = "Short"
+        daily_minutes = 15
+
+        [[rules]]
+        id = "controlled"
+        name = "Controlled"
+        tier = "controlled_access"
+        schedule_ids = ["work-hours"]
+        allowance_id = "short"
+        patterns = [
+          { kind = "domain", value = "controlled.example", match_subdomains = true }
+        ]
+
+        [[rules]]
+        id = "detox-target"
+        name = "Detox target"
+        tier = "controlled_access"
+        schedule_ids = ["work-hours"]
+        patterns = [
+          { kind = "domain", value = "detox.example", match_subdomains = true }
+        ]
+
+        [[rules]]
+        id = "unlock-target"
+        name = "Unlock target"
+        tier = "controlled_access"
+        schedule_ids = ["always"]
+        patterns = [
+          { kind = "domain", value = "unlock.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    database
+        .insert_detox_session(&DetoxSession {
+            id: "ended-detox".to_string(),
+            name: None,
+            starts_at: at_utc(2026, 5, 18, 9, 0).with_timezone(&Utc),
+            ends_at: at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc),
+            cancelled_at: None,
+            site_rule_ids: vec!["detox-target".to_string()],
+            app_rule_ids: Vec::new(),
+        })
+        .expect("detox session should insert");
+
+    let inactive = context(&config, &database, at_utc(2026, 5, 18, 18, 0));
+    assert_eq!(
+        evaluate_url("https://controlled.example/", &inactive),
+        Decision::Allow
+    );
+    assert_eq!(
+        evaluate_url("https://detox.example/", &inactive),
+        Decision::Allow
+    );
+
+    request_unlock(
+        "https://unlock.example/",
+        2,
+        "already active before tamper".to_string(),
+        &inactive,
+    )
+    .expect("unlock should be granted");
+    assert_eq!(
+        evaluate_url("https://unlock.example/", &inactive),
+        Decision::Allow
+    );
+
+    let tampered =
+        context(&config, &database, at_utc(2026, 5, 18, 18, 0)).with_clock_tampered(true);
+    assert_eq!(
+        evaluate_url("https://controlled.example/", &tampered),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id: "controlled".to_string(),
+            rule_name: "Controlled".to_string(),
+            reason: ControlledBlockReason::UnlockRequired,
+        })
+    );
+    assert!(matches!(
+        evaluate_url("https://detox.example/", &tampered),
+        Decision::Block(BlockReason::Detox { session_id, .. }) if session_id == "ended-detox"
+    ));
+    assert_eq!(
+        evaluate_url("https://unlock.example/", &tampered),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id: "unlock-target".to_string(),
+            rule_name: "Unlock target".to_string(),
+            reason: ControlledBlockReason::UnlockRequired,
+        })
+    );
+}
+
+#[test]
 fn schedules_and_allowances_transition_between_allow_and_block() {
     let config = Config::from_toml_str(
         r#"
