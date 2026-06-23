@@ -251,7 +251,7 @@ fn import_policy_toml(socket_path: Option<String>) -> Result<PolicyFileResult, G
 
     Ok(PolicyFileResult {
         status: "ok".to_string(),
-        detail: format!("Policy imported from {}.", path.display()),
+        detail: format!("Policy appended from {}.", path.display()),
         path: Some(path.display().to_string()),
         config,
     })
@@ -642,7 +642,7 @@ fn policy_export_path() -> Option<PathBuf> {
 
 fn policy_import_path() -> Option<PathBuf> {
     rfd::FileDialog::new()
-        .set_title("Import BlocKuntu policy")
+        .set_title("Append BlocKuntu policy")
         .add_filter("TOML policy", &["toml"])
         .pick_file()
 }

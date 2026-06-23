@@ -194,11 +194,11 @@
       <button
         class="secondary"
         onclick={onImportPolicyToml}
-        disabled={policyActionRunning || !tier1EditUnlocked}
-        title={tier1EditUnlocked ? "Import TOML" : "Unlock Tier 1 edits before importing"}
+        disabled={policyActionRunning}
+        title="Append TOML"
       >
         <Upload size={17} aria-hidden="true" />
-        <span>{policyImportRunning ? "Importing" : "Import TOML"}</span>
+        <span>{policyImportRunning ? "Appending" : "Append TOML"}</span>
       </button>
     </div>
     {#if policyTransferMessage}

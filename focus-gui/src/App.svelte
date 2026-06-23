@@ -719,7 +719,6 @@
   }
 
   async function runImportPolicyToml(): Promise<void> {
-    if (!tier1EditUnlocked) return;
     policyImportRunning = true;
     policyTransferMessage = null;
     policyTransferError = null;

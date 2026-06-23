@@ -343,6 +343,20 @@ struct ImportPolicyTomlParams {
     now: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct PolicyAppendSummary {
+    allowances: usize,
+    schedules: usize,
+    rules: usize,
+    app_rules: usize,
+}
+
+impl PolicyAppendSummary {
+    fn total(&self) -> usize {
+        self.allowances + self.schedules + self.rules + self.app_rules
+    }
+}
+
 pub fn handle_payload(context: &RpcContext, payload: &[u8]) -> Vec<u8> {
     let response = match serde_json::from_slice::<Value>(payload) {
         Ok(value) => handle_json_value(context, value),
@@ -777,36 +791,100 @@ fn import_policy_toml_method(
 ) -> Result<Value> {
     let now = parse_optional_now(params.now)?;
     let now_utc = now.with_timezone(&Utc);
-    let mut next = Config::from_toml_str(&params.toml).map_err(DaemonError::from)?;
-    crate::app::ensure_mandatory_app_rules(&mut next);
+    let imported = Config::from_toml_str(&params.toml).map_err(DaemonError::from)?;
 
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    if !tier1_edit_window_active(&core, now)? {
-        return Err(DaemonError::InvalidRequest(
-            "Tier 1 edit unlock is required to import policy".to_string(),
-        ));
-    }
-    if !core.database().active_detox_sessions(now_utc)?.is_empty() {
-        return Err(DaemonError::InvalidRequest(
-            "cancel active detox sessions before importing policy".to_string(),
-        ));
-    }
+    let mut next = core.config().clone();
+    let summary = append_policy_config(&mut next, &imported)?;
+    crate::app::ensure_mandatory_app_rules(&mut next);
+    focus_core::validate_config(&next)?;
 
     core.database().replace_policy_config(&next)?;
     core.replace_config(next)?;
     let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
     core.database().record_event(
-        "policy_imported",
+        "policy_appended",
         Some("policy"),
-        Some(&format!("TOML import{}", hosts_repair_detail(hosts_repair))),
+        Some(&format!(
+            "TOML append;added={};rules={};app_rules={};schedules={};allowances={}{}",
+            summary.total(),
+            summary.rules,
+            summary.app_rules,
+            summary.schedules,
+            summary.allowances,
+            hosts_repair_detail(hosts_repair)
+        )),
         now_utc,
     )?;
 
     Ok(json!({
         "status": "ok",
         "config": core.config(),
+        "added": {
+            "total": summary.total(),
+            "rules": summary.rules,
+            "app_rules": summary.app_rules,
+            "schedules": summary.schedules,
+            "allowances": summary.allowances
+        },
         "updated_at": now_utc
     }))
+}
+
+fn append_policy_config(current: &mut Config, imported: &Config) -> Result<PolicyAppendSummary> {
+    let mut summary = PolicyAppendSummary::default();
+    summary.allowances = append_unique_by_id(
+        &mut current.allowances,
+        &imported.allowances,
+        "allowance",
+        |allowance| allowance.id.as_str(),
+    )?;
+    summary.schedules = append_unique_by_id(
+        &mut current.schedules,
+        &imported.schedules,
+        "schedule",
+        |schedule| schedule.id.as_str(),
+    )?;
+    summary.rules =
+        append_unique_by_id(&mut current.rules, &imported.rules, "site list", |rule| {
+            rule.id.as_str()
+        })?;
+    summary.app_rules = append_unique_by_id(
+        &mut current.app_rules,
+        &imported.app_rules,
+        "app rule",
+        |rule| rule.id.as_str(),
+    )?;
+    Ok(summary)
+}
+
+fn append_unique_by_id<T, F>(
+    current: &mut Vec<T>,
+    imported: &[T],
+    kind: &str,
+    id: F,
+) -> Result<usize>
+where
+    T: Clone + PartialEq,
+    F: Fn(&T) -> &str,
+{
+    let mut added = 0;
+    for item in imported {
+        let item_id = id(item);
+        match current.iter().find(|candidate| id(candidate) == item_id) {
+            Some(existing) if existing == item => {}
+            Some(_) => {
+                return Err(DaemonError::InvalidRequest(format!(
+                    "imported {kind} '{item_id}' conflicts with an existing {kind}"
+                )));
+            }
+            None => {
+                current.push(item.clone());
+                added += 1;
+            }
+        }
+    }
+    Ok(added)
 }
 
 fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -> Result<Value> {
@@ -2509,7 +2587,6 @@ mod tests {
 
     use super::{
         handle_payload, parse_optional_now, running_app_snapshots_from_processes, RpcContext,
-        TIER1_EDIT_UNLOCK_UNTIL_KEY,
     };
     use crate::process_scan::ProcessInfo;
 
@@ -2708,7 +2785,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_policy_import_without_tier1_unlock() {
+    fn appends_policy_import_without_tier1_unlock() {
         let context = rpc_context();
         let request = json!({
             "jsonrpc": "2.0",
@@ -2733,27 +2810,19 @@ mod tests {
         ))
         .expect("response should parse");
 
-        assert_eq!(response["error"]["code"], -32602);
-        assert!(response["error"]["data"]
-            .as_str()
-            .expect("error data should be a string")
-            .contains("Tier 1 edit unlock is required"));
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["status"], "ok");
+        assert_eq!(response["result"]["added"]["rules"], 1);
+        let rules = response["result"]["config"]["rules"]
+            .as_array()
+            .expect("rules should be an array");
+        assert!(rules.iter().any(|rule| rule["id"] == "hard"));
+        assert!(rules.iter().any(|rule| rule["id"] == "replacement"));
     }
 
     #[test]
-    fn imports_policy_toml_with_tier1_unlock() {
+    fn skips_identical_policy_import_items() {
         let context = rpc_context();
-        {
-            let core = context.core.lock().expect("core lock should work");
-            core.database()
-                .set_service_state(
-                    TIER1_EDIT_UNLOCK_UNTIL_KEY,
-                    "2026-05-24T19:00:00Z",
-                    Utc::now(),
-                )
-                .expect("unlock state should write");
-        }
-
         let request = json!({
             "jsonrpc": "2.0",
             "id": 74,
@@ -2762,11 +2831,11 @@ mod tests {
                 "now": "2026-05-24T20:30:00+02:00",
                 "toml": r#"
                   [[rules]]
-                  id = "replacement"
-                  name = "Replacement"
+                  id = "hard"
+                  name = "Hard"
                   tier = "hard"
                   patterns = [
-                    { kind = "domain", value = "replacement.example", match_subdomains = true }
+                    { kind = "domain", value = "blocked.example", match_subdomains = true }
                   ]
                 "#
             }
@@ -2779,15 +2848,52 @@ mod tests {
 
         assert!(response.get("error").is_none(), "{response}");
         assert_eq!(response["result"]["status"], "ok");
+        assert_eq!(response["result"]["added"]["total"], 0);
         assert_eq!(
-            response["result"]["config"]["rules"][0]["id"],
-            "replacement"
+            response["result"]["config"]["rules"]
+                .as_array()
+                .expect("rules should be an array")
+                .len(),
+            1
         );
         assert!(response["result"]["config"]["app_rules"]
             .as_array()
             .expect("app rules should be an array")
             .iter()
             .any(|rule| rule["id"] == "unsupported-browsers-hard"));
+    }
+
+    #[test]
+    fn rejects_conflicting_policy_import_ids() {
+        let context = rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 75,
+            "method": "import_policy_toml",
+            "params": {
+                "now": "2026-05-24T20:30:00+02:00",
+                "toml": r#"
+                  [[rules]]
+                  id = "hard"
+                  name = "Hard changed"
+                  tier = "hard"
+                  patterns = [
+                    { kind = "domain", value = "changed.example", match_subdomains = true }
+                  ]
+                "#
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("imported site list 'hard' conflicts"));
     }
 
     #[test]
