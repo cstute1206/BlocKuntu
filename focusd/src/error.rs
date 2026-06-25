@@ -18,6 +18,17 @@ pub enum DaemonError {
     InvalidRequest(String),
     #[error("unsupported method: {0}")]
     UnsupportedMethod(String),
+    #[error(
+        "policy database is empty and no recovery snapshot exists at {recovery_path}; refusing to load the packaged baseline over existing state"
+    )]
+    MissingPolicyRecovery { recovery_path: PathBuf },
+    #[error(
+        "policy database update failed ({database_error}) and recovery snapshot rollback also failed ({recovery_error})"
+    )]
+    PolicyPersistenceRollback {
+        database_error: String,
+        recovery_error: String,
+    },
     #[error("systemd passed {fds} socket file descriptors; expected exactly one")]
     InvalidSocketActivation { fds: usize },
     #[error("socket activation is unavailable and development bind was not enabled for {0}")]

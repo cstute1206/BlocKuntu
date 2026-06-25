@@ -173,11 +173,6 @@ fn controlled_app_rules_can_be_unlocked_by_rule_or_matcher_value() {
           { kind = "command_name", value = "game-bin" }
         ]
 
-        [app_rules.unlock_policy]
-        max_session_minutes = 5
-        cooldown_minutes = 30
-        max_unlocks_per_hour = 2
-
         [[schedules]]
         id = "always"
 
@@ -202,8 +197,7 @@ fn controlled_app_rules_can_be_unlocked_by_rule_or_matcher_value() {
     assert!(evaluate_app(&process, &before_unlock).is_block());
     let unlock = request_unlock(
         "game-bin",
-        20,
-        "Need app briefly".to_string(),
+        "I need this application for completing an urgent work task".to_string(),
         &before_unlock,
     )
     .expect("app unlock should be granted");
@@ -404,8 +398,7 @@ fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
     let before_detox = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
     request_unlock(
         "https://social.example/",
-        2,
-        "Needed briefly".to_string(),
+        "I need temporary access to complete this scheduled work item".to_string(),
         &before_detox,
     )
     .expect("unlock should be active before detox starts");
@@ -443,6 +436,65 @@ fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
         evaluate_app(&process, &during_app_detox),
         Decision::Block(BlockReason::Detox { rule_id, .. }) if rule_id == "game"
     ));
+}
+
+#[test]
+fn detox_rejects_manual_unlock_without_consuming_reason_or_hourly_quota() {
+    let config = Config::from_toml_str(
+        r#"
+        [[rules]]
+        id = "social"
+        name = "Social"
+        tier = "controlled_access"
+        schedule_ids = ["always"]
+        patterns = [
+          { kind = "domain", value = "social.example", match_subdomains = false }
+        ]
+
+        [[schedules]]
+        id = "always"
+        name = "Always"
+
+        [[schedules.windows]]
+        weekday = "mon"
+        start = "10:30"
+        end = "23:59"
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let starts_at = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
+    database
+        .insert_detox_session(&DetoxSession {
+            id: "detox-no-unlock".to_string(),
+            name: Some("Protected focus".to_string()),
+            starts_at,
+            ends_at: starts_at + chrono::Duration::minutes(30),
+            cancelled_at: None,
+            site_rule_ids: vec!["social".to_string()],
+            app_rule_ids: Vec::new(),
+        })
+        .expect("detox session should insert");
+
+    let reason = "I need temporary access to complete this specific work item";
+    let during = context(&config, &database, at_utc(2026, 5, 18, 10, 5));
+    let denied = request_unlock("https://social.example/", reason.to_string(), &during)
+        .expect_err("detox should reject manual unlock");
+    assert!(
+        matches!(
+            &denied,
+            Error::Unlock(UnlockError::TargetInActiveDetox {
+                rule_id,
+                session_id,
+                ..
+            }) if rule_id == "social" && session_id == "detox-no-unlock"
+        ),
+        "unexpected unlock error: {denied:?}"
+    );
+
+    let after = context(&config, &database, at_utc(2026, 5, 18, 10, 31));
+    request_unlock("https://social.example/", reason.to_string(), &after)
+        .expect("the rejected attempt must not consume its reason or hourly quota");
 }
 
 #[test]
@@ -527,8 +579,7 @@ fn clock_tamper_evaluation_fails_closed_for_time_sensitive_rules() {
 
     request_unlock(
         "https://unlock.example/",
-        2,
-        "already active before tamper".to_string(),
+        "This access is required before testing the clock tamper state".to_string(),
         &inactive,
     )
     .expect("unlock should be granted");
@@ -824,8 +875,7 @@ fn overlapping_rules_apply_the_strictest_active_result() {
     );
     let unlock = request_unlock(
         "https://overlap.example/watch",
-        2,
-        "Need exact page".to_string(),
+        "I need this exact page to finish reviewing the assigned material".to_string(),
         &ctx,
     )
     .expect("unlock should target the blocking overlap rule");
@@ -1042,8 +1092,7 @@ fn unlocks_apply_to_the_matched_site_rule_and_use_fixed_quota() {
 
     let unlock = request_unlock(
         "focus.example",
-        60,
-        "Need access for a task".to_string(),
+        "I need access to finish the current assigned research task".to_string(),
         &before_unlock,
     )
     .expect("unlock should be granted");
@@ -1071,8 +1120,7 @@ fn unlocks_apply_to_the_matched_site_rule_and_use_fixed_quota() {
 
     let duplicate = request_unlock(
         "https://focus.example/",
-        2,
-        "Still active".to_string(),
+        "I am requesting another access period while the first remains active".to_string(),
         &during_unlock,
     )
     .expect_err("active unlock should prevent a duplicate");
@@ -1084,8 +1132,7 @@ fn unlocks_apply_to_the_matched_site_rule_and_use_fixed_quota() {
     let quota_ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 3));
     let quota = request_unlock(
         "https://focus.example/other",
-        2,
-        "Try another link".to_string(),
+        "I need a different link for another part of the current task".to_string(),
         &quota_ctx,
     )
     .expect_err("quota should block another unlock in the same hour");
@@ -1099,8 +1146,7 @@ fn unlocks_apply_to_the_matched_site_rule_and_use_fixed_quota() {
     let next_hour = context(&config, &database, at_utc(2026, 5, 18, 11, 1));
     let next_unlock = request_unlock(
         "https://focus.example/other",
-        2,
-        "Next hour".to_string(),
+        "I need this page for a separate task after the hourly limit reset".to_string(),
         &next_hour,
     )
     .expect("next-hour unlock should pass");
@@ -1120,6 +1166,15 @@ fn hourly_unlock_quota_applies_to_site_rules() {
           { kind = "domain", value = "quota.example", match_subdomains = false }
         ]
 
+        [[rules]]
+        id = "other-controlled"
+        name = "Other controlled"
+        tier = "controlled_access"
+        schedule_ids = ["always"]
+        patterns = [
+          { kind = "domain", value = "other.example", match_subdomains = false }
+        ]
+
         [[schedules]]
         id = "always"
 
@@ -1133,23 +1188,83 @@ fn hourly_unlock_quota_applies_to_site_rules() {
     let database = Database::in_memory().expect("database should initialize");
 
     let first = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
-    request_unlock("https://quota.example/", 2, "first".to_string(), &first)
-        .expect("first unlock should pass");
+    request_unlock(
+        "https://quota.example/",
+        "I need the first temporary access period for this work item".to_string(),
+        &first,
+    )
+    .expect("first unlock should pass");
 
     let second = context(&config, &database, at_utc(2026, 5, 18, 10, 10));
     let denied = request_unlock(
-        "https://quota.example/second",
-        2,
-        "second".to_string(),
+        "https://other.example/second",
+        "I need a second temporary access period for another work item".to_string(),
         &second,
     )
-    .expect_err("second site unlock in an hour should be denied");
+    .expect_err("a second global unlock in an hour should be denied");
     assert!(matches!(
         denied,
-        Error::Unlock(UnlockError::HourlyQuotaExceeded {
-            rule_id,
-            limit: 1
-        }) if rule_id == "quota-controlled"
+        Error::Unlock(UnlockError::HourlyQuotaExceeded { limit: 1 })
+    ));
+}
+
+#[test]
+fn unlock_reasons_require_twenty_letters_and_cannot_be_reused() {
+    let config = Config::from_toml_str(
+        r#"
+        [[rules]]
+        id = "reason-controlled"
+        name = "Reason controlled"
+        tier = "controlled_access"
+        schedule_ids = ["always"]
+        patterns = [
+          { kind = "domain", value = "reason.example", match_subdomains = false }
+        ]
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let first = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+
+    let too_short = request_unlock(
+        "https://reason.example/",
+        "Need this now".to_string(),
+        &first,
+    )
+    .expect_err("short reason should be rejected");
+    assert!(matches!(
+        too_short,
+        Error::Unlock(UnlockError::ReasonTooShort {
+            minimum: 20,
+            actual: 11
+        })
+    ));
+
+    request_unlock(
+        "https://reason.example/",
+        "I need this page to complete the assigned review task".to_string(),
+        &first,
+    )
+    .expect("first reason should be accepted");
+
+    let next_hour = context(&config, &database, at_utc(2026, 5, 18, 11, 1));
+    let reused = request_unlock(
+        "https://reason.example/",
+        "  i NEED   this PAGE to complete the assigned REVIEW task  ".to_string(),
+        &next_hour,
+    )
+    .expect_err("normalized duplicate reason should be rejected");
+    assert!(matches!(
+        reused,
+        Error::Unlock(UnlockError::ReasonAlreadyUsed)
     ));
 }
 
@@ -1356,11 +1471,6 @@ fn database_migration_relaxes_policy_allowance_zero_constraint() {
 fn policy_config_roundtrips_through_sqlite() {
     let config = Config::from_toml_str(
         r#"
-        [defaults.unlock_policy]
-        max_session_minutes = 8
-        cooldown_minutes = 20
-        max_unlocks_per_hour = 3
-
         [strict_mode]
         require_firefox_extension = true
         require_chrome_extension = true
@@ -1401,11 +1511,6 @@ fn policy_config_roundtrips_through_sqlite() {
           { kind = "url_prefix", value = "https://video.example/watch/" }
         ]
 
-        [rules.unlock_policy]
-        max_session_minutes = 4
-        cooldown_minutes = 5
-        max_unlocks_per_hour = 2
-
         [[app_rules]]
         id = "game-controlled"
         name = "Game controlled"
@@ -1414,11 +1519,6 @@ fn policy_config_roundtrips_through_sqlite() {
           { kind = "command_name", value = "game-bin" },
           { kind = "window_title_contains", value = "Game" }
         ]
-
-        [app_rules.unlock_policy]
-        max_session_minutes = 3
-        cooldown_minutes = 8
-        max_unlocks_per_hour = 1
 
         [[app_rules]]
         id = "kmines-hard"
@@ -1451,6 +1551,28 @@ fn policy_config_roundtrips_through_sqlite() {
 }
 
 #[test]
+fn empty_policy_config_is_still_marked_as_persisted() {
+    let config = Config::default();
+    let database = Database::in_memory().expect("database should initialize");
+
+    assert!(!database
+        .has_policy_config()
+        .expect("new database should not have policy"));
+    database
+        .replace_policy_config(&config)
+        .expect("empty policy config should persist");
+    assert!(database
+        .has_policy_config()
+        .expect("persisted empty policy should be detected"));
+    assert_eq!(
+        database
+            .load_policy_config()
+            .expect("empty policy should load"),
+        config
+    );
+}
+
+#[test]
 fn policy_config_roundtrips_through_toml_export() {
     let config = Config::from_toml_str(
         r#"
@@ -1480,6 +1602,8 @@ fn policy_config_roundtrips_through_toml_export() {
     assert_eq!(imported, config);
     assert!(exported.contains("[[rules]]"));
     assert!(exported.contains("hard.example"));
+    assert!(!exported.contains("unlock_policy"));
+    assert!(!exported.contains("[defaults]"));
 }
 
 #[test]

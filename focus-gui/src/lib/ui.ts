@@ -63,8 +63,7 @@ export function cloneRule(rule: Rule): Rule {
     ...rule,
     patterns: rule.patterns.map((pattern) => ({ ...pattern })),
     schedule_ids: [...rule.schedule_ids],
-    allowance_id: rule.allowance_id ?? null,
-    unlock_policy: rule.unlock_policy ? { ...rule.unlock_policy } : null
+    allowance_id: rule.allowance_id ?? null
   };
 }
 
@@ -108,8 +107,7 @@ export function cloneAppRule(rule: AppRule): AppRule {
     ...rule,
     matchers: rule.matchers.map((matcher) => ({ ...matcher })),
     schedule_ids: [...rule.schedule_ids],
-    allowance_id: rule.allowance_id ?? null,
-    unlock_policy: rule.unlock_policy ? { ...rule.unlock_policy } : null
+    allowance_id: rule.allowance_id ?? null
   };
 }
 
@@ -129,7 +127,6 @@ export function normalizeRuleDraft(rule: Rule): Rule {
     enabled: true,
     allowance_id:
       rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
-    unlock_policy: null,
     patterns: rule.patterns.map((pattern) => ({
       ...pattern,
       value: pattern.value.trim(),
@@ -158,7 +155,6 @@ export function normalizeAppRuleDraft(rule: AppRule): AppRule {
     enabled: true,
     allowance_id:
       rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
-    unlock_policy: null,
     matchers: rule.matchers.map(normalizeAppMatcherDraft),
     schedule_ids: [...rule.schedule_ids]
   };

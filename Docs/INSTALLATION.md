@@ -59,10 +59,11 @@ shells receive the `blockuntu` socket-group membership.
 
 When the GUI is running, closing the window hides it to the BlocKuntu tray icon
 instead of stopping the GUI process. Use the tray menu to show the window,
-open Detox/Admin, refresh daemon status, start or stop enforcement, or quit only
-the GUI. GNOME sessions may need AppIndicator/KStatusNotifierItem support before
-the tray icon is visible; KDE Plasma, XFCE, Cinnamon, MATE, and Ubuntu-style
-GNOME sessions are typically the smoother path.
+open Detox/Admin, refresh daemon status, or quit only the GUI. Enforcement
+cannot be stopped from the tray, GUI, or daemon RPC. GNOME sessions may need
+AppIndicator/KStatusNotifierItem support before the tray icon is visible; KDE
+Plasma, XFCE, Cinnamon, MATE, and Ubuntu-style GNOME sessions are typically the
+smoother path.
 
 For Debian-package installs, uninstall through the GUI Admin tab when possible:
 type the first-run uninstall phrase or the system recovery phrase exactly and

@@ -74,6 +74,7 @@
     ConfigSnapshot,
     DaemonStatus,
     DecisionResult,
+    DetoxDurationUnit,
     DetoxSession,
     EnforcementStatus,
     PolicyFileResult,
@@ -132,7 +133,7 @@
   let urlChecking = $state(false);
 
   let unlockTarget = $state("https://youtube.com/");
-  let unlockReason = $state("Task-related access");
+  let unlockReason = $state("");
   let unlockResult = $state<UnlockResult | null>(null);
   let unlocking = $state(false);
 
@@ -154,7 +155,8 @@
   let scheduleMessage: string | null = $state(null);
 
   let detoxName = $state("Deep work");
-  let detoxDurationMinutes: number | undefined = $state(60);
+  let detoxDurationValue: number | undefined = $state(1);
+  let detoxDurationUnit: DetoxDurationUnit = $state("hours");
   let selectedDetoxSiteRuleIds = $state<string[]>([]);
   let selectedDetoxAppRuleIds = $state<string[]>([]);
   let detoxStarting = $state(false);
@@ -190,9 +192,6 @@
   );
   let tier1EditUnlocked = $derived(
     Boolean(tier1EditUnlockedUntil && Date.parse(tier1EditUnlockedUntil) > nowMs)
-  );
-  let tier1EditRemainingSeconds = $derived(
-    tier1EditUnlockedUntil ? Math.max(0, Math.ceil((Date.parse(tier1EditUnlockedUntil) - nowMs) / 1000)) : 0
   );
   let operatorWindowOpen = $derived(operatorWindowOpenFromDaemon ?? operatorWindowOpenAt(nowMs));
   let operatorWindowLabel = $derived(operatorWindowLabelFromDaemon ?? OPERATOR_WINDOW_LABEL);
@@ -578,7 +577,8 @@
     unlockResult = null;
     lastError = null;
     try {
-      unlockResult = await requestUnlock(unlockTarget, 2, unlockReason, socketArg());
+      unlockResult = await requestUnlock(unlockTarget, unlockReason, socketArg());
+      unlockReason = "";
       await refreshEventsOnly();
     } catch (error) {
       lastError = formatError(error);
@@ -588,7 +588,16 @@
   }
 
   async function runStartDetox(): Promise<void> {
-    const durationMinutes = Math.max(0, Math.round(Number(detoxDurationMinutes ?? 0)));
+    const durationMultipliers: Record<DetoxDurationUnit, number> = {
+      minutes: 1,
+      hours: 60,
+      days: 24 * 60,
+      weeks: 7 * 24 * 60
+    };
+    const durationMinutes = Math.max(
+      0,
+      Math.round(Number(detoxDurationValue ?? 0) * durationMultipliers[detoxDurationUnit])
+    );
     if (durationMinutes <= 0) return;
     if (selectedDetoxSiteRuleIds.length + selectedDetoxAppRuleIds.length === 0) return;
 
@@ -603,7 +612,7 @@
         selectedDetoxAppRuleIds,
         socketArg()
       );
-      detoxMessage = `Detox active until ${new Date(response.session.ends_at).toLocaleTimeString()}.`;
+      detoxMessage = `Detox active until ${new Date(response.session.ends_at).toLocaleString()}.`;
       await refreshDetoxAndEvents();
     } catch (error) {
       lastError = formatError(error);
@@ -687,8 +696,8 @@
       const result = await unlockTier1Edit(tier1EditPhraseInput, socketArg());
       tier1EditUnlockedUntil = result.active ? (result.expires_at ?? null) : null;
       tier1EditMessage = tier1EditUnlockedUntil
-        ? `Unlocked until ${new Date(tier1EditUnlockedUntil).toLocaleTimeString()}.`
-        : "Tier 1 edit window is not active.";
+        ? "Tier 1 edits unlocked for 5 minutes."
+        : "Tier 1 edits remain locked.";
       tier1EditPhraseInput = "";
     } catch (error) {
       tier1EditMessage = null;
@@ -778,8 +787,7 @@
       enabled: true,
       patterns: [{ kind: "domain", value: "example.com", match_subdomains: true }],
       schedule_ids: [],
-      allowance_id: null,
-      unlock_policy: null
+      allowance_id: null
     };
     ruleDraft = newRule;
     ruleAllowanceDraft = defaultAllowanceForRule(newRule);
@@ -870,8 +878,7 @@
       enabled: true,
       matchers: [{ kind: "command_name", value: "kmines" }],
       schedule_ids: [],
-      allowance_id: null,
-      unlock_policy: null
+      allowance_id: null
     };
     appRuleAllowanceDraft = null;
     appRuleMessage = null;
@@ -1144,7 +1151,8 @@
         {config}
         detoxSessions={detoxSessionList}
         bind:detoxName
-        bind:detoxDurationMinutes
+        bind:detoxDurationValue
+        bind:detoxDurationUnit
         bind:selectedSiteRuleIds={selectedDetoxSiteRuleIds}
         bind:selectedAppRuleIds={selectedDetoxAppRuleIds}
         {detoxStarting}
@@ -1179,9 +1187,6 @@
         {uninstallPhraseError}
         bind:tier1EditPhraseInput
         {tier1EditUnlocking}
-        {tier1EditUnlocked}
-        {tier1EditUnlockedUntil}
-        {tier1EditRemainingSeconds}
         {operatorWindowOpen}
         {operatorWindowLabel}
         {tier1EditMessage}

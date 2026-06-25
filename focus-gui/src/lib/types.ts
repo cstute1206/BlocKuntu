@@ -9,7 +9,7 @@ export type ViewId =
 
 export interface DaemonStatus {
   status: string;
-  enforcement_state?: "active" | "stopped";
+  enforcement_state?: "active" | "uninstalling";
   rules: number;
   app_rules: number;
   schedules: number;
@@ -30,7 +30,6 @@ export interface Rule {
   patterns: RulePattern[];
   schedule_ids: string[];
   allowance_id?: string | null;
-  unlock_policy?: UnlockPolicy | null;
 }
 
 export interface AppMatcher {
@@ -52,7 +51,6 @@ export interface AppRule {
   matchers: AppMatcher[];
   schedule_ids: string[];
   allowance_id?: string | null;
-  unlock_policy?: UnlockPolicy | null;
 }
 
 export interface RunningApp {
@@ -73,12 +71,6 @@ export interface WindowDetectionStatus {
   provider?: string | null;
   session_type?: string | null;
   detail: string;
-}
-
-export interface UnlockPolicy {
-  max_session_minutes: number;
-  cooldown_minutes: number;
-  max_unlocks_per_hour: number;
 }
 
 export type ScheduleDay =
@@ -116,9 +108,6 @@ export interface ConfigSnapshot {
   app_rules: AppRule[];
   schedules: Schedule[];
   allowances: Allowance[];
-  defaults: {
-    unlock_policy: UnlockPolicy;
-  };
 }
 
 export interface ConfigMutationResponse {
@@ -154,6 +143,8 @@ export interface DetoxMutationResponse {
   status: string;
   session: DetoxSession;
 }
+
+export type DetoxDurationUnit = "minutes" | "hours" | "days" | "weeks";
 
 export interface RecentEvent {
   id: number;
@@ -235,7 +226,7 @@ export interface HostsFileStatus {
 
 export interface EnforcementStatus {
   status: string;
-  enforcement_state: "active" | "stopped";
+  enforcement_state: "active" | "uninstalling";
   firefox_policy: FirefoxPolicyStatus;
   chrome_policy: ChromePolicyStatus;
   hosts_file: HostsFileStatus;

@@ -5,14 +5,12 @@ use crate::{
     AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Config, ControlledBlockReason,
     Database, Decision, DetoxSession, DetoxTargetKind, Error, EvaluationContext, ProcessIdentity,
     RuleConfig, RulePatternConfig, RulePatternKind, RuleTier, ScheduleConfig, UnlockError,
-    UnlockPolicyConfig, UnlockState, VisitState, Weekday,
+    UnlockState, VisitState, Weekday,
 };
 
-const FIXED_TIER_2_UNLOCK_POLICY: UnlockPolicyConfig = UnlockPolicyConfig {
-    max_session_minutes: 2,
-    cooldown_minutes: 0,
-    max_unlocks_per_hour: 1,
-};
+const TIER_2_UNLOCK_MINUTES: u32 = 2;
+const GLOBAL_UNLOCKS_PER_HOUR: u32 = 1;
+const MIN_UNLOCK_REASON_LETTERS: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ControlledRuleStrictness {
@@ -145,7 +143,6 @@ impl<'a> PolicyEngine<'a> {
     pub fn request_unlock(
         &self,
         target: &str,
-        minutes: u32,
         reason: String,
         context: &EvaluationContext<'_>,
     ) -> Result<UnlockState, Error> {
@@ -153,18 +150,44 @@ impl<'a> PolicyEngine<'a> {
         if target.is_empty() {
             return Err(UnlockError::EmptyTarget.into());
         }
-        if minutes == 0 {
-            return Err(UnlockError::InvalidDuration.into());
+        if let Some((rule_id, session_id, ends_at)) =
+            self.active_detox_for_unlock_target(target, context)?
+        {
+            return Err(UnlockError::TargetInActiveDetox {
+                rule_id,
+                session_id,
+                ends_at,
+            }
+            .into());
         }
+        let rule = self.resolve_unlock_rule(target, context)?;
 
-        let reason = reason.trim().to_string();
+        let reason = clean_unlock_reason(&reason);
         if reason.is_empty() {
             return Err(UnlockError::EmptyReason.into());
         }
+        let letter_count = reason
+            .chars()
+            .filter(|character| character.is_alphabetic())
+            .count();
+        if letter_count < MIN_UNLOCK_REASON_LETTERS {
+            return Err(UnlockError::ReasonTooShort {
+                minimum: MIN_UNLOCK_REASON_LETTERS,
+                actual: letter_count,
+            }
+            .into());
+        }
+        let normalized_reason = normalize_unlock_reason(&reason);
+        if self
+            .database
+            .unlock_reasons()?
+            .iter()
+            .any(|existing| normalize_unlock_reason(existing) == normalized_reason)
+        {
+            return Err(UnlockError::ReasonAlreadyUsed.into());
+        }
 
-        let rule = self.resolve_unlock_rule(target, context)?;
-        let policy = FIXED_TIER_2_UNLOCK_POLICY;
-        let minutes = policy.max_session_minutes;
+        let minutes = TIER_2_UNLOCK_MINUTES;
 
         let now = context.now_utc();
         let active_unlock = self.database.active_unlock_for_rule(&rule.id, now)?;
@@ -176,25 +199,12 @@ impl<'a> PolicyEngine<'a> {
             .into());
         }
 
-        if let Some(latest) = self.database.latest_unlock_for_rule(&rule.id)? {
-            let retry_at =
-                latest.expires_at + Duration::minutes(i64::from(policy.cooldown_minutes));
-            if now < retry_at {
-                return Err(UnlockError::CooldownActive {
-                    rule_id: rule.id.clone(),
-                    retry_at,
-                }
-                .into());
-            }
-        }
-
         let unlocks_in_hour = self
             .database
-            .count_unlocks_since(&rule.id, now - Duration::hours(1))?;
-        if unlocks_in_hour >= policy.max_unlocks_per_hour {
+            .count_unlocks_since(now - Duration::hours(1))?;
+        if unlocks_in_hour >= GLOBAL_UNLOCKS_PER_HOUR {
             return Err(UnlockError::HourlyQuotaExceeded {
-                rule_id: rule.id.clone(),
-                limit: policy.max_unlocks_per_hour,
+                limit: GLOBAL_UNLOCKS_PER_HOUR,
             }
             .into());
         }
@@ -430,6 +440,47 @@ impl<'a> PolicyEngine<'a> {
             target: target.to_string(),
         }
         .into())
+    }
+
+    fn active_detox_for_unlock_target(
+        &self,
+        target: &str,
+        context: &EvaluationContext<'_>,
+    ) -> Result<Option<(String, String, DateTime<Utc>)>, Error> {
+        if let Some(parsed) = normalize_unlock_url_target(target) {
+            if let Some(BlockReason::Detox {
+                rule_id,
+                session_id,
+                ends_at,
+                ..
+            }) = self.detox_block_for_url(&parsed, context)?
+            {
+                return Ok(Some((rule_id, session_id, ends_at)));
+            }
+        }
+
+        let active_sessions = if context.clock_tampered {
+            self.database.uncancelled_detox_sessions()?
+        } else {
+            self.database.active_detox_sessions(context.now_utc())?
+        };
+        let matching_rule_ids: Vec<&str> = self
+            .config
+            .app_rules
+            .iter()
+            .filter(|rule| rule.id == target || app_rule_target_matches(rule, target))
+            .map(|rule| rule.id.as_str())
+            .collect();
+
+        Ok(active_sessions
+            .into_iter()
+            .filter_map(|session| {
+                matching_rule_ids
+                    .iter()
+                    .find(|rule_id| session.app_rule_ids.iter().any(|id| id == **rule_id))
+                    .map(|rule_id| ((*rule_id).to_string(), session.id.clone(), session.ends_at))
+            })
+            .max_by_key(|(_, _, ends_at)| ends_at.timestamp_micros()))
     }
 
     fn controlled_rule_for_unlock<'b>(
@@ -756,6 +807,14 @@ impl<'a> PolicyEngine<'a> {
     }
 }
 
+fn clean_unlock_reason(reason: &str) -> String {
+    reason.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_unlock_reason(reason: &str) -> String {
+    clean_unlock_reason(reason).to_lowercase()
+}
+
 struct ResolvedUnlockRule {
     id: String,
     target: String,
@@ -779,12 +838,10 @@ pub fn metered_app_rule_ids_for_process(
 
 pub fn request_unlock(
     target: &str,
-    minutes: u32,
     reason: String,
     context: &EvaluationContext<'_>,
 ) -> Result<UnlockState, Error> {
-    PolicyEngine::new(context.config, context.database)
-        .request_unlock(target, minutes, reason, context)
+    PolicyEngine::new(context.config, context.database).request_unlock(target, reason, context)
 }
 
 pub fn record_visit_start(

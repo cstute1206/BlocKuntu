@@ -80,8 +80,10 @@ BlocKuntu supports:
 - Domain and URL pattern matching.
 - Weekly schedules, including grouped days such as workdays and weekends.
 - Daily allowances, including zero-minute allowances.
-- Rule-scoped temporary unlocks.
-- Cooldowns, maximum session length, and hourly unlock quotas.
+- Two-minute temporary unlocks for Tier 2 rules.
+- One global unlock per rolling hour with unique, substantive reasons.
+- Manual unlocks cannot bypass active Detox sessions.
+- Detox durations from one minute through 12 weeks.
 - App rules based on process identity such as executable path, basename,
   command name, desktop id, and fallback window title matching.
 - Browser heartbeat fail-closed behavior when the extension, native host, or

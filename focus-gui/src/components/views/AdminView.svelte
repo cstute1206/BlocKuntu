@@ -24,9 +24,6 @@
     uninstallPhraseError: string | null;
     tier1EditPhraseInput?: string;
     tier1EditUnlocking: boolean;
-    tier1EditUnlocked: boolean;
-    tier1EditUnlockedUntil: string | null;
-    tier1EditRemainingSeconds: number;
     operatorWindowOpen: boolean;
     operatorWindowLabel: string;
     tier1EditMessage: string | null;
@@ -51,9 +48,6 @@
     uninstallPhraseError,
     tier1EditPhraseInput = $bindable(""),
     tier1EditUnlocking,
-    tier1EditUnlocked,
-    tier1EditUnlockedUntil,
-    tier1EditRemainingSeconds,
     operatorWindowOpen,
     operatorWindowLabel,
     tier1EditMessage,
@@ -139,22 +133,6 @@
         <span>Time</span>
         <small>{operatorWindowLabel}</small>
       </div>
-      <div class="status-row">
-        <span>Window</span>
-        <strong data-state={tier1EditUnlocked ? "active" : "stopped"}>
-          {tier1EditUnlocked ? "active" : "locked"}
-        </strong>
-      </div>
-      <div class="status-row">
-        <span>Expires</span>
-        <small>
-          {#if tier1EditUnlocked && tier1EditUnlockedUntil}
-            {new Date(tier1EditUnlockedUntil).toLocaleTimeString()} ({tier1EditRemainingSeconds}s)
-          {:else}
-            -
-          {/if}
-        </small>
-      </div>
     </div>
     <div class="tier1-edit-form admin-action-form">
       <label>
@@ -228,24 +206,6 @@
           <span>Time</span>
           <small>{operatorWindowLabel}</small>
         </div>
-        <div class="status-row">
-          <span>Phrase</span>
-          <strong data-state={uninstallPhrase ? "active" : "stopped"}>
-            {#if uninstallPhrase}
-              ready
-            {:else if uninstallPhraseLoading}
-              loading
-            {:else}
-              unavailable
-            {/if}
-          </strong>
-        </div>
-        {#if uninstallPhrase}
-          <div class="status-row status-row-wide">
-            <span>Confirm</span>
-            <code class="phrase-code">{uninstallPhrase}</code>
-          </div>
-        {/if}
       </div>
       <label>
         <span>Confirmation phrase</span>

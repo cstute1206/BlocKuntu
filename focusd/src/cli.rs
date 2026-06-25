@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/blockuntu/config.toml";
 pub const DEFAULT_DATABASE_PATH: &str = "/var/lib/blockuntu/blockuntu.sqlite3";
+pub const DEFAULT_POLICY_RECOVERY_PATH: &str = "/etc/blockuntu/policy-recovery.toml";
 pub const DEFAULT_SOCKET_PATH: &str = "/run/blockuntu/blockuntud.sock";
 pub const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.json";
 pub const DEFAULT_EXTENSION_ID: &str = "blockuntu-poc@example.local";
@@ -26,6 +27,12 @@ pub struct Args {
     pub config: PathBuf,
     #[arg(long, default_value = DEFAULT_DATABASE_PATH)]
     pub database: PathBuf,
+    #[arg(long, default_value = DEFAULT_POLICY_RECOVERY_PATH)]
+    pub policy_recovery: PathBuf,
+    #[arg(long, conflicts_with = "no_policy_recovery_immutable")]
+    pub policy_recovery_immutable: bool,
+    #[arg(long, conflicts_with = "policy_recovery_immutable")]
+    pub no_policy_recovery_immutable: bool,
     #[arg(long, default_value = DEFAULT_SOCKET_PATH)]
     pub socket: PathBuf,
     #[arg(long, default_value = DEFAULT_FIREFOX_POLICY_PATH)]

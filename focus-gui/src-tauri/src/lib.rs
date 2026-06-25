@@ -73,8 +73,6 @@ const TRAY_MENU_SHOW: &str = "show";
 const TRAY_MENU_OPEN_DETOX: &str = "open_detox";
 const TRAY_MENU_OPEN_ADMIN: &str = "open_admin";
 const TRAY_MENU_REFRESH: &str = "refresh";
-const TRAY_MENU_START_ENFORCEMENT: &str = "start_enforcement";
-const TRAY_MENU_STOP_ENFORCEMENT: &str = "stop_enforcement";
 const TRAY_MENU_QUIT: &str = "quit";
 
 #[derive(Debug, Error)]
@@ -145,7 +143,6 @@ struct SystemHealth {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UnlockRequest {
     target: String,
-    minutes: u32,
     reason: String,
 }
 
@@ -179,9 +176,6 @@ struct TrayMenuState {
     daemon_status: MenuItem<Wry>,
     enforcement_status: MenuItem<Wry>,
     detox_status: MenuItem<Wry>,
-    last_action: MenuItem<Wry>,
-    start_enforcement: MenuItem<Wry>,
-    stop_enforcement: MenuItem<Wry>,
 }
 
 #[tauri::command]
@@ -301,7 +295,6 @@ fn request_unlock(request: UnlockRequest, socket_path: Option<String>) -> Result
         "request_unlock",
         json!({
             "target": request.target,
-            "minutes": request.minutes,
             "reason": request.reason,
             "now": Utc::now().to_rfc3339()
         }),
@@ -473,7 +466,12 @@ fn resolve_socket_path(socket_path: Option<&str>) -> String {
 
 fn notify_browser_extensions_before_uninstall() -> bool {
     let socket = resolve_socket_path(None);
-    call_daemon(&socket, "prepare_uninstall", json!({})).is_ok()
+    call_daemon(
+        &socket,
+        "prepare_uninstall",
+        json!({ "now": Utc::now().to_rfc3339() }),
+    )
+    .is_ok()
 }
 
 fn load_or_create_uninstall_phrase() -> Result<String, GuiError> {
@@ -858,7 +856,7 @@ fn enforcement_mode_check(status: &Value) -> HealthCheck {
         label: "Enforcement mode".to_string(),
         state: if state == "active" {
             HealthState::Ok
-        } else if state == "stopped" {
+        } else if state == "uninstalling" {
             HealthState::Warn
         } else {
             HealthState::Unknown
@@ -1376,32 +1374,9 @@ fn setup_tray(app: &mut App<Wry>) -> tauri::Result<TrayMenuState> {
     )?;
     let detox_status =
         MenuItem::with_id(app, "detox_status", "Detox: Checking", false, None::<&str>)?;
-    let last_action = MenuItem::with_id(
-        app,
-        "last_action",
-        "Last action: Ready",
-        false,
-        None::<&str>,
-    )?;
-    let start_enforcement = MenuItem::with_id(
-        app,
-        TRAY_MENU_START_ENFORCEMENT,
-        "Start enforcement",
-        false,
-        None::<&str>,
-    )?;
-    let stop_enforcement = MenuItem::with_id(
-        app,
-        TRAY_MENU_STOP_ENFORCEMENT,
-        "Stop enforcement",
-        false,
-        None::<&str>,
-    )?;
     let quit = MenuItem::with_id(app, TRAY_MENU_QUIT, "Quit GUI", true, None::<&str>)?;
     let separator_one = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
-    let separator_three = PredefinedMenuItem::separator(app)?;
-    let separator_four = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -1412,13 +1387,8 @@ fn setup_tray(app: &mut App<Wry>) -> tauri::Result<TrayMenuState> {
             &daemon_status,
             &enforcement_status,
             &detox_status,
-            &last_action,
             &separator_two,
             &refresh,
-            &separator_three,
-            &start_enforcement,
-            &stop_enforcement,
-            &separator_four,
             &quit,
         ],
     )?;
@@ -1426,9 +1396,6 @@ fn setup_tray(app: &mut App<Wry>) -> tauri::Result<TrayMenuState> {
         daemon_status,
         enforcement_status,
         detox_status,
-        last_action,
-        start_enforcement,
-        stop_enforcement,
     };
 
     let menu_state_for_events = menu_state.clone();
@@ -1453,24 +1420,6 @@ fn setup_tray(app: &mut App<Wry>) -> tauri::Result<TrayMenuState> {
             }
             TRAY_MENU_REFRESH => {
                 refresh_tray_menu_async(app.clone(), menu_state_for_events.clone());
-            }
-            TRAY_MENU_START_ENFORCEMENT => {
-                run_tray_daemon_action(
-                    app.clone(),
-                    menu_state_for_events.clone(),
-                    "start_enforcement",
-                    "Starting enforcement",
-                    "Started enforcement",
-                );
-            }
-            TRAY_MENU_STOP_ENFORCEMENT => {
-                run_tray_daemon_action(
-                    app.clone(),
-                    menu_state_for_events.clone(),
-                    "stop_enforcement",
-                    "Stopping enforcement",
-                    "Stopped enforcement",
-                );
             }
             TRAY_MENU_QUIT => app.exit(0),
             _ => {}
@@ -1526,13 +1475,11 @@ fn refresh_tray_menu(_app: &AppHandle<Wry>, menu: &TrayMenuState) {
                 format!("Enforcement: {}", tray_enforcement_label(enforcement_state)),
             );
             update_tray_detox_status(&socket, menu);
-            update_tray_enforcement_actions(menu, Some(enforcement_state));
         }
         Err(_) => {
             set_menu_text(&menu.daemon_status, "Daemon: Offline");
             set_menu_text(&menu.enforcement_status, "Enforcement: Unknown");
             set_menu_text(&menu.detox_status, "Detox: Unknown");
-            update_tray_enforcement_actions(menu, None);
         }
     }
 }
@@ -1561,56 +1508,12 @@ fn update_tray_detox_status(socket: &str, menu: &TrayMenuState) {
     }
 }
 
-fn update_tray_enforcement_actions(menu: &TrayMenuState, enforcement_state: Option<&str>) {
-    let (can_start, can_stop) = match enforcement_state {
-        Some("active") => (false, true),
-        Some("stopped") => (true, false),
-        Some(_) => (true, true),
-        None => (false, false),
-    };
-    set_menu_enabled(&menu.start_enforcement, can_start);
-    set_menu_enabled(&menu.stop_enforcement, can_stop);
-}
-
-fn run_tray_daemon_action(
-    app: AppHandle<Wry>,
-    menu: TrayMenuState,
-    method: &'static str,
-    pending_label: &'static str,
-    success_label: &'static str,
-) {
-    std::thread::spawn(move || {
-        set_menu_text(&menu.last_action, format!("Last action: {pending_label}"));
-        update_tray_enforcement_actions(&menu, None);
-        let socket = resolve_socket_path(None);
-        match call_daemon(&socket, method, json!({})) {
-            Ok(_) => set_menu_text(&menu.last_action, format!("Last action: {success_label}")),
-            Err(err) => set_menu_text(
-                &menu.last_action,
-                format!("Last action: {}", tray_error_label(&err)),
-            ),
-        }
-        refresh_tray_menu(&app, &menu);
-        emit_runtime_refresh(&app);
-    });
-}
-
 fn tray_enforcement_label(state: &str) -> &'static str {
     match state {
         "active" => "Active",
-        "stopped" => "Stopped",
+        "uninstalling" => "Uninstalling",
         _ => "Unknown",
     }
-}
-
-fn tray_error_label(error: &GuiError) -> String {
-    let detail = error.to_string();
-    const MAX_LEN: usize = 60;
-    if detail.chars().count() <= MAX_LEN {
-        return format!("Failed: {detail}");
-    }
-    let truncated = detail.chars().take(MAX_LEN).collect::<String>();
-    format!("Failed: {truncated}...")
 }
 
 fn show_main_window(app: &AppHandle<Wry>) {
@@ -1627,10 +1530,6 @@ fn emit_runtime_refresh(app: &AppHandle<Wry>) {
 
 fn set_menu_text<S: AsRef<str>>(item: &MenuItem<Wry>, text: S) {
     let _ = item.set_text(text);
-}
-
-fn set_menu_enabled(item: &MenuItem<Wry>, enabled: bool) {
-    let _ = item.set_enabled(enabled);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

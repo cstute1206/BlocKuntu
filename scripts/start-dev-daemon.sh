@@ -20,6 +20,7 @@ fi
 
 echo "[blockuntud-dev] config: ${RUNTIME_DIR}/config.toml"
 echo "[blockuntud-dev] database: ${RUNTIME_DIR}/blockuntu.sqlite3"
+echo "[blockuntud-dev] policy recovery: ${RUNTIME_DIR}/policy-recovery.toml"
 echo "[blockuntud-dev] socket: ${RUNTIME_DIR}/blockuntud.sock"
 echo "[blockuntud-dev] firefox policy sandbox: ${RUNTIME_DIR}/firefox/policies.json"
 echo "[blockuntud-dev] chrome policy sandbox: ${RUNTIME_DIR}/chrome/policies/managed/blockuntu.json"
@@ -29,6 +30,8 @@ echo "[blockuntud-dev] hosts sandbox: ${RUNTIME_DIR}/hosts"
 exec cargo run --manifest-path "${REPO_ROOT}/focusd/Cargo.toml" -- \
   --config "${RUNTIME_DIR}/config.toml" \
   --database "${RUNTIME_DIR}/blockuntu.sqlite3" \
+  --policy-recovery "${RUNTIME_DIR}/policy-recovery.toml" \
+  --no-policy-recovery-immutable \
   --socket "${RUNTIME_DIR}/blockuntud.sock" \
   --firefox-policy "${RUNTIME_DIR}/firefox/policies.json" \
   --chrome-policy "${RUNTIME_DIR}/chrome/policies/managed/blockuntu.json" \

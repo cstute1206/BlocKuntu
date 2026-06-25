@@ -17,6 +17,7 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
@@ -26,8 +27,6 @@ pub struct Config {
     pub schedules: Vec<ScheduleConfig>,
     #[serde(default)]
     pub allowances: Vec<AllowanceConfig>,
-    #[serde(default)]
-    pub defaults: DefaultsConfig,
     #[serde(default)]
     pub strict_mode: StrictModeConfig,
 }
@@ -42,6 +41,26 @@ impl Config {
     pub fn to_toml_string(&self) -> Result<String, ConfigError> {
         self.validate()?;
         Ok(toml::to_string_pretty(self)?)
+    }
+
+    pub fn from_legacy_recovery_toml_str(contents: &str) -> Result<Self, ConfigError> {
+        let mut value = contents.parse::<toml::Value>()?;
+        let table = value.as_table_mut().ok_or_else(|| {
+            ConfigError::Validation("policy recovery TOML root must be a table".to_string())
+        })?;
+        table.remove("defaults");
+        for key in ["rules", "app_rules"] {
+            if let Some(items) = table.get_mut(key).and_then(toml::Value::as_array_mut) {
+                for item in items {
+                    if let Some(item) = item.as_table_mut() {
+                        item.remove("unlock_policy");
+                    }
+                }
+            }
+        }
+        let config: Self = value.try_into()?;
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -73,7 +92,6 @@ impl Config {
             .map(|allowance| allowance.id.as_str())
             .collect();
 
-        validate_unlock_policy("defaults.unlock_policy", &self.defaults.unlock_policy)?;
         if self.strict_mode.grace_seconds == 0 {
             return Err(ConfigError::Validation(
                 "strict_mode.grace_seconds must be greater than zero".to_string(),
@@ -146,19 +164,14 @@ impl Config {
 
             match rule.tier {
                 RuleTier::Hard => {
-                    if rule.allowance_id.is_some() || rule.unlock_policy.is_some() {
+                    if rule.allowance_id.is_some() {
                         return Err(ConfigError::Validation(format!(
-                            "hard rule '{}' cannot define allowances or unlock policies",
+                            "hard rule '{}' cannot define allowances",
                             rule.id
                         )));
                     }
                 }
-                RuleTier::ControlledAccess => {
-                    validate_unlock_policy(
-                        &format!("rule '{}'.unlock_policy", rule.id),
-                        &rule.effective_unlock_policy(&self.defaults),
-                    )?;
-                }
+                RuleTier::ControlledAccess => {}
             }
         }
 
@@ -216,19 +229,14 @@ impl Config {
 
             match app_rule.tier {
                 RuleTier::Hard => {
-                    if app_rule.allowance_id.is_some() || app_rule.unlock_policy.is_some() {
+                    if app_rule.allowance_id.is_some() {
                         return Err(ConfigError::Validation(format!(
-                            "hard app rule '{}' cannot define allowances or unlock policies",
+                            "hard app rule '{}' cannot define allowances",
                             app_rule.id
                         )));
                     }
                 }
-                RuleTier::ControlledAccess => {
-                    validate_unlock_policy(
-                        &format!("app rule '{}'.unlock_policy", app_rule.id),
-                        &app_rule.effective_unlock_policy(&self.defaults),
-                    )?;
-                }
+                RuleTier::ControlledAccess => {}
             }
         }
 
@@ -243,22 +251,7 @@ impl Default for Config {
             app_rules: Vec::new(),
             schedules: Vec::new(),
             allowances: Vec::new(),
-            defaults: DefaultsConfig::default(),
             strict_mode: StrictModeConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DefaultsConfig {
-    #[serde(default)]
-    pub unlock_policy: UnlockPolicyConfig,
-}
-
-impl Default for DefaultsConfig {
-    fn default() -> Self {
-        Self {
-            unlock_policy: UnlockPolicyConfig::default(),
         }
     }
 }
@@ -290,6 +283,7 @@ impl Default for StrictModeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RuleConfig {
     pub id: String,
     pub name: String,
@@ -302,17 +296,10 @@ pub struct RuleConfig {
     pub schedule_ids: Vec<String>,
     #[serde(default)]
     pub allowance_id: Option<String>,
-    #[serde(default)]
-    pub unlock_policy: Option<UnlockPolicyConfig>,
-}
-
-impl RuleConfig {
-    pub fn effective_unlock_policy(&self, defaults: &DefaultsConfig) -> UnlockPolicyConfig {
-        self.unlock_policy.unwrap_or(defaults.unlock_policy)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AppRuleConfig {
     pub id: String,
     pub name: String,
@@ -325,14 +312,6 @@ pub struct AppRuleConfig {
     pub schedule_ids: Vec<String>,
     #[serde(default)]
     pub allowance_id: Option<String>,
-    #[serde(default)]
-    pub unlock_policy: Option<UnlockPolicyConfig>,
-}
-
-impl AppRuleConfig {
-    pub fn effective_unlock_policy(&self, defaults: &DefaultsConfig) -> UnlockPolicyConfig {
-        self.unlock_policy.unwrap_or(defaults.unlock_policy)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -409,26 +388,6 @@ pub struct AllowanceConfig {
     #[serde(default)]
     pub name: Option<String>,
     pub daily_minutes: u32,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UnlockPolicyConfig {
-    #[serde(default = "default_max_session_minutes")]
-    pub max_session_minutes: u32,
-    #[serde(default = "default_cooldown_minutes")]
-    pub cooldown_minutes: u32,
-    #[serde(default = "default_max_unlocks_per_hour")]
-    pub max_unlocks_per_hour: u32,
-}
-
-impl Default for UnlockPolicyConfig {
-    fn default() -> Self {
-        Self {
-            max_session_minutes: default_max_session_minutes(),
-            cooldown_minutes: default_cooldown_minutes(),
-            max_unlocks_per_hour: default_max_unlocks_per_hour(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -705,36 +664,10 @@ fn validate_host_like(rule_id: &str, value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_unlock_policy(label: &str, policy: &UnlockPolicyConfig) -> Result<(), ConfigError> {
-    if policy.max_session_minutes == 0 {
-        return Err(ConfigError::Validation(format!(
-            "{label}.max_session_minutes must be greater than zero"
-        )));
-    }
-    if policy.max_unlocks_per_hour == 0 {
-        return Err(ConfigError::Validation(format!(
-            "{label}.max_unlocks_per_hour must be greater than zero"
-        )));
-    }
-    Ok(())
-}
-
 fn default_enabled() -> bool {
     true
 }
 
 fn default_strict_grace_seconds() -> u32 {
     30
-}
-
-fn default_max_session_minutes() -> u32 {
-    2
-}
-
-fn default_cooldown_minutes() -> u32 {
-    0
-}
-
-fn default_max_unlocks_per_hour() -> u32 {
-    1
 }

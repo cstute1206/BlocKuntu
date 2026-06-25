@@ -7,14 +7,105 @@ state, not make durable trust decisions locally.
 
 ## Implemented
 
+### No Runtime Enforcement Stop
+
+Status: implemented across `focusd` and the Tauri tray.
+
+Risk addressed:
+
+- The previous tray actions and daemon RPC methods could persistently stop all
+  URL, application, browser-policy, and hosts-file enforcement.
+
+Implementation:
+
+- The `start_enforcement` and `stop_enforcement` RPC methods no longer exist.
+- The tray no longer exposes start or stop actions.
+- Legacy `enforcement_state = stopped` and
+  `browser_extension_mode = disabled` values are ignored, so upgrading
+  automatically returns an old stopped installation to active enforcement.
+- The GUI can still quit without stopping the daemon or enforcement.
+
+Uninstall handoff:
+
+- GUI uninstall retains the internal `prepare_uninstall` RPC so browser
+  extensions can stand down before package purge removes the native host.
+- This is not a general stop mechanism. It creates a 30-second
+  `uninstalling` lease and the daemon itself rejects calls outside Sunday
+  20:00-23:59 or while clock integrity is tampered.
+- If package purge fails, the lease expires and daemon repair loops restore
+  browser policies, the managed hosts block, and process enforcement.
+
+### Policy Database Recovery Snapshot
+
+Status: implemented in `focusd`.
+
+Risk addressed:
+
+- Deleting `/var/lib/blockuntu/blockuntu.sqlite3` previously caused the daemon
+  to recreate the database from the minimal packaged
+  `/etc/blockuntu/config.toml`, losing rules configured through the GUI.
+
+Implementation:
+
+- The daemon maintains a complete validated TOML snapshot at
+  `/etc/blockuntu/policy-recovery.toml`.
+- Every successful policy mutation updates this snapshot, including site-list,
+  application-rule, allowance, schedule, and TOML-import changes.
+- Snapshot writes use a temporary file, `fsync`, and an atomic rename. The
+  resulting file is root-owned in production and has mode `0600`.
+- Production applies `chattr +i` to the snapshot. The daemon temporarily clears
+  the immutable flag, updates the snapshot, and reapplies the flag.
+- Development uses `/tmp/blockuntu/policy-recovery.toml` without immutability.
+
+Startup behavior:
+
+- A valid policy in SQLite remains authoritative and refreshes the snapshot.
+- If SQLite is missing or contains no persisted policy, the daemon restores the
+  complete policy from the recovery snapshot and records a `policy_recovered`
+  event.
+- An existing empty database without a recovery snapshot is treated as
+  suspicious. The daemon fails closed instead of silently replacing prior
+  state with the packaged baseline.
+- A genuinely new installation with neither a database nor a recovery snapshot
+  initializes from `/etc/blockuntu/config.toml` and immediately creates the
+  recovery snapshot.
+
+Uninstall behavior:
+
+- Debian package removal and `scripts/uninstall-production.sh --purge-data`
+  clear the immutable flag before removing `/etc/blockuntu`.
+- Normal scripted uninstall preserves both `/etc/blockuntu` and
+  `/var/lib/blockuntu`.
+
+Known limits:
+
+- This protects against accidental deletion and simple local tampering. A user
+  with unrestricted root access can clear immutable flags and remove the
+  database, snapshot, daemon, and service units.
+- The recovery snapshot contains policy configuration only. Runtime history,
+  usage accounting, detox sessions, events, and clock-integrity state remain
+  SQLite-only.
+- A corrupt SQLite file causes daemon startup to fail rather than being
+  overwritten automatically. The recovery snapshot remains available for an
+  explicit repair flow.
+
+### Detox Unlock Isolation
+
+Status: implemented in `focus-core`.
+
+- Detox blocks take precedence over active Tier 2 unlocks.
+- Manual unlock requests for active Detox targets are rejected before a reason
+  or the global hourly quota is consumed.
+- Ending Detox early still requires the privileged Tier 1 cancellation path.
+
 ### Clock Tamper Detection
 
 Status: implemented in `focusd` and `focus-core`.
 
 Risk addressed:
 
-- A user can move the system wall clock to bypass schedules, allowances, unlock
-  cooldowns, detox end times, or Tier 1 operator windows.
+- A user can move the system wall clock to bypass schedules, allowances, hourly
+  unlock limits, detox end times, or Tier 1 operator windows.
 
 Implementation:
 

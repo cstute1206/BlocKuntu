@@ -1,12 +1,27 @@
 <script lang="ts">
   import { Ban, CheckCircle2, Play, Timer, XCircle } from "@lucide/svelte";
-  import type { AppRule, ConfigSnapshot, DetoxSession, Rule } from "../../lib/types";
+  import type {
+    AppRule,
+    ConfigSnapshot,
+    DetoxDurationUnit,
+    DetoxSession,
+    Rule
+  } from "../../lib/types";
+
+  const MAX_DETOX_DURATION_MINUTES = 12 * 7 * 24 * 60;
+  const durationMultipliers: Record<DetoxDurationUnit, number> = {
+    minutes: 1,
+    hours: 60,
+    days: 24 * 60,
+    weeks: 7 * 24 * 60
+  };
 
   interface Props {
     config: ConfigSnapshot | null;
     detoxSessions: DetoxSession[];
     detoxName?: string;
-    detoxDurationMinutes?: number;
+    detoxDurationValue?: number;
+    detoxDurationUnit?: DetoxDurationUnit;
     selectedSiteRuleIds?: string[];
     selectedAppRuleIds?: string[];
     detoxStarting: boolean;
@@ -22,7 +37,8 @@
     config,
     detoxSessions,
     detoxName = $bindable("Deep work"),
-    detoxDurationMinutes = $bindable(60),
+    detoxDurationValue = $bindable(1),
+    detoxDurationUnit = $bindable<DetoxDurationUnit>("hours"),
     selectedSiteRuleIds = $bindable<string[]>([]),
     selectedAppRuleIds = $bindable<string[]>([]),
     detoxStarting,
@@ -35,10 +51,20 @@
   }: Props = $props();
 
   const durationPresets = [
-    { label: "30m", minutes: 30 },
-    { label: "1h", minutes: 60 },
-    { label: "2h", minutes: 120 },
-    { label: "4h", minutes: 240 }
+    { label: "1 hour", value: 1, unit: "hours" },
+    { label: "4 hours", value: 4, unit: "hours" },
+    { label: "1 day", value: 1, unit: "days" },
+    { label: "3 days", value: 3, unit: "days" },
+    { label: "1 week", value: 1, unit: "weeks" },
+    { label: "2 weeks", value: 2, unit: "weeks" },
+    { label: "4 weeks", value: 4, unit: "weeks" }
+  ] satisfies Array<{ label: string; value: number; unit: DetoxDurationUnit }>;
+
+  const durationUnitOptions: Array<{ label: string; value: DetoxDurationUnit }> = [
+    { label: "Minutes", value: "minutes" },
+    { label: "Hours", value: "hours" },
+    { label: "Days", value: "days" },
+    { label: "Weeks", value: "weeks" }
   ];
 
   let detoxSiteRules = $derived(
@@ -59,8 +85,22 @@
     detoxSessions.filter((session) => !activeSessions.some((active) => active.id === session.id))
   );
   let selectedTargetCount = $derived(selectedSiteRuleIds.length + selectedAppRuleIds.length);
+  let detoxDurationMinutes = $derived(
+    Number(detoxDurationValue ?? 0) * durationMultipliers[detoxDurationUnit]
+  );
+  let maximumDurationValue = $derived(
+    Math.floor(MAX_DETOX_DURATION_MINUTES / durationMultipliers[detoxDurationUnit])
+  );
+  let plannedEnd = $derived(
+    Number.isFinite(detoxDurationMinutes) && detoxDurationMinutes > 0
+      ? new Date(nowMs + detoxDurationMinutes * 60_000)
+      : null
+  );
   let canStartDetox = $derived(
-    selectedTargetCount > 0 && Number.isFinite(detoxDurationMinutes) && detoxDurationMinutes > 0
+    selectedTargetCount > 0 &&
+      Number.isFinite(detoxDurationMinutes) &&
+      detoxDurationMinutes >= 1 &&
+      detoxDurationMinutes <= MAX_DETOX_DURATION_MINUTES
   );
 
   function toggleSiteRule(ruleId: string): void {
@@ -75,6 +115,11 @@
     return values.includes(id) ? values.filter((value) => value !== id) : [...values, id];
   }
 
+  function selectDurationPreset(value: number, unit: DetoxDurationUnit): void {
+    detoxDurationValue = value;
+    detoxDurationUnit = unit;
+  }
+
   function ruleLabel(rule: Rule | AppRule): string {
     return rule.name || rule.id;
   }
@@ -83,19 +128,18 @@
     return session.name?.trim() || session.id;
   }
 
-  function formatTime(value: string): string {
-    return new Date(value).toLocaleTimeString();
-  }
-
   function formatDateTime(value: string): string {
     return new Date(value).toLocaleString();
   }
 
   function formatRemaining(session: DetoxSession): string {
     const remainingSeconds = Math.max(0, Math.ceil((Date.parse(session.ends_at) - nowMs) / 1000));
+    const days = Math.floor(remainingSeconds / 86_400);
     const hours = Math.floor(remainingSeconds / 3600);
     const minutes = Math.floor((remainingSeconds % 3600) / 60);
     const seconds = remainingSeconds % 60;
+    if (days >= 7) return `${Math.floor(days / 7)}w ${days % 7}d`;
+    if (days > 0) return `${days}d ${hours % 24}h`;
     if (hours > 0) return `${hours}h ${minutes}m`;
     if (minutes > 0) return `${minutes}m ${seconds}s`;
     return `${seconds}s`;
@@ -124,23 +168,46 @@
         <span>Name</span>
         <input bind:value={detoxName} />
       </label>
-      <label>
-        <span>Minutes</span>
-        <input type="number" min="1" max="10080" step="5" bind:value={detoxDurationMinutes} />
-      </label>
+      <fieldset class="duration-field">
+        <legend>Duration</legend>
+        <div class="duration-input-row">
+          <input
+            aria-label="Detox duration"
+            type="number"
+            min="1"
+            max={maximumDurationValue}
+            step="1"
+            bind:value={detoxDurationValue}
+          />
+          <select aria-label="Detox duration unit" bind:value={detoxDurationUnit}>
+            {#each durationUnitOptions as option (option.value)}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </div>
+      </fieldset>
     </div>
 
     <div class="preset-row" aria-label="Duration presets">
-      {#each durationPresets as preset (preset.minutes)}
+      {#each durationPresets as preset (`${preset.value}-${preset.unit}`)}
         <button
-          class:active={detoxDurationMinutes === preset.minutes}
+          class:active={detoxDurationValue === preset.value && detoxDurationUnit === preset.unit}
           class="secondary"
-          onclick={() => (detoxDurationMinutes = preset.minutes)}
+          onclick={() => selectDurationPreset(preset.value, preset.unit)}
         >
           <span>{preset.label}</span>
         </button>
       {/each}
     </div>
+    <p class:danger-text={detoxDurationMinutes > MAX_DETOX_DURATION_MINUTES} class="policy-note">
+      {#if detoxDurationMinutes > MAX_DETOX_DURATION_MINUTES}
+        Detox can run for at most 12 weeks.
+      {:else if plannedEnd}
+        Ends {plannedEnd.toLocaleString()}. Manual unlock cannot bypass Detox.
+      {:else}
+        Choose a duration from one minute to 12 weeks.
+      {/if}
+    </p>
 
     <div class="section-label">Websites</div>
     <div class="chip-grid detox-chip-grid">
@@ -202,7 +269,7 @@
           </div>
           <div class="detox-session-meta">
             <strong>{formatRemaining(session)}</strong>
-            <small>until {formatTime(session.ends_at)}</small>
+            <small>until {formatDateTime(session.ends_at)}</small>
           </div>
           <button
             class="secondary danger-action"

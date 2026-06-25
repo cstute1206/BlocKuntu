@@ -482,6 +482,33 @@ button:disabled {
   grid-column: 1 / -1;
 }
 
+.policy-note {
+  color: #5f6d67;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  margin: 0 0 14px;
+}
+
+.duration-field {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.duration-field legend {
+  color: #52615a;
+  font-size: 0.82rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.duration-input-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.7fr);
+}
+
 .schedule-form {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -962,10 +989,6 @@ th {
   color: #68766f;
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.status-row-wide {
-  align-items: start;
 }
 
 .danger-action {

@@ -18,8 +18,7 @@ Detox sessions, service state, and extension heartbeats.
 - Unique ID validation for site rules, app rules, schedules, and allowances.
 - Validation that referenced schedules and allowances exist.
 - Validation that one allowance is linked to only one site or app rule.
-- Validation that hard-block rules cannot define allowances or unlock  
-policies.
+- Validation that hard-block rules cannot define allowances.
 - Fixed Tier 2 unlock policy enforced by the policy engine.
 - Strict-mode settings:
   - require Firefox extension heartbeat
@@ -124,29 +123,31 @@ required extension heartbeat is stale beyond the configured grace period.
 - Daemon-mediated `request_unlock` flow for Tier 2 targets.
 - Unlock target resolution for URLs and app rules.
 - Hard-blocked targets cannot be unlocked.
-- Mandatory unlock reason.
-- Empty target and zero-duration validation.
+- Unlock reasons must contain at least 20 letters.
+- Reasons cannot be reused, ignoring case and repeated whitespace.
+- Empty target validation.
 - Active unlock detection to prevent duplicate unlocks for a rule.
-- Cooldown enforcement.
-- Hourly unlock quota enforcement.
+- One global unlock per rolling hour across all website and application rules.
+- Active Detox targets reject manual unlock requests before the reason or
+  hourly quota is consumed.
 - Unlock rows persisted in SQLite.
 - `unlock_granted` event logging.
 - GUI manual unlock form.
-- Current code uses a fixed Tier 2 unlock policy of 2 minutes, 0 minute  
-cooldown, and 1 unlock per hour in the policy engine.
+- Every Tier 2 unlock lasts exactly 2 minutes.
 
 ## Detox Sessions
 
 - Detox sessions that temporarily block selected site rules and app rules.
 - Optional Detox session name.
-- Duration validation from 1 minute to 7 days.
+- Duration validation from 1 minute to 12 weeks.
 - Session target validation against configured site and app rules.
 - Active, scheduled, expired, and cancelled session status reporting.
 - Remaining time reporting for active sessions.
 - Detox blocks take precedence over normal hard/controlled evaluation.
 - Detox block reasons include session ID, session name, target kind, rule ID,  
 rule name, end time, and expected release time.
-- GUI Detox start workflow with duration presets.
+- GUI Detox start workflow with custom minute, hour, day, and week durations
+  plus hour/day/week presets.
 - GUI active Detox list and recent Detox history.
 - Detox cancellation support.
 - Detox cancellation requires the privileged Tier 1 edit unlock.
@@ -172,8 +173,8 @@ proven.
 - Visit tracking from extensions for allowed navigations.
 - Active visit heartbeats.
 - Visit cleanup when tabs close or navigations change.
-- Local extension setting to disable blocking when daemon reports enforcement  
-stopped or uninstalling.
+- Local extension setting to disable blocking during the short daemon-managed
+  uninstall handoff.
 - Extension uninstall/prep mode support through daemon service state.
 - Blocked-page redirect with structured reason metadata.
 - Blocked page displays:
@@ -210,8 +211,6 @@ stopped or uninstalling.
 - RPC methods for:
   - status
   - enforcement status
-  - start enforcement
-  - stop enforcement
   - prepare uninstall
   - config snapshot
   - create/update/delete site lists
@@ -299,8 +298,6 @@ flags.
   - open Detox
   - open Admin
   - refresh status
-  - start enforcement
-  - stop enforcement
   - quit GUI
 - Tray status items for daemon, enforcement, and active Detox count.
 - Periodic tray status refresh.
@@ -381,9 +378,7 @@ prefix, contains, and path-level rules are browser-extension enforcement.
 X11-compatible sessions.
 - Firefox and Google Chrome are the supported browser enforcement paths;  
 other browsers are handled as blocked applications in strict mode.
-- Tier 2 unlock behavior intentionally uses the fixed policy in the policy  
-engine. Unlock timing should stay the same for every Tier 2 rule.
-- The config schema still contains legacy unlock-policy fields from an older  
-design, but they are not intended as user-facing configuration.
+- Tier 2 unlock behavior is fixed in the policy engine and is not configurable
+  through TOML.
 - Network-level fallback beyond browser and hosts enforcement is documented as  
 future work.

@@ -87,6 +87,13 @@ remove_path() {
   fi
 }
 
+clear_policy_recovery_immutable() {
+  local recovery_path="/etc/blockuntu/policy-recovery.toml"
+  if [[ -e "${recovery_path}" ]] && has_cmd chattr; then
+    run_sudo chattr -i "${recovery_path}" >/dev/null 2>&1 || true
+  fi
+}
+
 remove_empty_dir() {
   local path="$1"
   if [[ -d "${path}" ]]; then
@@ -315,6 +322,7 @@ remove_path "/run/blockuntu"
 
 if [[ "${PURGE_DATA}" -eq 1 ]]; then
   log "purging config/data"
+  clear_policy_recovery_immutable
   remove_path "/etc/blockuntu"
   remove_path "/var/lib/blockuntu"
 fi

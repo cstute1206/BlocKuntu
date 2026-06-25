@@ -23,7 +23,7 @@ pub struct HostsManager {
 pub enum HostsRepairStatus {
     AlreadyCompliant,
     Repaired,
-    SkippedStopped,
+    SkippedInactive,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn removes_managed_block_when_enforcement_stops() {
+    fn removes_managed_block_when_requested() {
         let config = Config::from_toml_str(
             r#"
             [[rules]]

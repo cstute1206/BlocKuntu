@@ -7,9 +7,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
     AllowanceConfig, AppMatcherConfig, AppMatcherKind, AppRuleConfig, Config, ConfigError,
-    DefaultsConfig, DetoxSession, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
-    ScheduleConfig, ScheduleDay, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockPolicyConfig,
-    UnlockState, VisitState,
+    DetoxSession, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier, ScheduleConfig,
+    ScheduleDay, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockState, VisitState,
 };
 
 pub struct Database {
@@ -115,7 +114,9 @@ impl Database {
                 (SELECT COUNT(*) FROM policy_site_lists) +
                 (SELECT COUNT(*) FROM policy_app_rules) +
                 (SELECT COUNT(*) FROM policy_schedules) +
-                (SELECT COUNT(*) FROM policy_allowances)
+                (SELECT COUNT(*) FROM policy_allowances) +
+                (SELECT COUNT(*) FROM policy_defaults) +
+                (SELECT COUNT(*) FROM policy_strict_mode)
             "#,
             [],
             |row| row.get(0),
@@ -124,7 +125,6 @@ impl Database {
     }
 
     pub fn load_policy_config(&self) -> Result<Config, Error> {
-        let defaults = self.load_policy_defaults()?;
         let allowances = self.load_policy_allowances()?;
         let schedules = self.load_policy_schedules()?;
         let rules = self.load_policy_site_lists()?;
@@ -136,7 +136,6 @@ impl Database {
             app_rules,
             schedules,
             allowances,
-            defaults,
             strict_mode,
         };
         config.validate()?;
@@ -173,11 +172,7 @@ impl Database {
             )
             VALUES (1, ?1, ?2, ?3)
             "#,
-            params![
-                i64::from(config.defaults.unlock_policy.max_session_minutes),
-                i64::from(config.defaults.unlock_policy.cooldown_minutes),
-                i64::from(config.defaults.unlock_policy.max_unlocks_per_hour),
-            ],
+            params![2_i64, 0_i64, 1_i64],
         )?;
 
         transaction.execute(
@@ -245,7 +240,6 @@ impl Database {
         }
 
         for rule in &config.rules {
-            let unlock_policy = rule.unlock_policy;
             transaction.execute(
                 r#"
                 INSERT INTO policy_site_lists (
@@ -266,9 +260,9 @@ impl Database {
                     rule_tier_to_str(rule.tier),
                     if rule.enabled { 1_i64 } else { 0_i64 },
                     rule.allowance_id.as_deref(),
-                    unlock_policy.map(|policy| i64::from(policy.max_session_minutes)),
-                    unlock_policy.map(|policy| i64::from(policy.cooldown_minutes)),
-                    unlock_policy.map(|policy| i64::from(policy.max_unlocks_per_hour)),
+                    Option::<i64>::None,
+                    Option::<i64>::None,
+                    Option::<i64>::None,
                 ],
             )?;
 
@@ -310,7 +304,6 @@ impl Database {
         }
 
         for rule in &config.app_rules {
-            let unlock_policy = rule.unlock_policy;
             transaction.execute(
                 r#"
                 INSERT INTO policy_app_rules (
@@ -331,9 +324,9 @@ impl Database {
                     rule_tier_to_str(rule.tier),
                     if rule.enabled { 1_i64 } else { 0_i64 },
                     rule.allowance_id.as_deref(),
-                    unlock_policy.map(|policy| i64::from(policy.max_session_minutes)),
-                    unlock_policy.map(|policy| i64::from(policy.cooldown_minutes)),
-                    unlock_policy.map(|policy| i64::from(policy.max_unlocks_per_hour)),
+                    Option::<i64>::None,
+                    Option::<i64>::None,
+                    Option::<i64>::None,
                 ],
             )?;
 
@@ -370,42 +363,6 @@ impl Database {
 
         transaction.commit()?;
         Ok(())
-    }
-
-    fn load_policy_defaults(&self) -> Result<DefaultsConfig, Error> {
-        let row = self
-            .conn
-            .query_row(
-                r#"
-                SELECT max_session_minutes, cooldown_minutes, max_unlocks_per_hour
-                FROM policy_defaults
-                WHERE key = 1
-                "#,
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
-
-        let Some((max_session_minutes, cooldown_minutes, max_unlocks_per_hour)) = row else {
-            return Ok(DefaultsConfig::default());
-        };
-
-        Ok(DefaultsConfig {
-            unlock_policy: UnlockPolicyConfig {
-                max_session_minutes: to_u32("defaults.max_session_minutes", max_session_minutes)?,
-                cooldown_minutes: to_u32("defaults.cooldown_minutes", cooldown_minutes)?,
-                max_unlocks_per_hour: to_u32(
-                    "defaults.max_unlocks_per_hour",
-                    max_unlocks_per_hour,
-                )?,
-            },
-        })
     }
 
     fn load_policy_strict_mode(&self) -> Result<StrictModeConfig, Error> {
@@ -548,10 +505,7 @@ impl Database {
                 name,
                 tier,
                 enabled,
-                allowance_id,
-                max_session_minutes,
-                cooldown_minutes,
-                max_unlocks_per_hour
+                allowance_id
             FROM policy_site_lists
             ORDER BY id
             "#,
@@ -563,24 +517,12 @@ impl Database {
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, Option<i64>>(7)?,
             ))
         })?;
 
         let mut rules = Vec::new();
         for row in rows {
-            let (
-                id,
-                name,
-                tier,
-                enabled,
-                allowance_id,
-                max_session_minutes,
-                cooldown_minutes,
-                max_unlocks_per_hour,
-            ) = row?;
+            let (id, name, tier, enabled, allowance_id) = row?;
             rules.push(RuleConfig {
                 patterns: self.load_policy_site_list_patterns(&id)?,
                 schedule_ids: self.load_policy_site_list_schedule_ids(&id)?,
@@ -589,11 +531,6 @@ impl Database {
                 tier: rule_tier_from_str(&tier)?,
                 enabled: enabled != 0,
                 allowance_id,
-                unlock_policy: optional_unlock_policy(
-                    max_session_minutes,
-                    cooldown_minutes,
-                    max_unlocks_per_hour,
-                )?,
             });
         }
         Ok(rules)
@@ -657,10 +594,7 @@ impl Database {
                 name,
                 tier,
                 enabled,
-                allowance_id,
-                max_session_minutes,
-                cooldown_minutes,
-                max_unlocks_per_hour
+                allowance_id
             FROM policy_app_rules
             ORDER BY id
             "#,
@@ -672,24 +606,12 @@ impl Database {
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, Option<i64>>(7)?,
             ))
         })?;
 
         let mut app_rules = Vec::new();
         for row in rows {
-            let (
-                id,
-                name,
-                tier,
-                enabled,
-                allowance_id,
-                max_session_minutes,
-                cooldown_minutes,
-                max_unlocks_per_hour,
-            ) = row?;
+            let (id, name, tier, enabled, allowance_id) = row?;
             app_rules.push(AppRuleConfig {
                 matchers: self.load_policy_app_rule_matchers(&id)?,
                 schedule_ids: self.load_policy_app_rule_schedule_ids(&id)?,
@@ -698,11 +620,6 @@ impl Database {
                 tier: rule_tier_from_str(&tier)?,
                 enabled: enabled != 0,
                 allowance_id,
-                unlock_policy: optional_unlock_policy(
-                    max_session_minutes,
-                    cooldown_minutes,
-                    max_unlocks_per_hour,
-                )?,
             });
         }
         Ok(app_rules)
@@ -988,37 +905,23 @@ impl Database {
             .map_err(Error::from)
     }
 
-    pub(crate) fn latest_unlock_for_rule(
-        &self,
-        rule_id: &str,
-    ) -> Result<Option<UnlockState>, Error> {
-        self.conn
-            .query_row(
-                r#"
-                SELECT id, target, rule_id, minutes, reason, started_at, expires_at
-                FROM unlocks
-                WHERE rule_id = ?1
-                ORDER BY expires_at DESC
-                LIMIT 1
-                "#,
-                params![rule_id],
-                unlock_from_row,
-            )
-            .optional()
-            .map_err(Error::from)
-    }
-
-    pub(crate) fn count_unlocks_since(
-        &self,
-        rule_id: &str,
-        since: DateTime<Utc>,
-    ) -> Result<u32, Error> {
+    pub(crate) fn count_unlocks_since(&self, since: DateTime<Utc>) -> Result<u32, Error> {
         let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM unlocks WHERE rule_id = ?1 AND started_at >= ?2",
-            params![rule_id, format_time(since)],
+            "SELECT COUNT(*) FROM unlocks WHERE started_at >= ?1",
+            params![format_time(since)],
             |row| row.get(0),
         )?;
         Ok(count.try_into().unwrap_or(u32::MAX))
+    }
+
+    pub(crate) fn unlock_reasons(&self) -> Result<Vec<String>, Error> {
+        let mut statement = self.conn.prepare("SELECT reason FROM unlocks")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut reasons = Vec::new();
+        for row in rows {
+            reasons.push(row?);
+        }
+        Ok(reasons)
     }
 
     pub(crate) fn used_seconds_for_app_rule_on_day(
@@ -1749,33 +1652,6 @@ fn bool_to_i64(value: bool) -> i64 {
         1
     } else {
         0
-    }
-}
-
-fn optional_unlock_policy(
-    max_session_minutes: Option<i64>,
-    cooldown_minutes: Option<i64>,
-    max_unlocks_per_hour: Option<i64>,
-) -> Result<Option<UnlockPolicyConfig>, Error> {
-    match (max_session_minutes, cooldown_minutes, max_unlocks_per_hour) {
-        (None, None, None) => Ok(None),
-        (Some(max_session_minutes), Some(cooldown_minutes), Some(max_unlocks_per_hour)) => {
-            Ok(Some(UnlockPolicyConfig {
-                max_session_minutes: to_u32(
-                    "rule.unlock_policy.max_session_minutes",
-                    max_session_minutes,
-                )?,
-                cooldown_minutes: to_u32("rule.unlock_policy.cooldown_minutes", cooldown_minutes)?,
-                max_unlocks_per_hour: to_u32(
-                    "rule.unlock_policy.max_unlocks_per_hour",
-                    max_unlocks_per_hour,
-                )?,
-            }))
-        }
-        _ => Err(ConfigError::Validation(
-            "rule unlock policy columns must be all set or all null".to_string(),
-        )
-        .into()),
     }
 }
 

@@ -54,23 +54,17 @@ impl FocusCore {
         self.evaluate_url(url, Local::now().fixed_offset())
     }
 
-    pub fn request_unlock(
-        &self,
-        target: &str,
-        minutes: u32,
-        reason: String,
-    ) -> Result<UnlockState, Error> {
-        self.request_unlock_at(target, minutes, reason, Local::now().fixed_offset())
+    pub fn request_unlock(&self, target: &str, reason: String) -> Result<UnlockState, Error> {
+        self.request_unlock_at(target, reason, Local::now().fixed_offset())
     }
 
     pub fn request_unlock_at(
         &self,
         target: &str,
-        minutes: u32,
         reason: String,
         now: DateTime<FixedOffset>,
     ) -> Result<UnlockState, Error> {
         let context = EvaluationContext::new(&self.config, &self.database, now);
-        request_unlock(target, minutes, reason, &context)
+        request_unlock(target, reason, &context)
     }
 }

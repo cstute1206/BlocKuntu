@@ -70,6 +70,13 @@
     onRunUnlock
   }: Props = $props();
 
+  let unlockReasonLetterCount = $derived(
+    [...unlockReason].filter((character) => /\p{L}/u.test(character)).length
+  );
+  let canUnlock = $derived(
+    Boolean(unlockTarget.trim() && unlockReasonLetterCount >= 20 && !unlocking)
+  );
+
   let hardRules = $derived(config?.rules.filter((rule) => rule.tier === "hard") ?? []);
   let controlledRules = $derived(
     config?.rules.filter((rule) => rule.tier === "controlled_access") ?? []
@@ -339,16 +346,24 @@
       <Unlock size={18} aria-hidden="true" />
       <h2>Manual Unlock</h2>
     </div>
+    <p class="policy-note">
+      Manual unlocks only apply to Tier 2 rules. Active Detox sessions and Tier 1 blocks cannot be
+      bypassed.
+    </p>
     <div class="unlock-grid">
       <label>
         <span>Target</span>
         <input bind:value={unlockTarget} />
       </label>
       <label class="reason-field">
-        <span>Reason</span>
-        <input bind:value={unlockReason} />
+        <span>Reason ({unlockReasonLetterCount}/20 letters)</span>
+        <input
+          bind:value={unlockReason}
+          placeholder="Describe why this access is necessary"
+          autocomplete="off"
+        />
       </label>
-      <button class="primary" onclick={onRunUnlock} disabled={unlocking}>
+      <button class="primary" onclick={onRunUnlock} disabled={!canUnlock}>
         <Unlock size={17} aria-hidden="true" />
         <span>Unlock</span>
       </button>

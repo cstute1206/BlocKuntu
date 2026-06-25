@@ -5,6 +5,7 @@ pub mod clock_guard;
 pub mod error;
 pub mod firefox_policy;
 pub mod hosts;
+pub mod policy_recovery;
 pub mod process_scan;
 pub mod rpc;
 pub mod socket;

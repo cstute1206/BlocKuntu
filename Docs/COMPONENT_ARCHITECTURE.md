@@ -138,11 +138,11 @@ allowed to remove or weaken them.
 Tier 2 controlled access can be unlocked only through `request_unlock`, which
 enforces:
 
-- Maximum session length.
-- Cooldown.
-- Hourly unlock cap.
-- Mandatory reason.
+- Fixed two-minute duration.
+- One global unlock per rolling hour.
+- A unique reason containing at least 20 letters.
 - Target matching against controlled-access rules.
+- Rejection before unlock accounting when the target is covered by Detox.
 
 ## Heartbeat Flow
 
@@ -429,6 +429,7 @@ Firefox/Chrome navigation
 GUI request
   -> request_unlock RPC
   -> focus-core validates target and constraints
+  -> active Detox rejects the request without consuming reason/quota
   -> SQLite unlock row
   -> future evaluate_url calls may allow the matched Tier 2 rule until expiry
 ```

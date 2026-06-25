@@ -17,6 +17,7 @@ use crate::clock_guard;
 use crate::error::{DaemonError, Result};
 use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
+use crate::policy_recovery::PolicyRecoveryManager;
 use crate::process_scan::{
     attach_detected_window_titles, scan_procfs, ProcessInfo, WindowTitleSupport,
 };
@@ -25,19 +26,19 @@ const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
 const CHROME_EXTENSION_HEARTBEAT_COMPONENT: &str = "chrome_extension";
 const DEFAULT_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS: u64 = 15;
 const CHROME_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS: u64 = 75;
-const ENFORCEMENT_STATE_KEY: &str = "enforcement_state";
 const ENFORCEMENT_ACTIVE: &str = "active";
-const ENFORCEMENT_STOPPED: &str = "stopped";
+const ENFORCEMENT_UNINSTALLING: &str = "uninstalling";
 const BROWSER_EXTENSION_MODE_KEY: &str = "browser_extension_mode";
+const BROWSER_EXTENSION_UNINSTALLING_UNTIL_KEY: &str = "browser_extension_uninstalling_until";
 const BROWSER_EXTENSION_MODE_ACTIVE: &str = "active";
-const BROWSER_EXTENSION_MODE_DISABLED: &str = "disabled";
 const BROWSER_EXTENSION_MODE_UNINSTALLING: &str = "uninstalling";
+const UNINSTALL_HANDOFF_SECONDS: i64 = 30;
 const TIER1_EDIT_KEY_PATH: &str = "/etc/blockuntu/tier1-edit-key.txt";
 const TIER1_EDIT_UNLOCK_UNTIL_KEY: &str = "tier1_edit_unlocked_until";
 const TIER1_EDIT_UNLOCK_MINUTES: i64 = 5;
 const OPERATOR_WINDOW_START_MINUTE: u16 = 20 * 60;
 const OPERATOR_WINDOW_END_MINUTE: u16 = 23 * 60 + 59;
-const MAX_DETOX_DURATION_MINUTES: u32 = 7 * 24 * 60;
+const MAX_DETOX_DURATION_MINUTES: u32 = 12 * 7 * 24 * 60;
 
 #[derive(Clone)]
 pub struct RpcContext {
@@ -51,6 +52,7 @@ pub struct RpcContext {
     defer_firefox_policy_repair_until_heartbeat: bool,
     defer_chrome_policy_repair_until_heartbeat: bool,
     tier1_edit_key_path: PathBuf,
+    policy_recovery: Option<PolicyRecoveryManager>,
     trust_client_time: bool,
 }
 
@@ -67,6 +69,7 @@ impl RpcContext {
             defer_firefox_policy_repair_until_heartbeat: false,
             defer_chrome_policy_repair_until_heartbeat: false,
             tier1_edit_key_path: PathBuf::from(TIER1_EDIT_KEY_PATH),
+            policy_recovery: None,
             trust_client_time: false,
         }
     }
@@ -112,6 +115,11 @@ impl RpcContext {
 
     pub fn with_tier1_edit_key_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.tier1_edit_key_path = path.into();
+        self
+    }
+
+    pub fn with_policy_recovery(mut self, policy_recovery: PolicyRecoveryManager) -> Self {
+        self.policy_recovery = Some(policy_recovery);
         self
     }
 
@@ -171,7 +179,6 @@ struct EvaluateUrlParams {
 #[derive(Debug, Deserialize)]
 struct RequestUnlockParams {
     target: String,
-    minutes: u32,
     reason: String,
     #[serde(default)]
     now: Option<String>,
@@ -186,6 +193,12 @@ struct Tier1EditUnlockParams {
 
 #[derive(Debug, Deserialize)]
 struct Tier1EditStatusParams {
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrepareUninstallParams {
     #[serde(default)]
     now: Option<String>,
 }
@@ -406,9 +419,10 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
         "status" => status(context),
         "enforcement_status" => enforcement_status(context),
         "clock_integrity_status" => clock_integrity_status_method(context),
-        "start_enforcement" => start_enforcement(context),
-        "stop_enforcement" => stop_enforcement(context),
-        "prepare_uninstall" => prepare_uninstall(context),
+        "prepare_uninstall" => {
+            let params = parse_params::<PrepareUninstallParams>(params)?;
+            prepare_uninstall(context, params)
+        }
         "config_snapshot" => config_snapshot(context),
         "export_policy_toml" => export_policy_toml_method(context),
         "import_policy_toml" => {
@@ -548,90 +562,26 @@ fn clock_integrity_status_method(context: &RpcContext) -> Result<Value> {
     .map_err(DaemonError::from)
 }
 
-fn start_enforcement(context: &RpcContext) -> Result<Value> {
+fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Result<Value> {
     let hosts = context.hosts()?;
+    let operator_now = guarded_now(context, params.now.as_deref())?;
+    reject_if_clock_tampered(context)?;
+    if !operator_window_open(operator_now) {
+        return Err(operator_window_closed_error("GUI uninstall"));
+    }
     let now = Utc::now();
+    let uninstalling_until = now + Duration::seconds(UNINSTALL_HANDOFF_SECONDS);
 
     {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        core.database()
-            .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_ACTIVE, now)?;
-        core.database().set_service_state(
-            BROWSER_EXTENSION_MODE_KEY,
-            BROWSER_EXTENSION_MODE_ACTIVE,
-            now,
-        )?;
-    }
-
-    let firefox_policy_repair = repair_firefox_policy_from_context(context)?;
-    let chrome_policy_repair = repair_chrome_policy_from_context(context)?;
-    let hosts_repair = {
-        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        hosts.verify_and_repair(core.config())?
-    };
-
-    let status = enforcement_status(context)?;
-    {
-        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        core.database().record_event(
-            "enforcement_started",
-            Some("system"),
-            Some(&format!(
-                "firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}"
-            )),
-            now,
-        )?;
-    }
-
-    Ok(status)
-}
-
-fn stop_enforcement(context: &RpcContext) -> Result<Value> {
-    let hosts = context.hosts()?;
-    let now = Utc::now();
-
-    {
-        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        core.database()
-            .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_STOPPED, now)?;
-        core.database().set_service_state(
-            BROWSER_EXTENSION_MODE_KEY,
-            BROWSER_EXTENSION_MODE_DISABLED,
-            now,
-        )?;
-    }
-
-    let firefox_policy_repair = remove_firefox_policy_from_context(context)?;
-    let chrome_policy_repair = remove_chrome_policy_from_context(context)?;
-    let hosts_repair = hosts.remove_managed_block()?;
-    let status = enforcement_status(context)?;
-
-    {
-        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        core.database().record_event(
-            "enforcement_stopped",
-            Some("system"),
-            Some(&format!(
-                "firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}"
-            )),
-            now,
-        )?;
-    }
-
-    Ok(status)
-}
-
-fn prepare_uninstall(context: &RpcContext) -> Result<Value> {
-    let hosts = context.hosts()?;
-    let now = Utc::now();
-
-    {
-        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        core.database()
-            .set_service_state(ENFORCEMENT_STATE_KEY, ENFORCEMENT_STOPPED, now)?;
         core.database().set_service_state(
             BROWSER_EXTENSION_MODE_KEY,
             BROWSER_EXTENSION_MODE_UNINSTALLING,
+            now,
+        )?;
+        core.database().set_service_state(
+            BROWSER_EXTENSION_UNINSTALLING_UNTIL_KEY,
+            &uninstalling_until.to_rfc3339(),
             now,
         )?;
     }
@@ -647,7 +597,8 @@ fn prepare_uninstall(context: &RpcContext) -> Result<Value> {
             "uninstall_prepared",
             Some("system"),
             Some(&format!(
-                "browser_extension_mode={BROWSER_EXTENSION_MODE_UNINSTALLING};firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}"
+                "browser_extension_mode={BROWSER_EXTENSION_MODE_UNINSTALLING};until={};firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}",
+                uninstalling_until.to_rfc3339()
             )),
             now,
         )?;
@@ -656,6 +607,7 @@ fn prepare_uninstall(context: &RpcContext) -> Result<Value> {
     Ok(json!({
         "status": "ok",
         "browser_extension_mode": BROWSER_EXTENSION_MODE_UNINSTALLING,
+        "uninstalling_until": uninstalling_until,
         "enforcement": enforcement
     }))
 }
@@ -722,30 +674,6 @@ fn chrome_policy_status_json(context: &RpcContext) -> Result<Value> {
     Ok(status)
 }
 
-fn repair_firefox_policy_from_context(context: &RpcContext) -> Result<RepairStatus> {
-    if !context.manage_firefox_policy {
-        return Ok(RepairStatus::SkippedDisabled);
-    }
-    if context.defer_firefox_policy_repair_until_heartbeat
-        && !has_extension_heartbeat(context, FIREFOX_EXTENSION_HEARTBEAT_COMPONENT)?
-    {
-        return Ok(RepairStatus::SkippedDeferred);
-    }
-    context.firefox_policy()?.verify_and_repair()
-}
-
-fn repair_chrome_policy_from_context(context: &RpcContext) -> Result<ChromePolicyRepairStatus> {
-    if !context.manage_chrome_policy {
-        return Ok(ChromePolicyRepairStatus::SkippedDisabled);
-    }
-    if context.defer_chrome_policy_repair_until_heartbeat
-        && !has_extension_heartbeat(context, CHROME_EXTENSION_HEARTBEAT_COMPONENT)?
-    {
-        return Ok(ChromePolicyRepairStatus::SkippedDeferred);
-    }
-    context.chrome_policy()?.verify_and_repair()
-}
-
 fn remove_firefox_policy_from_context(context: &RpcContext) -> Result<RepairStatus> {
     if !context.manage_firefox_policy {
         return Ok(RepairStatus::SkippedDisabled);
@@ -769,7 +697,7 @@ fn repair_deferred_policy_after_heartbeat(context: &RpcContext, component: &str)
     {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
         if !enforcement_active_from_core(&core)? {
-            return Ok(json!({ "skipped": "enforcement_stopped" }));
+            return Ok(json!({ "skipped": "uninstall_handoff_active" }));
         }
     }
 
@@ -822,8 +750,7 @@ fn import_policy_toml_method(
     crate::app::ensure_mandatory_app_rules(&mut next);
     focus_core::validate_config(&next)?;
 
-    core.database().replace_policy_config(&next)?;
-    core.replace_config(next)?;
+    persist_policy_config(context, &mut core, next)?;
     let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
     core.database().record_event(
         "policy_appended",
@@ -852,6 +779,27 @@ fn import_policy_toml_method(
         },
         "updated_at": now_utc
     }))
+}
+
+fn persist_policy_config(context: &RpcContext, core: &mut FocusCore, next: Config) -> Result<()> {
+    focus_core::validate_config(&next)?;
+    let previous = core.config().clone();
+    if let Some(policy_recovery) = &context.policy_recovery {
+        policy_recovery.write(&next)?;
+    }
+    if let Err(database_error) = core.database().replace_policy_config(&next) {
+        if let Some(policy_recovery) = &context.policy_recovery {
+            if let Err(recovery_error) = policy_recovery.write(&previous) {
+                return Err(DaemonError::PolicyPersistenceRollback {
+                    database_error: database_error.to_string(),
+                    recovery_error: recovery_error.to_string(),
+                });
+            }
+        }
+        return Err(database_error.into());
+    }
+    core.replace_config(next)?;
+    Ok(())
 }
 
 fn append_policy_config(current: &mut Config, imported: &Config) -> Result<PolicyAppendSummary> {
@@ -956,8 +904,7 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
     }
 
     focus_core::validate_config(&next)?;
-    core.database().replace_policy_config(&next)?;
-    core.replace_config(next)?;
+    persist_policy_config(context, &mut core, next)?;
     let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
     core.database().record_event(
         "site_list_saved",
@@ -1003,8 +950,7 @@ fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -
     remove_unreferenced_allowance(&mut next, removed.allowance_id.as_deref());
 
     focus_core::validate_config(&next)?;
-    core.database().replace_policy_config(&next)?;
-    core.replace_config(next)?;
+    persist_policy_config(context, &mut core, next)?;
     let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
     core.database().record_event(
         "site_list_deleted",
@@ -1049,8 +995,7 @@ fn upsert_allowance_method(context: &RpcContext, params: UpsertAllowanceParams) 
     }
 
     focus_core::validate_config(&next)?;
-    core.database().replace_policy_config(&next)?;
-    core.replace_config(next)?;
+    persist_policy_config(context, &mut core, next)?;
     core.database().record_event(
         "allowance_saved",
         Some(&allowance_id),
@@ -1111,8 +1056,7 @@ fn delete_allowance_method(context: &RpcContext, params: DeleteAllowanceParams) 
     let removed = next.allowances.remove(index);
 
     focus_core::validate_config(&next)?;
-    core.database().replace_policy_config(&next)?;
-    core.replace_config(next)?;
+    persist_policy_config(context, &mut core, next)?;
     core.database().record_event(
         "allowance_deleted",
         Some(&removed.id),
@@ -1172,8 +1116,7 @@ fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> 
     }
 
     focus_core::validate_config(&next)?;
-    core.database().replace_policy_config(&next)?;
-    core.replace_config(next)?;
+    persist_policy_config(context, &mut core, next)?;
     core.database().record_event(
         "app_rule_saved",
         Some(&rule_id),
@@ -1215,8 +1158,7 @@ fn delete_app_rule_method(context: &RpcContext, params: DeleteAppRuleParams) -> 
     remove_unreferenced_allowance(&mut next, removed.allowance_id.as_deref());
 
     focus_core::validate_config(&next)?;
-    core.database().replace_policy_config(&next)?;
-    core.replace_config(next)?;
+    persist_policy_config(context, &mut core, next)?;
     core.database().record_event(
         "app_rule_deleted",
         Some(&removed.id),
@@ -1256,8 +1198,7 @@ fn upsert_schedule_method(context: &RpcContext, params: UpsertScheduleParams) ->
     }
 
     focus_core::validate_config(&next)?;
-    core.database().replace_policy_config(&next)?;
-    core.replace_config(next)?;
+    persist_policy_config(context, &mut core, next)?;
     core.database().record_event(
         "schedule_saved",
         Some(&schedule_id),
@@ -1295,8 +1236,7 @@ fn delete_schedule_method(context: &RpcContext, params: DeleteScheduleParams) ->
     let removed = next.schedules.remove(index);
 
     focus_core::validate_config(&next)?;
-    core.database().replace_policy_config(&next)?;
-    core.replace_config(next)?;
+    persist_policy_config(context, &mut core, next)?;
     core.database().record_event(
         "schedule_deleted",
         Some(&removed.id),
@@ -1579,7 +1519,7 @@ fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Resul
     if !enforcement_active_from_core(&core)? {
         return Ok(json!({
             "decision": "allow",
-            "enforcement_state": ENFORCEMENT_STOPPED
+            "enforcement_state": ENFORCEMENT_UNINSTALLING
         }));
     }
     let eval_context = EvaluationContext::new(core.config(), core.database(), now)
@@ -1603,7 +1543,7 @@ fn request_unlock_method(context: &RpcContext, params: RequestUnlockParams) -> R
     reject_if_clock_tampered(context)?;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let eval_context = EvaluationContext::new(core.config(), core.database(), now);
-    let unlock = request_unlock(&params.target, params.minutes, params.reason, &eval_context)?;
+    let unlock = request_unlock(&params.target, params.reason, &eval_context)?;
     Ok(unlock_to_json(&unlock))
 }
 
@@ -2340,30 +2280,40 @@ fn next_detox_session_id(core: &FocusCore, now: DateTime<Utc>) -> Result<String>
 }
 
 fn enforcement_state_from_core(core: &FocusCore) -> Result<String> {
-    Ok(
-        match core.database().service_state(ENFORCEMENT_STATE_KEY)? {
-            Some(state) if state == ENFORCEMENT_STOPPED => ENFORCEMENT_STOPPED.to_string(),
-            _ => ENFORCEMENT_ACTIVE.to_string(),
-        },
-    )
+    if uninstall_handoff_active(core, Utc::now())? {
+        Ok(ENFORCEMENT_UNINSTALLING.to_string())
+    } else {
+        Ok(ENFORCEMENT_ACTIVE.to_string())
+    }
 }
 
 fn browser_extension_mode_from_core(core: &FocusCore) -> Result<String> {
-    Ok(
-        match core.database().service_state(BROWSER_EXTENSION_MODE_KEY)? {
-            Some(mode)
-                if mode == BROWSER_EXTENSION_MODE_DISABLED
-                    || mode == BROWSER_EXTENSION_MODE_UNINSTALLING =>
-            {
-                mode
-            }
-            _ => BROWSER_EXTENSION_MODE_ACTIVE.to_string(),
-        },
-    )
+    if uninstall_handoff_active(core, Utc::now())? {
+        Ok(BROWSER_EXTENSION_MODE_UNINSTALLING.to_string())
+    } else {
+        Ok(BROWSER_EXTENSION_MODE_ACTIVE.to_string())
+    }
 }
 
-fn enforcement_active_from_core(core: &FocusCore) -> Result<bool> {
-    Ok(enforcement_state_from_core(core)? == ENFORCEMENT_ACTIVE)
+pub(crate) fn enforcement_active_from_core(core: &FocusCore) -> Result<bool> {
+    Ok(!uninstall_handoff_active(core, Utc::now())?)
+}
+
+fn uninstall_handoff_active(core: &FocusCore, now: DateTime<Utc>) -> Result<bool> {
+    let mode = core.database().service_state(BROWSER_EXTENSION_MODE_KEY)?;
+    if mode.as_deref() != Some(BROWSER_EXTENSION_MODE_UNINSTALLING) {
+        return Ok(false);
+    }
+
+    let Some(until) = core
+        .database()
+        .service_state(BROWSER_EXTENSION_UNINSTALLING_UNTIL_KEY)?
+    else {
+        return Ok(false);
+    };
+    Ok(DateTime::parse_from_rfc3339(&until)
+        .map(|until| until.with_timezone(&Utc) > now)
+        .unwrap_or(false))
 }
 
 fn active_tier1_site_list_edit_allowed(
@@ -2452,7 +2402,7 @@ fn repair_hosts_after_policy_change(
     };
 
     if !enforcement_active_from_core(core)? {
-        return Ok(Some(HostsRepairStatus::SkippedStopped));
+        return Ok(Some(HostsRepairStatus::SkippedInactive));
     }
 
     hosts.verify_and_repair(core.config()).map(Some)
@@ -2543,7 +2493,6 @@ fn site_list_edit_is_additive(current: &RuleConfig, proposed: &RuleConfig) -> bo
         && current.enabled == proposed.enabled
         && current.schedule_ids == proposed.schedule_ids
         && current.allowance_id == proposed.allowance_id
-        && current.unlock_policy == proposed.unlock_policy
         && proposed.patterns.len() >= current.patterns.len()
         && current
             .patterns
@@ -2559,7 +2508,6 @@ fn app_rule_edit_is_additive(current: &AppRuleConfig, proposed: &AppRuleConfig) 
         && current.enabled == proposed.enabled
         && current.schedule_ids == proposed.schedule_ids
         && current.allowance_id == proposed.allowance_id
-        && current.unlock_policy == proposed.unlock_policy
         && proposed.matchers.len() >= current.matchers.len()
         && current
             .matchers
@@ -2649,13 +2597,14 @@ fn schedule_is_active_at(schedule: &ScheduleConfig, now: DateTime<FixedOffset>) 
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use chrono::{Local, TimeZone, Utc};
+    use chrono::{Duration, Local, TimeZone, Utc};
     use focus_core::{Config, Database, FocusCore};
     use serde_json::{json, Value};
 
     use crate::chrome_policy::ChromePolicyManager;
     use crate::firefox_policy::FirefoxPolicyManager;
     use crate::hosts::HostsManager;
+    use crate::policy_recovery::PolicyRecoveryManager;
 
     use super::{
         handle_payload, parse_optional_now, running_app_snapshots_from_processes, RpcContext,
@@ -2893,6 +2842,43 @@ mod tests {
     }
 
     #[test]
+    fn policy_import_updates_recovery_snapshot() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let recovery = PolicyRecoveryManager::new(temp.path().join("policy-recovery.toml"), false);
+        let context = rpc_context().with_policy_recovery(recovery.clone());
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 731,
+            "method": "import_policy_toml",
+            "params": {
+                "now": "2026-05-24T20:00:00+02:00",
+                "toml": r#"
+                  [[rules]]
+                  id = "snapshot-rule"
+                  name = "Snapshot"
+                  tier = "hard"
+                  patterns = [
+                    { kind = "domain", value = "snapshot.example", match_subdomains = true }
+                  ]
+                "#
+            }
+        });
+
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        let snapshot = recovery
+            .load()
+            .expect("recovery snapshot should load")
+            .expect("recovery snapshot should exist");
+        assert!(snapshot.rules.iter().any(|rule| rule.id == "snapshot-rule"));
+    }
+
+    #[test]
     fn skips_identical_policy_import_items() {
         let context = rpc_context();
         let request = json!({
@@ -2969,41 +2955,12 @@ mod tests {
     }
 
     #[test]
-    fn stopped_enforcement_allows_url_evaluation() {
-        let context = rpc_context();
-        {
-            let core = context.core.lock().expect("core lock should work");
-            core.database()
-                .set_service_state("enforcement_state", "stopped", Utc::now())
-                .expect("service state should write");
-        }
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": 8,
-            "method": "evaluate_url",
-            "params": {
-                "url": "https://blocked.example/",
-                "now": "2026-05-24T20:00:00+02:00"
-            }
-        });
-        let response: Value = serde_json::from_slice(&handle_payload(
-            &context,
-            &serde_json::to_vec(&request).unwrap(),
-        ))
-        .expect("response should parse");
-
-        assert_eq!(response["id"], 8);
-        assert_eq!(response["result"]["decision"], "allow");
-        assert_eq!(response["result"]["enforcement_state"], "stopped");
-    }
-
-    #[test]
     fn manual_browser_extension_mode_does_not_write_browser_policies() {
         let (temp, context) = rpc_context_with_enforcement_managers(false);
         let request = json!({
             "jsonrpc": "2.0",
             "id": 71,
-            "method": "start_enforcement",
+            "method": "enforcement_status",
             "params": {}
         });
         let response: Value = serde_json::from_slice(&handle_payload(
@@ -3022,6 +2979,26 @@ mod tests {
             .path()
             .join("chrome/policies/managed/blockuntu.json")
             .exists());
+    }
+
+    #[test]
+    fn enforcement_start_and_stop_methods_are_not_available() {
+        let context = rpc_context();
+        for method in ["start_enforcement", "stop_enforcement"] {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": 711,
+                "method": method,
+                "params": {}
+            });
+            let response: Value = serde_json::from_slice(&handle_payload(
+                &context,
+                &serde_json::to_vec(&request).unwrap(),
+            ))
+            .expect("response should parse");
+
+            assert_eq!(response["error"]["code"], -32601);
+        }
     }
 
     #[test]
@@ -4129,6 +4106,52 @@ mod tests {
     }
 
     #[test]
+    fn detox_supports_multiweek_durations_and_caps_them_at_twelve_weeks() {
+        let context = editable_rpc_context();
+        let two_weeks = json!({
+            "jsonrpc": "2.0",
+            "id": 129,
+            "method": "start_detox",
+            "params": {
+                "duration_minutes": 2 * 7 * 24 * 60,
+                "site_rule_ids": ["controlled"],
+                "now": "2026-05-22T18:00:00Z"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&two_weeks).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(
+            response["result"]["session"]["ends_at"],
+            "2026-06-05T18:00:00Z"
+        );
+
+        let too_long = json!({
+            "jsonrpc": "2.0",
+            "id": 130,
+            "method": "start_detox",
+            "params": {
+                "duration_minutes": super::MAX_DETOX_DURATION_MINUTES + 1,
+                "site_rule_ids": ["controlled"],
+                "now": "2026-05-22T18:00:00Z"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&too_long).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("detox duration cannot exceed"));
+    }
+
+    #[test]
     fn rejects_active_schedule_edits() {
         let context = active_scheduled_rpc_context();
         let request = json!({
@@ -4225,16 +4248,20 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_reports_stopped_browser_extension_mode() {
+    fn expired_uninstall_handoff_rearms_browser_extension_mode() {
         let context = rpc_context();
         {
             let core = context.core.lock().expect("core lock should work");
             core.database()
-                .set_service_state("enforcement_state", "stopped", Utc::now())
-                .expect("enforcement state should write");
-            core.database()
-                .set_service_state("browser_extension_mode", "disabled", Utc::now())
+                .set_service_state("browser_extension_mode", "uninstalling", Utc::now())
                 .expect("browser extension mode should write");
+            core.database()
+                .set_service_state(
+                    "browser_extension_uninstalling_until",
+                    &(Utc::now() - Duration::seconds(1)).to_rfc3339(),
+                    Utc::now(),
+                )
+                .expect("uninstall handoff expiry should write");
         }
 
         let heartbeat = json!({
@@ -4256,8 +4283,8 @@ mod tests {
         .expect("response should parse");
 
         assert_eq!(response["result"]["status"], "ok");
-        assert_eq!(response["result"]["enforcement_state"], "stopped");
-        assert_eq!(response["result"]["browser_extension_mode"], "disabled");
+        assert_eq!(response["result"]["enforcement_state"], "active");
+        assert_eq!(response["result"]["browser_extension_mode"], "active");
     }
 
     #[test]
@@ -4267,7 +4294,9 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 142,
             "method": "prepare_uninstall",
-            "params": {}
+            "params": {
+                "now": "2026-05-24T20:00:00+02:00"
+            }
         });
         let response: Value = serde_json::from_slice(&handle_payload(
             &context,
@@ -4297,8 +4326,32 @@ mod tests {
         ))
         .expect("response should parse");
 
-        assert_eq!(response["result"]["enforcement_state"], "stopped");
+        assert_eq!(response["result"]["enforcement_state"], "uninstalling");
         assert_eq!(response["result"]["browser_extension_mode"], "uninstalling");
+    }
+
+    #[test]
+    fn prepare_uninstall_is_limited_to_operator_window() {
+        let (_temp, context) = rpc_context_with_enforcement_managers(true);
+        let prepare = json!({
+            "jsonrpc": "2.0",
+            "id": 144,
+            "method": "prepare_uninstall",
+            "params": {
+                "now": "2026-05-25T20:00:00+02:00"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&prepare).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("Sunday 20:00-23:59"));
     }
 
     #[test]

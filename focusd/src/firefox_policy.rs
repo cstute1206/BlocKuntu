@@ -20,7 +20,7 @@ pub struct FirefoxPolicyManager {
 pub enum RepairStatus {
     AlreadyCompliant,
     Repaired,
-    SkippedStopped,
+    SkippedInactive,
     SkippedDisabled,
     SkippedDeferred,
 }

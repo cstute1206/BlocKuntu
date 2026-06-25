@@ -13,11 +13,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
-use crate::cli::{Args, DEFAULT_HOSTS_PATH};
+use crate::cli::{Args, DEFAULT_HOSTS_PATH, DEFAULT_POLICY_RECOVERY_PATH};
 use crate::clock_guard;
 use crate::error::{DaemonError, Result};
 use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
+use crate::policy_recovery::PolicyRecoveryManager;
 use crate::process_scan::{
     attach_detected_window_titles, kill_processes, scan_procfs, LinuxSignalKiller, ProcessInfo,
 };
@@ -50,19 +51,36 @@ impl DaemonApp {
     pub fn load(args: &Args) -> Result<Self> {
         create_parent_dir(&args.database, 0o700)?;
 
+        let database_preexisting = args.database.exists();
         let database = Database::open(&args.database)?;
-        let mut config = if database.has_policy_config()? {
-            database.load_policy_config()?
-        } else {
-            let config = focus_core::load_config(&args.config)?;
-            database.replace_policy_config(&config)?;
-            config
-        };
+        let policy_recovery = PolicyRecoveryManager::new(
+            &args.policy_recovery,
+            policy_recovery_immutable_enabled(args),
+        );
+        let (mut config, recovered) = load_startup_policy(
+            &database,
+            &args.config,
+            &policy_recovery,
+            database_preexisting,
+        )?;
         if ensure_mandatory_app_rules(&mut config) {
             database.replace_policy_config(&config)?;
         }
+        policy_recovery.write(&config)?;
+        if recovered {
+            database.record_event(
+                "policy_recovered",
+                Some("policy"),
+                Some(&format!(
+                    "restored from {}",
+                    policy_recovery.path().display()
+                )),
+                Utc::now(),
+            )?;
+        }
         let core = Arc::new(Mutex::new(FocusCore::new(config, database)?));
         let rpc_context = RpcContext::new(core.clone())
+            .with_policy_recovery(policy_recovery)
             .with_extension_heartbeat_timeout_seconds(args.extension_heartbeat_timeout_seconds);
         let firefox_policy = FirefoxPolicyManager::new(
             &args.firefox_policy,
@@ -123,7 +141,7 @@ impl DaemonApp {
             return Ok(RepairStatus::SkippedDeferred);
         }
         if !self.enforcement_is_active()? {
-            return Ok(RepairStatus::SkippedStopped);
+            return Ok(RepairStatus::SkippedInactive);
         }
         self.firefox_policy.verify_and_repair()
     }
@@ -138,14 +156,14 @@ impl DaemonApp {
             return Ok(ChromePolicyRepairStatus::SkippedDeferred);
         }
         if !self.enforcement_is_active()? {
-            return Ok(ChromePolicyRepairStatus::SkippedStopped);
+            return Ok(ChromePolicyRepairStatus::SkippedInactive);
         }
         self.chrome_policy.verify_and_repair()
     }
 
     pub fn repair_hosts(&self) -> Result<HostsRepairStatus> {
         if !self.enforcement_is_active()? {
-            return Ok(HostsRepairStatus::SkippedStopped);
+            return Ok(HostsRepairStatus::SkippedInactive);
         }
         let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
         self.hosts.verify_and_repair(core.config())
@@ -334,8 +352,7 @@ impl DaemonApp {
 
     fn enforcement_is_active(&self) -> Result<bool> {
         let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        let state = core.database().service_state("enforcement_state")?;
-        Ok(state.as_deref() != Some("stopped"))
+        crate::rpc::enforcement_active_from_core(&core)
     }
 
     fn end_open_app_usage_sessions(&self) -> Result<()> {
@@ -654,6 +671,42 @@ fn hosts_immutable_enabled(args: &Args) -> bool {
     args.hosts == Path::new(DEFAULT_HOSTS_PATH)
 }
 
+fn policy_recovery_immutable_enabled(args: &Args) -> bool {
+    if args.policy_recovery_immutable {
+        return true;
+    }
+    if args.no_policy_recovery_immutable {
+        return false;
+    }
+    args.policy_recovery == Path::new(DEFAULT_POLICY_RECOVERY_PATH)
+}
+
+fn load_startup_policy(
+    database: &Database,
+    config_path: &Path,
+    policy_recovery: &PolicyRecoveryManager,
+    database_preexisting: bool,
+) -> Result<(focus_core::Config, bool)> {
+    if database.has_policy_config()? {
+        return Ok((database.load_policy_config()?, false));
+    }
+
+    if let Some(config) = policy_recovery.load()? {
+        database.replace_policy_config(&config)?;
+        return Ok((config, true));
+    }
+
+    if database_preexisting {
+        return Err(DaemonError::MissingPolicyRecovery {
+            recovery_path: policy_recovery.path().to_path_buf(),
+        });
+    }
+
+    let config = focus_core::load_config(config_path)?;
+    database.replace_policy_config(&config)?;
+    Ok((config, false))
+}
+
 pub(crate) fn ensure_mandatory_app_rules(config: &mut focus_core::Config) -> bool {
     if !config.strict_mode.block_unsupported_browsers {
         if let Some(index) = config
@@ -700,7 +753,6 @@ fn unsupported_browser_rule() -> AppRuleConfig {
             .collect(),
         schedule_ids: Vec::new(),
         allowance_id: None,
-        unlock_policy: None,
     }
 }
 
@@ -788,11 +840,65 @@ mod tests {
     };
 
     use super::{
-        ensure_mandatory_app_rules, is_blockuntu_process, strict_browser_kill_details,
-        supported_browser_for_process, sync_metered_app_usage_sessions, SupportedBrowser,
-        UNSUPPORTED_BROWSER_RULE_ID,
+        ensure_mandatory_app_rules, is_blockuntu_process, load_startup_policy,
+        strict_browser_kill_details, supported_browser_for_process,
+        sync_metered_app_usage_sessions, SupportedBrowser, UNSUPPORTED_BROWSER_RULE_ID,
     };
+    use crate::error::DaemonError;
+    use crate::policy_recovery::PolicyRecoveryManager;
     use crate::process_scan::ProcessInfo;
+
+    #[test]
+    fn restores_policy_snapshot_when_database_has_no_policy() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(&config_path, "").expect("baseline config should write");
+        let recovery = PolicyRecoveryManager::new(temp.path().join("policy-recovery.toml"), false);
+        let expected = Config::from_toml_str(
+            r#"
+            [[rules]]
+            id = "recovered"
+            name = "Recovered"
+            tier = "hard"
+            patterns = [
+              { kind = "domain", value = "recovered.example", match_subdomains = true }
+            ]
+            "#,
+        )
+        .expect("recovery config should parse");
+        recovery
+            .write(&expected)
+            .expect("recovery snapshot should write");
+        let database =
+            Database::open(temp.path().join("blockuntu.sqlite3")).expect("database should open");
+
+        let (loaded, recovered) = load_startup_policy(&database, &config_path, &recovery, false)
+            .expect("startup policy should restore");
+
+        assert!(recovered);
+        assert_eq!(loaded, expected);
+        assert_eq!(
+            database
+                .load_policy_config()
+                .expect("restored database policy should load"),
+            expected
+        );
+    }
+
+    #[test]
+    fn existing_empty_database_without_recovery_fails_closed() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(&config_path, "").expect("baseline config should write");
+        let recovery = PolicyRecoveryManager::new(temp.path().join("policy-recovery.toml"), false);
+        let database =
+            Database::open(temp.path().join("blockuntu.sqlite3")).expect("database should open");
+
+        let error = load_startup_policy(&database, &config_path, &recovery, true)
+            .expect_err("existing empty database should fail closed");
+
+        assert!(matches!(error, DaemonError::MissingPolicyRecovery { .. }));
+    }
 
     #[test]
     fn injects_unsupported_browser_hard_rule() {

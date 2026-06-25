@@ -30,14 +30,6 @@ export function enforcementStatus(socketPath?: string): Promise<EnforcementStatu
   return invoke("enforcement_status", { socketPath });
 }
 
-export function startEnforcement(socketPath?: string): Promise<EnforcementStatus> {
-  return daemonRpc("start_enforcement", {}, socketPath) as Promise<EnforcementStatus>;
-}
-
-export function stopEnforcement(socketPath?: string): Promise<EnforcementStatus> {
-  return daemonRpc("stop_enforcement", {}, socketPath) as Promise<EnforcementStatus>;
-}
-
 export function configSnapshot(socketPath?: string): Promise<ConfigSnapshot> {
   return invoke("config_snapshot", { socketPath });
 }
@@ -180,12 +172,11 @@ export function evaluateUrl(url: string, socketPath?: string): Promise<DecisionR
 
 export function requestUnlock(
   target: string,
-  minutes: number,
   reason: string,
   socketPath?: string
 ): Promise<UnlockResult> {
   return invoke("request_unlock", {
-    request: { target, minutes, reason },
+    request: { target, reason },
     socketPath
   });
 }

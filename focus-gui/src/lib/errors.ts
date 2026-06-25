@@ -217,6 +217,13 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
     return `This target is covered by hard block "${hardBlockedTarget[1]}" and cannot be manually unlocked.`;
   }
 
+  const detoxBlockedTarget = normalized.match(
+    /^target is covered by active detox session (.+) until (.+): (.+)$/
+  );
+  if (detoxBlockedTarget) {
+    return `Manual unlock is unavailable because rule "${detoxBlockedTarget[3]}" is in active Detox "${detoxBlockedTarget[1]}" until ${formatTimestamp(detoxBlockedTarget[2])}.`;
+  }
+
   const unknownUnlockTarget = normalized.match(
     /^target does not match a configured controlled-access rule: (.+)$/
   );
@@ -227,16 +234,6 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   const activeUnlock = normalized.match(/^an unlock is already active for rule (.+) until (.+)$/);
   if (activeUnlock) {
     return `An unlock for rule "${activeUnlock[1]}" is already active until ${formatTimestamp(activeUnlock[2])}.`;
-  }
-
-  const cooldown = normalized.match(/^cooldown is active for rule (.+) until (.+)$/);
-  if (cooldown) {
-    return `Cooldown is active for rule "${cooldown[1]}". Try again after ${formatTimestamp(cooldown[2])}.`;
-  }
-
-  const hourlyQuota = normalized.match(/^hourly unlock quota exceeded for rule (.+): limit (\d+)$/);
-  if (hourlyQuota) {
-    return `The hourly unlock limit for rule "${hourlyQuota[1]}" has been reached. Limit: ${hourlyQuota[2]} per hour.`;
   }
 
   const maxSession = normalized.match(/^requested unlock duration (\d+) exceeds maximum (\d+)$/);
@@ -252,8 +249,19 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
     return "Enter a reason before requesting an unlock.";
   }
 
-  if (normalized === "unlock duration must be at least one minute") {
-    return "Unlock duration must be at least one minute.";
+  const shortUnlockReason = normalized.match(
+    /^unlock reason must contain at least (\d+) letters; found (\d+)$/
+  );
+  if (shortUnlockReason) {
+    return `The unlock reason needs at least ${shortUnlockReason[1]} letters. It currently has ${shortUnlockReason[2]}.`;
+  }
+
+  if (normalized === "unlock reason has already been used") {
+    return "This unlock reason has already been used. Enter a new, specific reason.";
+  }
+
+  if (normalized === "the global hourly unlock quota has been used; limit 1") {
+    return "The single unlock available in the last hour has already been used.";
   }
 
   if (normalized === "Tier 1 edit key is required") {
@@ -266,6 +274,11 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
 
   if (normalized === "detox duration must be at least one minute") {
     return "Detox duration must be at least one minute.";
+  }
+
+  const detoxMaximum = normalized.match(/^detox duration cannot exceed (\d+) minutes$/);
+  if (detoxMaximum) {
+    return "Detox can run for at most 12 weeks.";
   }
 
   if (normalized === "detox needs at least one site list or app rule") {

@@ -85,7 +85,6 @@
     if (tier === "hard") {
       ruleDraft.allowance_id = null;
       ruleAllowanceDraft = null;
-      ruleDraft.unlock_policy = null;
     } else if (!ruleAllowanceDraft) {
       ruleAllowanceDraft = defaultAllowanceForRule(ruleDraft);
     }

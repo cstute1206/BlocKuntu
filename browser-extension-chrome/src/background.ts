@@ -459,15 +459,14 @@ function applyHeartbeatResult(result: unknown): void {
     return;
   }
 
-  const enforcementState = stringField(result, "enforcement_state");
   const extensionMode = stringField(result, "browser_extension_mode");
 
-  if (extensionMode === "uninstalling" || enforcementState === "stopped") {
+  if (extensionMode === "uninstalling") {
     setBlockingDisabled(true);
     return;
   }
 
-  if (extensionMode === "active" || enforcementState === "active") {
+  if (extensionMode === "active") {
     setBlockingDisabled(false);
   }
 }

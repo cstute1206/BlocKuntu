@@ -285,6 +285,11 @@ cat >"${DEBIAN_DIR}/prerm" <<'PRERM'
 #!/bin/sh
 set -e
 
+policy_recovery="/etc/blockuntu/policy-recovery.toml"
+if [ -e "${policy_recovery}" ] && command -v chattr >/dev/null 2>&1; then
+  chattr -i "${policy_recovery}" >/dev/null 2>&1 || true
+fi
+
 remove_empty_dir() {
   rmdir "$1" >/dev/null 2>&1 || true
 }

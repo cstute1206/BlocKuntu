@@ -127,7 +127,6 @@
     if (tier === "hard") {
       appRuleDraft.allowance_id = null;
       appRuleAllowanceDraft = null;
-      appRuleDraft.unlock_policy = null;
     } else if (!appRuleAllowanceDraft) {
       appRuleAllowanceDraft = defaultAllowanceForRule(appRuleDraft);
     }

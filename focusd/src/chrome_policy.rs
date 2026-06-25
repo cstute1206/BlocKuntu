@@ -22,7 +22,7 @@ pub struct ChromePolicyManager {
 pub enum ChromePolicyRepairStatus {
     AlreadyCompliant,
     Repaired,
-    SkippedStopped,
+    SkippedInactive,
     SkippedDisabled,
     SkippedDeferred,
 }

@@ -33,27 +33,25 @@ pub enum UnlockError {
     EmptyTarget,
     #[error("unlock reason is required")]
     EmptyReason,
-    #[error("unlock duration must be at least one minute")]
-    InvalidDuration,
+    #[error("unlock reason must contain at least {minimum} letters; found {actual}")]
+    ReasonTooShort { minimum: usize, actual: usize },
+    #[error("unlock reason has already been used")]
+    ReasonAlreadyUsed,
     #[error("target does not match a configured controlled-access rule: {target}")]
     UnknownTarget { target: String },
     #[error("target is hard-blocked and cannot be unlocked: {rule_id}")]
     TargetIsHardBlocked { rule_id: String },
-    #[error("requested unlock duration {requested_minutes} exceeds maximum {max_minutes}")]
-    ExceedsMaxSession {
-        requested_minutes: u32,
-        max_minutes: u32,
+    #[error("target is covered by active detox session {session_id} until {ends_at}: {rule_id}")]
+    TargetInActiveDetox {
+        rule_id: String,
+        session_id: String,
+        ends_at: DateTime<Utc>,
     },
     #[error("an unlock is already active for rule {rule_id} until {active_until}")]
     UnlockAlreadyActive {
         rule_id: String,
         active_until: DateTime<Utc>,
     },
-    #[error("cooldown is active for rule {rule_id} until {retry_at}")]
-    CooldownActive {
-        rule_id: String,
-        retry_at: DateTime<Utc>,
-    },
-    #[error("hourly unlock quota exceeded for rule {rule_id}: limit {limit}")]
-    HourlyQuotaExceeded { rule_id: String, limit: u32 },
+    #[error("the global hourly unlock quota has been used; limit {limit}")]
+    HourlyQuotaExceeded { limit: u32 },
 }
