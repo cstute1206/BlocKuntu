@@ -56,6 +56,7 @@
     cloneRule,
     cloneSchedule,
     clearFirstRunOverviewDismissed,
+    appRuleIsActive,
     detectedMatchersForRunningApp,
     defaultAllowanceForRule,
     firstRunOverviewDismissed,
@@ -66,7 +67,8 @@
     normalizeAllowanceDraft,
     normalizeAppRuleDraft,
     normalizeRuleDraft,
-    normalizeScheduleDraft
+    normalizeScheduleDraft,
+    ruleIsActive
   } from "./lib/ui";
   import type {
     Allowance,
@@ -528,6 +530,69 @@
     );
   }
 
+  function siteRuleSaveIsAdditiveOnly(savedRule: Rule, snapshot: ConfigSnapshot | null): boolean {
+    if (activeDetoxSiteRuleIds.includes(savedRule.id)) return true;
+
+    return (
+      ruleIsActive(savedRule, snapshot?.schedules ?? []) &&
+      !(savedRule.tier === "hard" && tier1EditUnlocked)
+    );
+  }
+
+  function appRuleSaveIsAdditiveOnly(
+    savedRule: AppRule,
+    snapshot: ConfigSnapshot | null
+  ): boolean {
+    return (
+      activeDetoxAppRuleIds.includes(savedRule.id) ||
+      appRuleIsActive(savedRule, snapshot?.schedules ?? [])
+    );
+  }
+
+  function normalizeRuleDraftForSave(draft: Rule, snapshot: ConfigSnapshot | null): Rule {
+    const normalized = normalizeRuleDraft(draft);
+    const savedRule = snapshot?.rules.find((rule) => rule.id === draft.id) ?? null;
+    if (!savedRule || !siteRuleSaveIsAdditiveOnly(savedRule, snapshot)) {
+      return normalized;
+    }
+
+    return {
+      ...normalized,
+      id: savedRule.id,
+      name: savedRule.name,
+      tier: savedRule.tier,
+      enabled: savedRule.enabled,
+      allowance_id: savedRule.allowance_id ?? null,
+      schedule_ids: [...savedRule.schedule_ids],
+      patterns: [
+        ...savedRule.patterns.map((pattern) => ({ ...pattern })),
+        ...normalized.patterns.slice(savedRule.patterns.length)
+      ]
+    };
+  }
+
+  function normalizeAppRuleDraftForSave(draft: AppRule, snapshot: ConfigSnapshot | null): AppRule {
+    const normalized = normalizeAppRuleDraft(draft);
+    const savedRule = snapshot?.app_rules.find((rule) => rule.id === draft.id) ?? null;
+    if (!savedRule || !appRuleSaveIsAdditiveOnly(savedRule, snapshot)) {
+      return normalized;
+    }
+
+    return {
+      ...normalized,
+      id: savedRule.id,
+      name: savedRule.name,
+      tier: savedRule.tier,
+      enabled: savedRule.enabled,
+      allowance_id: savedRule.allowance_id ?? null,
+      schedule_ids: [...savedRule.schedule_ids],
+      matchers: [
+        ...savedRule.matchers.map((matcher) => ({ ...matcher })),
+        ...normalized.matchers.slice(savedRule.matchers.length)
+      ]
+    };
+  }
+
   function scheduleDraftHasUnsavedChanges(snapshot: ConfigSnapshot): boolean {
     if (!scheduleDraft) return false;
 
@@ -801,7 +866,9 @@
     ruleMessage = null;
     try {
       const socket = socketArg();
-      if (ruleDraft.tier === "controlled_access") {
+      const savedRule = config?.rules.find((rule) => rule.id === ruleDraft?.id) ?? null;
+      const additiveOnlySave = savedRule ? siteRuleSaveIsAdditiveOnly(savedRule, config) : false;
+      if (ruleDraft.tier === "controlled_access" && !additiveOnlySave) {
         const allowance = normalizeAllowanceDraft(
           ruleAllowanceDraft ?? defaultAllowanceForRule(ruleDraft),
           ruleDraft
@@ -810,13 +877,16 @@
         config = allowanceResponse.config;
         ruleAllowanceDraft = cloneAllowance(allowance);
         ruleDraft.allowance_id = allowance.id;
+      } else if (savedRule && additiveOnlySave) {
+        ruleDraft.allowance_id = savedRule.allowance_id ?? null;
       } else {
         ruleDraft.allowance_id = null;
       }
 
-      const response = await upsertSiteList(normalizeRuleDraft(ruleDraft), socket);
+      const savedRuleDraft = normalizeRuleDraftForSave(ruleDraft, config);
+      const response = await upsertSiteList(savedRuleDraft, socket);
       config = response.config;
-      selectedRuleId = ruleDraft.id.trim();
+      selectedRuleId = savedRuleDraft.id;
       setRuleDraft(
         response.config.rules.find((rule) => rule.id === selectedRuleId) ??
           response.config.rules[0] ??
@@ -912,7 +982,9 @@
     appRuleMessage = null;
     try {
       const socket = socketArg();
-      if (appRuleDraft.tier === "controlled_access") {
+      const savedRule = config?.app_rules.find((rule) => rule.id === appRuleDraft?.id) ?? null;
+      const additiveOnlySave = savedRule ? appRuleSaveIsAdditiveOnly(savedRule, config) : false;
+      if (appRuleDraft.tier === "controlled_access" && !additiveOnlySave) {
         const allowance = normalizeAllowanceDraft(
           appRuleAllowanceDraft ?? defaultAllowanceForRule(appRuleDraft),
           appRuleDraft
@@ -921,13 +993,16 @@
         config = allowanceResponse.config;
         appRuleAllowanceDraft = cloneAllowance(allowance);
         appRuleDraft.allowance_id = allowance.id;
+      } else if (savedRule && additiveOnlySave) {
+        appRuleDraft.allowance_id = savedRule.allowance_id ?? null;
       } else {
         appRuleDraft.allowance_id = null;
       }
 
-      const response = await upsertAppRule(normalizeAppRuleDraft(appRuleDraft), socket);
+      const savedAppRuleDraft = normalizeAppRuleDraftForSave(appRuleDraft, config);
+      const response = await upsertAppRule(savedAppRuleDraft, socket);
       config = response.config;
-      selectedAppRuleId = appRuleDraft.id.trim();
+      selectedAppRuleId = savedAppRuleDraft.id;
       setAppRuleDraft(
         response.config.app_rules.find((rule) => rule.id === selectedAppRuleId) ??
           response.config.app_rules[0] ??

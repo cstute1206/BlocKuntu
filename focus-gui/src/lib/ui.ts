@@ -172,7 +172,22 @@ export function detectedMatchersForRunningApp(app: RunningApp): AppMatcher[] {
 }
 
 export function mergeAppMatchers(existing: AppMatcher[], incoming: AppMatcher[]): AppMatcher[] {
-  return dedupeAppMatchers([...existing, ...incoming]);
+  const merged = existing.map((matcher) => ({ ...matcher }));
+  const seen = new Set(
+    existing
+      .map(normalizeAppMatcherDraft)
+      .map((matcher) => `${matcher.kind}:${matcher.value}`)
+  );
+
+  for (const matcher of incoming.map(normalizeAppMatcherDraft)) {
+    const key = `${matcher.kind}:${matcher.value}`;
+    if (!seen.has(key)) {
+      merged.push(matcher);
+      seen.add(key);
+    }
+  }
+
+  return merged;
 }
 
 export function normalizeScheduleDraft(schedule: Schedule): Schedule {

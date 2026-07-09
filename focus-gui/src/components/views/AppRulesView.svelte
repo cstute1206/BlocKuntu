@@ -102,11 +102,11 @@
   }
 
   function matcherEditLocked(index: number): boolean {
-    return appRuleDraftDetoxLocked || (matcherIsSaved(index) && appRuleDraftEditLocked);
+    return matcherIsSaved(index) && appRuleDraftEditLocked;
   }
 
   function matcherRemoveLocked(index: number): boolean {
-    return appRuleDraftDetoxLocked || (appRuleDraftActive && matcherIsSaved(index));
+    return (appRuleDraftDetoxLocked || appRuleDraftActive) && matcherIsSaved(index);
   }
 
   function addAppMatcher(): void {
@@ -179,8 +179,8 @@
           <AlertTriangle size={17} aria-hidden="true" />
           <span>
             {appRuleDraftDetoxLocked
-              ? "This application is covered by an active detox session."
-              : "This application is active right now."}
+              ? "This application is covered by an active detox session. Existing settings are locked; you can append matchers."
+              : "This application is active right now. Existing settings are locked; you can append matchers."}
           </span>
         </section>
       {/if}
@@ -284,7 +284,7 @@
       </div>
 
       <div class="button-row">
-        <button class="secondary" onclick={addAppMatcher} disabled={appRuleDraftDetoxLocked}>
+        <button class="secondary" onclick={addAppMatcher}>
           <Plus size={17} aria-hidden="true" />
           <span>Matcher</span>
         </button>
@@ -304,7 +304,7 @@
         <button
           class="primary"
           onclick={onSaveAppRuleDraft}
-          disabled={appRuleSaving || appRuleDraftDetoxLocked}
+          disabled={appRuleSaving}
         >
           <Save size={17} aria-hidden="true" />
           <span>Save</span>
@@ -381,7 +381,6 @@
               <button
                 class="secondary"
                 onclick={() => onAddDetectedMatchers(app)}
-                disabled={appRuleDraftDetoxLocked}
               >
                 <Plus size={16} aria-hidden="true" />
                 <span>Merge</span>

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, Utc};
 use focus_core::{
-    AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Database, Decision,
+    AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Database, Decision, DetoxSession,
     EvaluationContext, FocusCore, ProcessIdentity, RuleTier, StrictModeConfig,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -166,7 +166,14 @@ impl DaemonApp {
             return Ok(HostsRepairStatus::SkippedInactive);
         }
         let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        self.hosts.verify_and_repair(core.config())
+        let guarded = clock_guard::guarded_now(core.database(), None, false)?;
+        let active_detox_sessions = hosts_detox_sessions_for_clock(
+            &core,
+            guarded.now.with_timezone(&Utc),
+            guarded.integrity.state == "tampered",
+        )?;
+        self.hosts
+            .verify_and_repair_with_active_detox(core.config(), &active_detox_sessions)
     }
 
     pub async fn serve(self, args: &Args) -> Result<()> {
@@ -828,6 +835,18 @@ fn blocked_rule_id(reason: &BlockReason) -> Option<&str> {
         | BlockReason::HardBlock { rule_id, .. }
         | BlockReason::ControlledAccess { rule_id, .. } => Some(rule_id.as_str()),
         BlockReason::InvalidUrl { .. } | BlockReason::RuntimeError { .. } => None,
+    }
+}
+
+pub(crate) fn hosts_detox_sessions_for_clock(
+    core: &FocusCore,
+    now: DateTime<Utc>,
+    clock_tampered: bool,
+) -> Result<Vec<DetoxSession>> {
+    if clock_tampered {
+        Ok(core.database().uncancelled_detox_sessions()?)
+    } else {
+        Ok(core.database().active_detox_sessions(now)?)
     }
 }
 

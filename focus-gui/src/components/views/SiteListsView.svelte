@@ -59,11 +59,11 @@
   }
 
   function patternEditLocked(index: number): boolean {
-    return ruleDraftDetoxLocked || (patternIsSaved(index) && ruleDraftEditLocked);
+    return patternIsSaved(index) && ruleDraftEditLocked;
   }
 
   function patternRemoveLocked(index: number): boolean {
-    return ruleDraftDetoxLocked || (ruleDraftActive && patternIsSaved(index));
+    return (ruleDraftDetoxLocked || ruleDraftActive) && patternIsSaved(index);
   }
 
   function addPattern(): void {
@@ -134,8 +134,8 @@
           <AlertTriangle size={17} aria-hidden="true" />
           <span>
             {ruleDraftDetoxLocked
-              ? "This website is covered by an active detox session."
-              : "This website is active right now."}
+              ? "This website is covered by an active detox session. Existing settings are locked; you can append patterns."
+              : "This website is active right now. Existing settings are locked; you can append patterns."}
           </span>
         </section>
       {/if}
@@ -247,7 +247,7 @@
       </div>
 
       <div class="button-row">
-        <button class="secondary" onclick={addPattern} disabled={ruleDraftDetoxLocked}>
+        <button class="secondary" onclick={addPattern}>
           <Plus size={17} aria-hidden="true" />
           <span>Pattern</span>
         </button>
@@ -259,7 +259,7 @@
           <Trash2 size={17} aria-hidden="true" />
           <span>Delete</span>
         </button>
-        <button class="primary" onclick={onSaveRuleDraft} disabled={ruleSaving || ruleDraftDetoxLocked}>
+        <button class="primary" onclick={onSaveRuleDraft} disabled={ruleSaving}>
           <Save size={17} aria-hidden="true" />
           <span>Save</span>
         </button>

@@ -11,7 +11,7 @@ use focus_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::app::is_blockuntu_process;
+use crate::app::{hosts_detox_sessions_for_clock, is_blockuntu_process};
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
 use crate::clock_guard;
 use crate::error::{DaemonError, Result};
@@ -539,9 +539,19 @@ fn status(context: &RpcContext) -> Result<Value> {
 
 fn enforcement_status(context: &RpcContext) -> Result<Value> {
     let hosts = context.hosts()?;
-    let (enforcement_state, config) = {
+    let (enforcement_state, config, active_detox_sessions) = {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        (enforcement_state_from_core(&core)?, core.config().clone())
+        let guarded = clock_guard::guarded_now(core.database(), None, context.trust_client_time)?;
+        let active_detox_sessions = hosts_detox_sessions_for_clock(
+            &core,
+            guarded.now.with_timezone(&Utc),
+            guarded.integrity.state == "tampered",
+        )?;
+        (
+            enforcement_state_from_core(&core)?,
+            core.config().clone(),
+            active_detox_sessions,
+        )
     };
 
     Ok(json!({
@@ -550,7 +560,7 @@ fn enforcement_status(context: &RpcContext) -> Result<Value> {
         "clock_integrity": clock_integrity_status_method(context)?,
         "firefox_policy": firefox_policy_status_json(context)?,
         "chrome_policy": chrome_policy_status_json(context)?,
-        "hosts_file": hosts.status(&config)
+        "hosts_file": hosts.status_with_active_detox(&config, &active_detox_sessions)
     }))
 }
 
@@ -751,7 +761,7 @@ fn import_policy_toml_method(
     focus_core::validate_config(&next)?;
 
     persist_policy_config(context, &mut core, next)?;
-    let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
+    let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
     core.database().record_event(
         "policy_appended",
         Some("policy"),
@@ -880,6 +890,7 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
             let current_rule = &next.rules[index];
             if current_rule != &params.rule
                 && site_rule_in_active_detox(&core, &current_rule.id, now)?
+                && !site_list_edit_is_additive(current_rule, &params.rule)
             {
                 return Err(active_detox_site_list_edit_error(&current_rule.id));
             }
@@ -905,7 +916,7 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
 
     focus_core::validate_config(&next)?;
     persist_policy_config(context, &mut core, next)?;
-    let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
+    let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
     core.database().record_event(
         "site_list_saved",
         Some(&rule_id),
@@ -951,7 +962,7 @@ fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -
 
     focus_core::validate_config(&next)?;
     persist_policy_config(context, &mut core, next)?;
-    let hosts_repair = repair_hosts_after_policy_change(context, &core)?;
+    let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
     core.database().record_event(
         "site_list_deleted",
         Some(&removed.id),
@@ -1093,6 +1104,7 @@ fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> 
             let current_rule = &next.app_rules[index];
             if current_rule != &params.rule
                 && app_rule_in_active_detox(&core, &current_rule.id, now)?
+                && !app_rule_edit_is_additive(current_rule, &params.rule)
             {
                 return Err(active_detox_app_rule_edit_error(&current_rule.id));
             }
@@ -1303,10 +1315,12 @@ fn start_detox_method(context: &RpcContext, params: StartDetoxParams) -> Result<
         )),
         now_utc,
     )?;
+    let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
 
     Ok(json!({
         "status": "ok",
-        "session": detox_session_to_json(&session, now_utc)
+        "session": detox_session_to_json(&session, now_utc),
+        "hosts_repair": hosts_repair.map(|status| format!("{status:?}"))
     }))
 }
 
@@ -1351,10 +1365,12 @@ fn cancel_detox_method(context: &RpcContext, params: CancelDetoxParams) -> Resul
         Some("cancelled through privileged Tier 1 edit unlock"),
         now_utc,
     )?;
+    let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
 
     Ok(json!({
         "status": "ok",
-        "session": detox_session_to_json(&session, now_utc)
+        "session": detox_session_to_json(&session, now_utc),
+        "hosts_repair": hosts_repair.map(|status| format!("{status:?}"))
     }))
 }
 
@@ -2396,6 +2412,7 @@ fn tier1_edit_key_matches(path: &Path, candidate: &str) -> Result<bool> {
 fn repair_hosts_after_policy_change(
     context: &RpcContext,
     core: &FocusCore,
+    now: DateTime<FixedOffset>,
 ) -> Result<Option<HostsRepairStatus>> {
     let Some(hosts) = context.hosts.as_ref() else {
         return Ok(None);
@@ -2405,7 +2422,12 @@ fn repair_hosts_after_policy_change(
         return Ok(Some(HostsRepairStatus::SkippedInactive));
     }
 
-    hosts.verify_and_repair(core.config()).map(Some)
+    let active_detox_sessions = core
+        .database()
+        .active_detox_sessions(now.with_timezone(&Utc))?;
+    hosts
+        .verify_and_repair_with_active_detox(core.config(), &active_detox_sessions)
+        .map(Some)
 }
 
 fn hosts_repair_detail(status: Option<HostsRepairStatus>) -> String {
@@ -2739,6 +2761,13 @@ mod tests {
     fn rpc_context_with_enforcement_managers(
         manage_browser_policies: bool,
     ) -> (tempfile::TempDir, RpcContext) {
+        rpc_context_with_enforcement_managers_for(rpc_context(), manage_browser_policies)
+    }
+
+    fn rpc_context_with_enforcement_managers_for(
+        context: RpcContext,
+        manage_browser_policies: bool,
+    ) -> (tempfile::TempDir, RpcContext) {
         let temp = tempfile::tempdir().expect("temp dir should be created");
         let firefox_policy = FirefoxPolicyManager::new(
             temp.path().join("firefox/policies.json"),
@@ -2753,7 +2782,7 @@ mod tests {
             "https://example.invalid/blockuntu.crx",
         );
         let hosts = HostsManager::new(temp.path().join("hosts"));
-        let context = rpc_context()
+        let context = context
             .with_enforcement_managers(firefox_policy, chrome_policy, hosts)
             .with_browser_policy_management(manage_browser_policies, manage_browser_policies);
         (temp, context)
@@ -4060,6 +4089,196 @@ mod tests {
         ))
         .expect("response should parse");
         assert_eq!(eval_after_cancel["result"]["decision"], "allow");
+    }
+
+    #[test]
+    fn allows_additive_site_list_edits_during_active_detox() {
+        let context = editable_rpc_context();
+        let start_request = json!({
+            "jsonrpc": "2.0",
+            "id": 131,
+            "method": "start_detox",
+            "params": {
+                "duration_minutes": 90,
+                "site_rule_ids": ["controlled"],
+                "now": "2026-05-24T20:00:00+02:00"
+            }
+        });
+        let start_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&start_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(start_response.get("error").is_none(), "{start_response}");
+
+        let edit_request = json!({
+            "jsonrpc": "2.0",
+            "id": 132,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-24T20:10:00+02:00",
+                "rule": {
+                    "id": "controlled",
+                    "name": "Controlled",
+                    "tier": "controlled_access",
+                    "enabled": true,
+                    "patterns": [
+                        { "kind": "domain", "value": "controlled.example", "match_subdomains": true },
+                        { "kind": "domain", "value": "extra-controlled.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let edit_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&edit_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(edit_response.get("error").is_none(), "{edit_response}");
+        let controlled_rule = edit_response["result"]["config"]["rules"]
+            .as_array()
+            .expect("rules should be an array")
+            .iter()
+            .find(|rule| rule["id"] == "controlled")
+            .expect("controlled rule should exist");
+        assert_eq!(
+            controlled_rule["patterns"]
+                .as_array()
+                .expect("patterns should be an array")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn allows_additive_app_rule_edits_during_active_detox() {
+        let context = active_app_rule_rpc_context();
+        let start_request = json!({
+            "jsonrpc": "2.0",
+            "id": 133,
+            "method": "start_detox",
+            "params": {
+                "duration_minutes": 90,
+                "app_rule_ids": ["kmines-controlled"],
+                "now": "2026-05-22T10:00:00Z"
+            }
+        });
+        let start_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&start_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(start_response.get("error").is_none(), "{start_response}");
+
+        let edit_request = json!({
+            "jsonrpc": "2.0",
+            "id": 134,
+            "method": "upsert_app_rule",
+            "params": {
+                "now": "2026-05-22T10:10:00Z",
+                "rule": {
+                    "id": "kmines-controlled",
+                    "name": "KMines",
+                    "tier": "controlled_access",
+                    "enabled": true,
+                    "matchers": [
+                        { "kind": "command_name", "value": "kmines" },
+                        { "kind": "window_title_contains", "value": "KMines" }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let edit_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&edit_request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(edit_response.get("error").is_none(), "{edit_response}");
+        let app_rule = edit_response["result"]["config"]["app_rules"]
+            .as_array()
+            .expect("app rules should be an array")
+            .iter()
+            .find(|rule| rule["id"] == "kmines-controlled")
+            .expect("app rule should exist");
+        assert_eq!(
+            app_rule["matchers"]
+                .as_array()
+                .expect("matchers should be an array")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn start_and_cancel_detox_repairs_hosts_file_domains() {
+        let (temp, context) =
+            rpc_context_with_enforcement_managers_for(editable_rpc_context(), false);
+        let (_key_temp, context) = rpc_context_with_tier1_edit_key(context);
+        let hosts_path = temp.path().join("hosts");
+        let start_request = json!({
+            "jsonrpc": "2.0",
+            "id": 135,
+            "method": "start_detox",
+            "params": {
+                "duration_minutes": 90,
+                "site_rule_ids": ["controlled"],
+                "now": "2026-05-24T20:00:00+02:00"
+            }
+        });
+        let start_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&start_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(start_response.get("error").is_none(), "{start_response}");
+        assert_eq!(start_response["result"]["hosts_repair"], "Repaired");
+        let session_id = start_response["result"]["session"]["id"]
+            .as_str()
+            .expect("session id should be a string")
+            .to_string();
+
+        let hosts_contents = std::fs::read_to_string(&hosts_path).expect("hosts should exist");
+        assert!(hosts_contents.contains("0.0.0.0 controlled.example"));
+
+        let unlock_request = json!({
+            "jsonrpc": "2.0",
+            "id": 136,
+            "method": "unlock_tier1_edit",
+            "params": {
+                "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
+                "now": "2026-05-24T20:01:00+02:00"
+            }
+        });
+        let unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&unlock_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(unlock_response.get("error").is_none(), "{unlock_response}");
+
+        let cancel_request = json!({
+            "jsonrpc": "2.0",
+            "id": 137,
+            "method": "cancel_detox",
+            "params": {
+                "id": session_id,
+                "now": "2026-05-24T20:02:00+02:00"
+            }
+        });
+        let cancel_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&cancel_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(cancel_response.get("error").is_none(), "{cancel_response}");
+        assert_eq!(cancel_response["result"]["hosts_repair"], "Repaired");
+
+        let hosts_contents = std::fs::read_to_string(&hosts_path).expect("hosts should exist");
+        assert!(!hosts_contents.contains("controlled.example"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use focus_core::{Config, RulePatternKind, RuleTier};
+use focus_core::{Config, DetoxSession, RuleConfig, RulePatternKind, RuleTier};
 use serde::Serialize;
 
 use crate::error::Result;
@@ -64,12 +64,21 @@ impl HostsManager {
     }
 
     pub fn verify_and_repair(&self, config: &Config) -> Result<HostsRepairStatus> {
+        self.verify_and_repair_with_active_detox(config, &[])
+    }
+
+    pub fn verify_and_repair_with_active_detox(
+        &self,
+        config: &Config,
+        active_detox_sessions: &[DetoxSession],
+    ) -> Result<HostsRepairStatus> {
         let current = match fs::read_to_string(&self.hosts_path) {
             Ok(current) => current,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(err) => return Err(err.into()),
         };
-        let expected_managed_block = render_managed_block(config);
+        let expected_managed_block =
+            render_managed_block_with_active_detox(config, active_detox_sessions);
         let expected = replace_managed_block(&current, &expected_managed_block);
         let mut repaired = false;
 
@@ -111,13 +120,25 @@ impl HostsManager {
     }
 
     pub fn status(&self, config: &Config) -> HostsFileStatus {
+        self.status_with_active_detox(config, &[])
+    }
+
+    pub fn status_with_active_detox(
+        &self,
+        config: &Config,
+        active_detox_sessions: &[DetoxSession],
+    ) -> HostsFileStatus {
         let current = match fs::read_to_string(&self.hosts_path) {
             Ok(current) => current,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(err) => {
                 return HostsFileStatus {
                     path: self.hosts_path.display().to_string(),
-                    expected_domain_count: managed_domains(config).len(),
+                    expected_domain_count: managed_domains_with_active_detox(
+                        config,
+                        active_detox_sessions,
+                    )
+                    .len(),
                     managed_block_present: false,
                     managed_block_compliant: false,
                     immutable_required: self.enforce_immutable,
@@ -127,20 +148,23 @@ impl HostsManager {
                 }
             }
         };
-        let expected_managed_block = render_managed_block(config);
+        let expected_managed_block =
+            render_managed_block_with_active_detox(config, active_detox_sessions);
         let expected = replace_managed_block(&current, &expected_managed_block);
         let managed_block_compliant =
             normalize_line_endings(&current) == normalize_line_endings(&expected);
         let (immutable_state, immutable_detail) = self.immutable_status();
         let detail = if managed_block_compliant {
-            "managed hosts block matches Tier 1 domain rules".to_string()
+            "managed hosts block matches Tier 1 and active Detox domain rules".to_string()
         } else {
-            "managed hosts block is missing or differs from Tier 1 domain rules".to_string()
+            "managed hosts block is missing or differs from Tier 1 and active Detox domain rules"
+                .to_string()
         };
 
         HostsFileStatus {
             path: self.hosts_path.display().to_string(),
-            expected_domain_count: managed_domains(config).len(),
+            expected_domain_count: managed_domains_with_active_detox(config, active_detox_sessions)
+                .len(),
             managed_block_present: managed_block_present(&current),
             managed_block_compliant,
             immutable_required: self.enforce_immutable,
@@ -207,7 +231,14 @@ impl HostsManager {
 }
 
 pub fn render_managed_block(config: &Config) -> String {
-    let domains = managed_domains(config);
+    render_managed_block_with_active_detox(config, &[])
+}
+
+pub fn render_managed_block_with_active_detox(
+    config: &Config,
+    active_detox_sessions: &[DetoxSession],
+) -> String {
+    let domains = managed_domains_with_active_detox(config, active_detox_sessions);
 
     let mut block = String::from(BEGIN_MARKER);
     block.push('\n');
@@ -232,26 +263,47 @@ fn managed_domains(config: &Config) -> BTreeSet<String> {
         .iter()
         .filter(|rule| rule.tier == RuleTier::Hard)
     {
-        for pattern in rule
-            .patterns
-            .iter()
-            .filter(|pattern| pattern.kind == RulePatternKind::Domain)
-        {
-            let domain = pattern
-                .value
-                .trim()
-                .trim_end_matches('.')
-                .to_ascii_lowercase();
-            if !domain.is_empty() {
-                domains.insert(domain.clone());
-                if pattern.match_subdomains && !domain.starts_with("www.") {
-                    domains.insert(format!("www.{domain}"));
-                }
+        add_rule_domains(&mut domains, rule);
+    }
+
+    domains
+}
+
+fn managed_domains_with_active_detox(
+    config: &Config,
+    active_detox_sessions: &[DetoxSession],
+) -> BTreeSet<String> {
+    let mut domains = managed_domains(config);
+
+    for session in active_detox_sessions {
+        for rule_id in &session.site_rule_ids {
+            if let Some(rule) = config.rules.iter().find(|rule| rule.id == *rule_id) {
+                add_rule_domains(&mut domains, rule);
             }
         }
     }
 
     domains
+}
+
+fn add_rule_domains(domains: &mut BTreeSet<String>, rule: &RuleConfig) {
+    for pattern in rule
+        .patterns
+        .iter()
+        .filter(|pattern| pattern.kind == RulePatternKind::Domain)
+    {
+        let domain = pattern
+            .value
+            .trim()
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        if !domain.is_empty() {
+            domains.insert(domain.clone());
+            if pattern.match_subdomains && !domain.starts_with("www.") {
+                domains.insert(format!("www.{domain}"));
+            }
+        }
+    }
 }
 
 fn replace_managed_block(current: &str, managed_block: &str) -> String {
@@ -397,7 +449,8 @@ fn command_error(command: &str, args: &[&str], path: &Path, output: Output) -> s
 #[cfg(test)]
 mod tests {
     use super::{HostsImmutableState, HostsManager, HostsRepairStatus};
-    use focus_core::Config;
+    use chrono::{TimeZone, Utc};
+    use focus_core::{Config, DetoxSession};
 
     #[test]
     fn repairs_hosts_managed_block_and_preserves_user_content() {
@@ -501,5 +554,73 @@ mod tests {
         assert!(status.managed_block_present);
         assert!(status.managed_block_compliant);
         assert_eq!(status.immutable_state, HostsImmutableState::NotRequired);
+    }
+
+    #[test]
+    fn includes_active_detox_site_rule_domains_and_removes_them_after_expiry() {
+        let config = Config::from_toml_str(
+            r#"
+            [[rules]]
+            id = "hard"
+            name = "Hard"
+            tier = "hard"
+            patterns = [
+              { kind = "domain", value = "instagram.com", match_subdomains = true }
+            ]
+
+            [[rules]]
+            id = "detox-controlled"
+            name = "Detox controlled"
+            tier = "controlled_access"
+            patterns = [
+              { kind = "domain", value = "youtube.com", match_subdomains = true },
+              { kind = "url_contains", value = "shorts", match_subdomains = false }
+            ]
+            "#,
+        )
+        .expect("config should parse");
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let hosts_path = temp.path().join("hosts");
+        let manager = HostsManager::new(&hosts_path);
+        let detox_session = DetoxSession {
+            id: "detox-1".to_string(),
+            name: Some("Deep work".to_string()),
+            starts_at: Utc
+                .with_ymd_and_hms(2026, 5, 24, 20, 0, 0)
+                .single()
+                .expect("timestamp should be valid"),
+            ends_at: Utc
+                .with_ymd_and_hms(2026, 5, 24, 21, 0, 0)
+                .single()
+                .expect("timestamp should be valid"),
+            cancelled_at: None,
+            site_rule_ids: vec!["detox-controlled".to_string()],
+            app_rule_ids: Vec::new(),
+        };
+
+        assert_eq!(
+            manager
+                .verify_and_repair_with_active_detox(&config, &[detox_session])
+                .expect("repair should work"),
+            HostsRepairStatus::Repaired
+        );
+        let contents = std::fs::read_to_string(&hosts_path).expect("hosts should exist");
+        assert!(contents.contains("0.0.0.0 instagram.com"));
+        assert!(contents.contains("0.0.0.0 youtube.com"));
+        assert!(contents.contains("0.0.0.0 www.youtube.com"));
+        assert!(!contents.contains("shorts"));
+        let status = manager.status_with_active_detox(&config, &[]);
+        assert_eq!(status.expected_domain_count, 2);
+
+        assert_eq!(
+            manager
+                .verify_and_repair_with_active_detox(&config, &[])
+                .expect("repair should work"),
+            HostsRepairStatus::Repaired
+        );
+        let contents = std::fs::read_to_string(&hosts_path).expect("hosts should exist");
+        assert!(contents.contains("0.0.0.0 instagram.com"));
+        assert!(!contents.contains("0.0.0.0 youtube.com"));
+        assert!(!contents.contains("0.0.0.0 www.youtube.com"));
     }
 }
