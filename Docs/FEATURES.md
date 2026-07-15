@@ -218,7 +218,7 @@ proven.
   - create/update/delete app rules
   - create/update/delete schedules
   - start/cancel/list Detox sessions
-  - recent events
+  - log summary from the plain daemon event log
   - running apps
   - evaluate URL
   - request unlock
@@ -272,7 +272,7 @@ flags.
   - Detox
   - Schedules
   - Statistics
-  - Admin
+  - Settings
 - Overview dashboard for daemon, block tiers, and system status.
 - First-run setup panel.
 - URL probe form.
@@ -286,17 +286,20 @@ flags.
 - Create app rules from detected running apps.
 - Schedule CRUD and weekly grid.
 - Detox start/cancel/history UI.
-- Statistics view with event mix and recent events.
-- Admin health checks.
-- Admin Tier 1 edit key display and unlock form.
-- Admin uninstall phrase display and uninstall action.
+- Statistics view with total and event-kind counts parsed from the plain daemon
+  event log.
+- Plain daemon event log at `/etc/blockuntu/blockuntu.log`.
+- Settings health and browser-integration checks.
+- Settings Tier 1 edit key display and unlock form.
+- Settings policy TOML import/export and uninstall action.
+- Local Settings preferences for refresh interval and restoring the last selected page.
 - GUI-level error formatting.
 - Tray icon support.
 - Closing the window hides it to the tray instead of quitting.
 - Tray actions:
   - show window
   - open Detox
-  - open Admin
+  - open Settings
   - refresh status
   - quit GUI
 - Tray status items for daemon, enforcement, and active Detox count.
@@ -327,8 +330,8 @@ allowances.
 - Browser heartbeat metadata includes browser, extension ID, and extension  
 version.
 - System health checks in the GUI.
-- Recent event log view.
-- Event mix summary in the Statistics view.
+- Statistics totals and event-kind counts parsed from the plain daemon event
+  log.
 - Structured event logging for policy edits, enforcement changes, unlocks,  
 Detox, URL blocks, and uninstall preparation.
 

@@ -8,7 +8,7 @@ development/admin helpers.
 
 ## Debian Package Uninstall
 
-For package installs, use the GUI Admin tab when possible. Type either valid
+For package installs, use the GUI Settings page when possible. Type either valid
 uninstall phrase and run the uninstall action.
 
 The GUI validates the phrase locally, then runs:

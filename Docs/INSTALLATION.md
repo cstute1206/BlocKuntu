@@ -59,13 +59,13 @@ shells receive the `blockuntu` socket-group membership.
 
 When the GUI is running, closing the window hides it to the BlocKuntu tray icon
 instead of stopping the GUI process. Use the tray menu to show the window,
-open Detox/Admin, refresh daemon status, or quit only the GUI. Enforcement
+open Detox/Settings, refresh daemon status, or quit only the GUI. Enforcement
 cannot be stopped from the tray, GUI, or daemon RPC. GNOME sessions may need
 AppIndicator/KStatusNotifierItem support before the tray icon is visible; KDE
 Plasma, XFCE, Cinnamon, MATE, and Ubuntu-style GNOME sessions are typically the
 smoother path.
 
-For Debian-package installs, uninstall through the GUI Admin tab when possible:
+For Debian-package installs, uninstall through the GUI Settings page when possible:
 type the first-run uninstall phrase or the system recovery phrase exactly and
 run the uninstall action. The Debian package creates the recovery phrase at
 `/etc/blockuntu/uninstall-recovery.txt` with `root:blockuntu` ownership and
@@ -86,7 +86,7 @@ behavior.
 The Debian package also creates a Tier 1 edit key at
 `/etc/blockuntu/tier1-edit-key.txt` with `root:blockuntu` ownership and `0640`
 permissions. The GUI shows this key in the first-run panel. Enter it in the
-Admin tab to unlock currently active Tier 1 site-list edits for five minutes.
+Settings page to unlock currently active Tier 1 site-list edits for five minutes.
 
 The runtime layout table below describes the scripted/manual production install
 under `/usr/local`. The Debian package uses Debian package paths instead,
@@ -141,6 +141,7 @@ Runtime layout:
 | Daemon binary | `/usr/local/bin/blockuntud` |
 | Native host binary | `/usr/local/bin/blockuntu-native` |
 | Config | `/etc/blockuntu/config.toml` |
+| Event log | `/etc/blockuntu/blockuntu.log` |
 | SQLite database | `/var/lib/blockuntu/blockuntu.sqlite3` |
 | Daemon socket | `/run/blockuntu/blockuntud.sock` |
 | Hosts fallback | `/etc/hosts` |
@@ -372,8 +373,8 @@ sudo usermod -aG blockuntu "$USER"
 Then log out and back in, open the GUI once for the first-run overview, and
 store the uninstall phrase shown there. The package also keeps a system recovery
 phrase at `/etc/blockuntu/uninstall-recovery.txt`; either phrase can be typed
-into the GUI Admin uninstall field. Also store the Tier 1 edit key shown there;
-the Admin tab can use it to unlock active Tier 1 site-list edits for five
+into the GUI Settings uninstall field. Also store the Tier 1 edit key shown there;
+the Settings page can use it to unlock active Tier 1 site-list edits for five
 minutes. Install and enable the browser extension manually, then restart the
 browser. The daemon writes the matching managed policy after the first heartbeat.
 Closing the GUI window keeps BlocKuntu available from the tray icon. On vanilla
@@ -677,7 +678,7 @@ If policies or manifests changed, restart the affected browser.
 
 ## Uninstall
 
-For a Debian package install, use the GUI Admin uninstall action and type either
+For a Debian package install, use the GUI Settings uninstall action and type either
 the first-run uninstall phrase or the system recovery phrase exactly. The
 recovery phrase is stored at `/etc/blockuntu/uninstall-recovery.txt`. The GUI
 uses `pkexec` to run:

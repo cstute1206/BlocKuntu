@@ -10,10 +10,23 @@ import type {
   ScheduleDay,
   ScheduleWindow
 } from "./types";
+import type { ViewId } from "./types";
 
 export { formatError } from "./errors";
 
 const firstRunOverviewKey = "blockuntu.firstRunOverviewDismissed";
+const applicationUiPreferencesKey = "blockuntu.applicationUiPreferences";
+const lastSelectedViewKey = "blockuntu.lastSelectedView";
+
+export interface ApplicationUiPreferences {
+  restoreLastSelectedPage: boolean;
+  refreshIntervalSeconds: 5 | 15 | 30 | 60;
+}
+
+export const defaultApplicationUiPreferences: ApplicationUiPreferences = {
+  restoreLastSelectedPage: false,
+  refreshIntervalSeconds: 5
+};
 
 export const weekdays = [
   { id: "mon", label: "Mon" },
@@ -282,6 +295,56 @@ export function clearFirstRunOverviewDismissed(): void {
   } catch {
     // localStorage can be unavailable in restricted WebView profiles.
   }
+}
+
+export function applicationUiPreferences(): ApplicationUiPreferences {
+  try {
+    const stored = window.localStorage.getItem(applicationUiPreferencesKey);
+    if (!stored) return { ...defaultApplicationUiPreferences };
+
+    const parsed = JSON.parse(stored) as Partial<ApplicationUiPreferences>;
+    const refreshIntervalSeconds = [5, 15, 30, 60].includes(parsed.refreshIntervalSeconds ?? 0)
+      ? (parsed.refreshIntervalSeconds as ApplicationUiPreferences["refreshIntervalSeconds"])
+      : defaultApplicationUiPreferences.refreshIntervalSeconds;
+
+    return {
+      restoreLastSelectedPage: parsed.restoreLastSelectedPage === true,
+      refreshIntervalSeconds
+    };
+  } catch {
+    return { ...defaultApplicationUiPreferences };
+  }
+}
+
+export function saveApplicationUiPreferences(preferences: ApplicationUiPreferences): void {
+  try {
+    window.localStorage.setItem(applicationUiPreferencesKey, JSON.stringify(preferences));
+  } catch {
+    // localStorage can be unavailable in restricted WebView profiles.
+  }
+}
+
+export function lastSelectedView(): ViewId | null {
+  try {
+    const value = window.localStorage.getItem(lastSelectedViewKey);
+    return isSavedViewId(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveLastSelectedView(view: ViewId): void {
+  try {
+    window.localStorage.setItem(lastSelectedViewKey, view);
+  } catch {
+    // localStorage can be unavailable in restricted WebView profiles.
+  }
+}
+
+function isSavedViewId(value: string | null): value is ViewId {
+  return ["overview", "blocks", "apps", "detox", "schedule", "statistics", "admin"].includes(
+    value ?? ""
+  );
 }
 
 function linkedAllowanceIdForRule(rule: AllowanceOwner): string {

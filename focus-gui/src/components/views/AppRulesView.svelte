@@ -1,5 +1,6 @@
 <script lang="ts">
   import { AlertTriangle, Gamepad2, Plus, RefreshCw, Save, Trash2 } from "@lucide/svelte";
+  import { tick } from "svelte";
   import { appMatcherKinds, appRuleIsActive, defaultAllowanceForRule } from "../../lib/ui";
   import type {
     Allowance,
@@ -63,6 +64,7 @@
     Boolean(savedAppRule && (appRuleDraftDetoxLocked || appRuleDraftActive))
   );
   let savedMatcherCount = $derived(savedAppRule?.matchers.length ?? 0);
+  let matcherValueInputs: HTMLInputElement[] = [];
   let detectedSearch = $state("");
   let detectedOpenWindowsRequested = $state(false);
   let detectedOpenWindowsOnly = $derived(
@@ -112,6 +114,24 @@
   function addAppMatcher(): void {
     if (!appRuleDraft) return;
     appRuleDraft.matchers = [...appRuleDraft.matchers, { kind: "command_name", value: "" }];
+  }
+
+  async function addAppMatcherOnEnter(event: KeyboardEvent, index: number): Promise<void> {
+    if (
+      event.key !== "Enter" ||
+      event.isComposing ||
+      !appRuleDraft ||
+      index !== appRuleDraft.matchers.length - 1 ||
+      matcherEditLocked(index) ||
+      !appRuleDraft.matchers[index].value.trim()
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    addAppMatcher();
+    await tick();
+    matcherValueInputs[appRuleDraft.matchers.length - 1]?.focus();
   }
 
   function removeAppMatcher(index: number): void {
@@ -262,7 +282,11 @@
                 <td>
                   <input
                     bind:value={matcher.value}
+                    bind:this={matcherValueInputs[index]}
                     disabled={matcherEditLocked(index)}
+                    aria-keyshortcuts="Enter"
+                    title="Press Enter in the last matcher to add another"
+                    onkeydown={(event) => addAppMatcherOnEnter(event, index)}
                   />
                 </td>
                 <td>

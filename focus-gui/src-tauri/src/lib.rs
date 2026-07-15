@@ -265,16 +265,6 @@ fn import_policy_toml(socket_path: Option<String>) -> Result<PolicyFileResult, G
 }
 
 #[tauri::command]
-fn recent_events(limit: Option<u32>, socket_path: Option<String>) -> Result<Value, GuiError> {
-    let socket = resolve_socket_path(socket_path.as_deref());
-    call_daemon(
-        &socket,
-        "recent_events",
-        json!({ "limit": limit.unwrap_or(50) }),
-    )
-}
-
-#[tauri::command]
 fn evaluate_url(url: String, socket_path: Option<String>) -> Result<Value, GuiError> {
     let socket = resolve_socket_path(socket_path.as_deref());
     call_daemon(
@@ -1355,8 +1345,13 @@ fn setup_tray(app: &mut App<Wry>) -> tauri::Result<TrayMenuState> {
     let show = MenuItem::with_id(app, TRAY_MENU_SHOW, "Show BlocKuntu", true, None::<&str>)?;
     let open_detox =
         MenuItem::with_id(app, TRAY_MENU_OPEN_DETOX, "Open Detox", true, None::<&str>)?;
-    let open_admin =
-        MenuItem::with_id(app, TRAY_MENU_OPEN_ADMIN, "Open Admin", true, None::<&str>)?;
+    let open_admin = MenuItem::with_id(
+        app,
+        TRAY_MENU_OPEN_ADMIN,
+        "Open Settings",
+        true,
+        None::<&str>,
+    )?;
     let refresh = MenuItem::with_id(app, TRAY_MENU_REFRESH, "Refresh status", true, None::<&str>)?;
     let daemon_status = MenuItem::with_id(
         app,
@@ -1566,7 +1561,6 @@ pub fn run() {
             config_snapshot,
             export_policy_toml,
             import_policy_toml,
-            recent_events,
             evaluate_url,
             request_unlock,
             uninstall_confirmation_phrase,

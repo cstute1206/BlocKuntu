@@ -1,22 +1,18 @@
 <script lang="ts">
-  import { Activity, BarChart3 } from "@lucide/svelte";
-  import type { RecentEvent } from "../../lib/types";
+  import { BarChart3, FileText } from "@lucide/svelte";
+  import type { LogSummary } from "../../lib/types";
 
   interface Props {
-    events: RecentEvent[];
+    logSummary: LogSummary | null;
   }
 
-  let { events }: Props = $props();
+  let { logSummary }: Props = $props();
 
-  let eventBuckets = $derived.by(() => {
-    const counts: Record<string, number> = {};
-    for (const event of events) {
-      counts[event.kind] = (counts[event.kind] ?? 0) + 1;
-    }
-    return Object.entries(counts)
+  let eventCounts = $derived.by(() =>
+    Object.entries(logSummary?.event_counts ?? {})
       .map(([kind, count]) => ({ kind, count }))
-      .sort((a, b) => b.count - a.count);
-  });
+      .sort((a, b) => b.count - a.count)
+  );
 
   function formatEventKind(kind: string): string {
     return kind.replace(/_/g, " ");
@@ -27,34 +23,26 @@
   <article class="panel">
     <div class="panel-title">
       <BarChart3 size={18} aria-hidden="true" />
-      <h2>Event Mix</h2>
+      <h2>Recorded events</h2>
     </div>
+    <p class="metric-value">{logSummary?.total_events ?? 0}</p>
+    <p class="muted">Counted from the BlocKuntu log file.</p>
+  </article>
+
+  <article class="panel">
+    <div class="panel-title">
+      <FileText size={18} aria-hidden="true" />
+      <h2>Log file</h2>
+    </div>
+    <code class="log-path">{logSummary?.path ?? "/etc/blockuntu/blockuntu.log"}</code>
     <div class="event-mix-list">
-      {#each eventBuckets as bucket (bucket.kind)}
+      {#each eventCounts as bucket (bucket.kind)}
         <div class="event-mix-row">
           <span title={bucket.kind}>{formatEventKind(bucket.kind)}</span>
           <strong>{bucket.count}</strong>
         </div>
       {:else}
-        <p class="empty-state">No events recorded yet.</p>
-      {/each}
-    </div>
-  </article>
-
-  <article class="panel">
-    <div class="panel-title">
-      <Activity size={18} aria-hidden="true" />
-      <h2>Recent Events</h2>
-    </div>
-    <div class="event-list">
-      {#each events.slice(0, 12) as event (event.id)}
-        <div class="event-row">
-          <span title={event.kind}>{formatEventKind(event.kind)}</span>
-          <strong title={event.target ?? "system"}>{event.target ?? "system"}</strong>
-          <time>{new Date(event.created_at).toLocaleTimeString()}</time>
-        </div>
-      {:else}
-        <p class="empty-state">No events recorded yet.</p>
+        <p class="empty-state">No log entries recorded yet.</p>
       {/each}
     </div>
   </article>

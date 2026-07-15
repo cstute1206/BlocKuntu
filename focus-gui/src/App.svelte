@@ -34,7 +34,7 @@
     evaluateUrl,
     exportPolicyToml,
     importPolicyToml,
-    recentEvents,
+    logSummary,
     runningApps as fetchRunningApps,
     requestUnlock,
     startDetox,
@@ -50,17 +50,20 @@
     upsertSiteList
   } from "./lib/api";
   import {
+    applicationUiPreferences,
+    appRuleIsActive,
     cloneAllowance,
     cloneAllowanceForRule,
     cloneAppRule,
     cloneRule,
     cloneSchedule,
     clearFirstRunOverviewDismissed,
-    appRuleIsActive,
+    defaultApplicationUiPreferences,
     detectedMatchersForRunningApp,
     defaultAllowanceForRule,
     firstRunOverviewDismissed,
     formatError,
+    lastSelectedView,
     markFirstRunOverviewDismissed,
     mergeAppMatchers,
     nextAvailableIndexedId,
@@ -68,8 +71,11 @@
     normalizeAppRuleDraft,
     normalizeRuleDraft,
     normalizeScheduleDraft,
-    ruleIsActive
+    ruleIsActive,
+    saveApplicationUiPreferences,
+    saveLastSelectedView
   } from "./lib/ui";
+  import type { ApplicationUiPreferences } from "./lib/ui";
   import type {
     Allowance,
     AppRule,
@@ -79,8 +85,8 @@
     DetoxDurationUnit,
     DetoxSession,
     EnforcementStatus,
+    LogSummary,
     PolicyFileResult,
-    RecentEvent,
     RunningApp,
     WindowDetectionStatus,
     Rule,
@@ -93,7 +99,6 @@
   } from "./lib/types";
 
   type Icon = typeof LayoutDashboard;
-  const AUTO_REFRESH_INTERVAL_MS = 5_000;
   const TRAY_OPEN_VIEW_EVENT = "blockuntu-open-view";
   const TRAY_RUNTIME_REFRESH_EVENT = "blockuntu-runtime-refresh";
   const OPERATOR_WINDOW_LABEL = "Sunday 20:00-23:59";
@@ -108,8 +113,7 @@
     { id: "apps", label: "Applications", icon: Gamepad2 },
     { id: "detox", label: "Detox", icon: Timer },
     { id: "schedule", label: "Schedule", icon: CalendarDays },
-    { id: "statistics", label: "Statistics", icon: BarChart3 },
-    { id: "admin", label: "Admin", icon: Settings }
+    { id: "statistics", label: "Statistics", icon: BarChart3 }
   ];
 
   let activeView: ViewId = $state("overview");
@@ -118,7 +122,7 @@
   let health = $state<SystemHealth | null>(null);
   let config = $state<ConfigSnapshot | null>(null);
   let detoxSessionList = $state<DetoxSession[]>([]);
-  let events = $state<RecentEvent[]>([]);
+  let logStatistics = $state<LogSummary | null>(null);
   let runningApps = $state<RunningApp[]>([]);
   let runningAppsWindowDetection = $state<WindowDetectionStatus | null>(null);
   let runningAppsLoading = $state(false);
@@ -128,7 +132,10 @@
   let lastError: string | null = $state(null);
   let lastRefresh: string | null = $state(null);
   let showFirstRunOverview = $state(false);
+  let settingsOpen = $state(false);
   let refreshInFlight = false;
+  let runtimeRefreshTimerId: number | null = null;
+  let uiPreferences = $state<ApplicationUiPreferences>({ ...defaultApplicationUiPreferences });
 
   let testUrl = $state("https://youtube.com/");
   let urlDecision = $state<DecisionResult | null>(null);
@@ -188,6 +195,7 @@
   let policyTransferMessage: string | null = $state(null);
   let policyTransferError: string | null = $state(null);
 
+
   let daemonOnline = $derived(status?.status === "ok");
   let activeViewTitle = $derived(
     navItems.find((item) => item.id === activeView)?.label ?? "Dashboard"
@@ -213,12 +221,17 @@
   ]);
 
   onMount(() => {
+    uiPreferences = applicationUiPreferences();
+    if (uiPreferences.restoreLastSelectedPage) {
+      const savedView = lastSelectedView();
+      if (savedView) {
+        setActiveView(savedView);
+      }
+    }
     const clockInterval = window.setInterval(() => {
       nowMs = Date.now();
     }, 1000);
-    const refreshInterval = window.setInterval(() => {
-      void refreshRuntime({ silent: true });
-    }, AUTO_REFRESH_INTERVAL_MS);
+    configureRuntimeRefresh(uiPreferences.refreshIntervalSeconds);
     showFirstRunOverview = !firstRunOverviewDismissed();
     void loadUninstallPhrase();
     void loadTier1EditKey();
@@ -253,7 +266,10 @@
     return () => {
       disposed = true;
       window.clearInterval(clockInterval);
-      window.clearInterval(refreshInterval);
+      if (runtimeRefreshTimerId !== null) {
+        window.clearInterval(runtimeRefreshTimerId);
+        runtimeRefreshTimerId = null;
+      }
       removeOpenViewListener?.();
       removeRuntimeRefreshListener?.();
     };
@@ -268,11 +284,29 @@
   }
 
   function setActiveView(view: ViewId): void {
+    if (view === "admin") {
+      settingsOpen = true;
+      return;
+    }
     activeView = view;
+    saveLastSelectedView(view);
     if (view === "apps" && !runningAppsLoadedOnce && !runningAppsLoading) {
       runningAppsLoadedOnce = true;
       void refreshRunningApps({ silent: true });
     }
+  }
+
+  function closeSettings(): void {
+    settingsOpen = false;
+  }
+
+  function configureRuntimeRefresh(intervalSeconds: ApplicationUiPreferences["refreshIntervalSeconds"]): void {
+    if (runtimeRefreshTimerId !== null) {
+      window.clearInterval(runtimeRefreshTimerId);
+    }
+    runtimeRefreshTimerId = window.setInterval(() => {
+      void refreshRuntime({ silent: true });
+    }, intervalSeconds * 1_000);
   }
 
   async function refreshRuntime(options: RefreshOptions = {}): Promise<void> {
@@ -289,14 +323,14 @@
         statusResult,
         enforcementResult,
         detoxResult,
-        eventsResult,
+        logSummaryResult,
         healthResult,
         tier1EditStatusResult
       ] = await Promise.allSettled([
         daemonStatus(socketArg()),
         enforcementStatus(socketArg()),
         detoxSessions(false, socketArg()),
-        recentEvents(80, socketArg()),
+        logSummary(socketArg()),
         systemHealth(socketArg()),
         tier1EditStatus(socketArg())
       ]);
@@ -305,7 +339,7 @@
         statusResult,
         enforcementResult,
         detoxResult,
-        eventsResult,
+        logSummaryResult,
         healthResult,
         tier1EditStatusResult
       );
@@ -336,7 +370,7 @@
         enforcementResult,
         configResult,
         detoxResult,
-        eventsResult,
+        logSummaryResult,
         healthResult,
         tier1EditStatusResult
       ] = await Promise.allSettled([
@@ -344,7 +378,7 @@
         enforcementStatus(socketArg()),
         configSnapshot(socketArg()),
         detoxSessions(false, socketArg()),
-        recentEvents(80, socketArg()),
+        logSummary(socketArg()),
         systemHealth(socketArg()),
         tier1EditStatus(socketArg())
       ]);
@@ -353,7 +387,7 @@
         statusResult,
         enforcementResult,
         detoxResult,
-        eventsResult,
+        logSummaryResult,
         healthResult,
         tier1EditStatusResult
       );
@@ -380,7 +414,7 @@
     statusResult: PromiseSettledResult<DaemonStatus>,
     enforcementResult: PromiseSettledResult<EnforcementStatus>,
     detoxResult: PromiseSettledResult<{ sessions: DetoxSession[] }>,
-    eventsResult: PromiseSettledResult<{ events: RecentEvent[] }>,
+    logSummaryResult: PromiseSettledResult<LogSummary>,
     healthResult: PromiseSettledResult<SystemHealth>,
     tier1EditStatusResult: PromiseSettledResult<Tier1EditStatus>
   ): void {
@@ -401,8 +435,8 @@
       detoxSessionList = detoxResult.value.sessions;
     }
 
-    if (eventsResult.status === "fulfilled") {
-      events = eventsResult.value.events;
+    if (logSummaryResult.status === "fulfilled") {
+      logStatistics = logSummaryResult.value;
     }
 
     if (healthResult.status === "fulfilled") {
@@ -629,7 +663,7 @@
     lastError = null;
     try {
       urlDecision = await evaluateUrl(testUrl, socketArg());
-      await refreshEventsOnly();
+      await refreshLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -644,7 +678,7 @@
     try {
       unlockResult = await requestUnlock(unlockTarget, unlockReason, socketArg());
       unlockReason = "";
-      await refreshEventsOnly();
+      await refreshLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -678,7 +712,7 @@
         socketArg()
       );
       detoxMessage = `Detox active until ${new Date(response.session.ends_at).toLocaleString()}.`;
-      await refreshDetoxAndEvents();
+      await refreshDetoxAndLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -693,7 +727,7 @@
     try {
       const response = await cancelDetox(id, socketArg());
       detoxMessage = `Detox ${response.session.status}.`;
-      await refreshDetoxAndEvents();
+      await refreshDetoxAndLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -701,25 +735,25 @@
     }
   }
 
-  async function refreshEventsOnly(): Promise<void> {
+  async function refreshLogStatistics(): Promise<void> {
     try {
-      events = (await recentEvents(80, socketArg())).events;
+      logStatistics = await logSummary(socketArg());
     } catch {
-      // Full refresh surfaces connection errors; lightweight event refresh does not interrupt actions.
+      // Full refresh surfaces connection errors; lightweight statistics refresh does not interrupt actions.
     }
   }
 
-  async function refreshDetoxAndEvents(): Promise<void> {
+  async function refreshDetoxAndLogStatistics(): Promise<void> {
     try {
-      const [detoxResult, eventsResult] = await Promise.allSettled([
+      const [detoxResult, logSummaryResult] = await Promise.allSettled([
         detoxSessions(false, socketArg()),
-        recentEvents(80, socketArg())
+        logSummary(socketArg())
       ]);
       if (detoxResult.status === "fulfilled") {
         detoxSessionList = detoxResult.value.sessions;
       }
-      if (eventsResult.status === "fulfilled") {
-        events = eventsResult.value.events;
+      if (logSummaryResult.status === "fulfilled") {
+        logStatistics = logSummaryResult.value;
       }
     } catch {
       // Full refresh surfaces connection errors; action handlers keep their own result state.
@@ -894,7 +928,7 @@
         response.config
       );
       ruleMessage = "Saved.";
-      await refreshEventsOnly();
+      await refreshLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -913,7 +947,7 @@
       selectedRuleId = response.config.rules[0]?.id ?? null;
       setRuleDraft(response.config.rules[0] ?? null, response.config);
       ruleMessage = "Deleted.";
-      await refreshEventsOnly();
+      await refreshLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -1010,7 +1044,7 @@
         response.config
       );
       appRuleMessage = "Saved.";
-      await refreshEventsOnly();
+      await refreshLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -1029,7 +1063,7 @@
       selectedAppRuleId = response.config.app_rules[0]?.id ?? null;
       setAppRuleDraft(response.config.app_rules[0] ?? null, response.config);
       appRuleMessage = "Deleted.";
-      await refreshEventsOnly();
+      await refreshLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -1071,7 +1105,7 @@
           response.config.schedules[0]
       );
       scheduleMessage = "Saved.";
-      await refreshEventsOnly();
+      await refreshLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -1092,7 +1126,7 @@
       selectedScheduleId = response.config.schedules[0]?.id ?? null;
       scheduleDraft = response.config.schedules[0] ? cloneSchedule(response.config.schedules[0]) : null;
       scheduleMessage = "Deleted.";
-      await refreshEventsOnly();
+      await refreshLogStatistics();
     } catch (error) {
       lastError = formatError(error);
     } finally {
@@ -1104,6 +1138,64 @@
     showFirstRunOverview = false;
     markFirstRunOverviewDismissed();
   }
+
+  function updateApplicationUiPreferences(preferences: ApplicationUiPreferences): void {
+    uiPreferences = preferences;
+    saveApplicationUiPreferences(preferences);
+    configureRuntimeRefresh(preferences.refreshIntervalSeconds);
+  }
+
+  function showFirstRunOverviewAgain(): void {
+    clearFirstRunOverviewDismissed();
+    showFirstRunOverview = true;
+    closeSettings();
+    setActiveView("overview");
+  }
+
+  async function copyDiagnostics(): Promise<void> {
+    const healthSummary = health
+      ? [
+          `Health checked: ${health.checked_at}`,
+          `Socket: ${health.socket_path}`,
+          ...health.checks.map((check) => `[${check.state.toUpperCase()}] ${check.label}: ${check.detail}`)
+        ]
+      : ["Health information is unavailable."];
+    const enforcementSummary = enforcement
+      ? [
+          "",
+          `Enforcement: ${enforcement.enforcement_state}`,
+          `Firefox policy: ${enforcement.firefox_policy.detail}`,
+          `Chrome policy: ${enforcement.chrome_policy.detail}`,
+          `Hosts file: ${enforcement.hosts_file.detail}`
+        ]
+      : [];
+
+    try {
+      await copyText([...healthSummary, ...enforcementSummary].join("\n"));
+    } catch (error) {
+      lastError = formatError(error);
+    }
+  }
+
+  async function copyText(value: string): Promise<void> {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.remove();
+    if (!copied) {
+      throw new Error("Clipboard access is unavailable.");
+    }
+  }
+
 </script>
 
 <div class="app-shell">
@@ -1129,6 +1221,16 @@
         </button>
       {/each}
     </nav>
+
+    <button
+      class="sidebar-settings"
+      class:active={settingsOpen}
+      title="Settings"
+      onclick={() => setActiveView("admin")}
+    >
+      <Settings size={18} aria-hidden="true" />
+      <span>Settings</span>
+    </button>
 
     <div class="daemon-strip" class:offline={!daemonOnline}>
       {#if daemonOnline}
@@ -1250,10 +1352,20 @@
         onRemoveScheduleDraft={removeScheduleDraft}
       />
     {:else if activeView === "statistics"}
-      <StatisticsView {events} />
-    {:else if activeView === "admin"}
-      <AdminView
+      <StatisticsView logSummary={logStatistics} />
+    {/if}
+
+    <footer class="footer-line">
+      <span>{lastRefresh ? `Last refresh ${lastRefresh}` : "Not refreshed"}</span>
+    </footer>
+  </main>
+
+  {#if settingsOpen}
+    <AdminView
         {health}
+        {enforcement}
+        runningAppsWindowDetection={runningAppsWindowDetection}
+        applicationUiPreferences={uiPreferences}
         {uninstallPhrase}
         {uninstallPhraseLoading}
         bind:uninstallPhraseInput
@@ -1262,6 +1374,7 @@
         {uninstallPhraseError}
         bind:tier1EditPhraseInput
         {tier1EditUnlocking}
+        tier1EditUnlockedUntil={tier1EditUnlockedUntil}
         {operatorWindowOpen}
         {operatorWindowLabel}
         {tier1EditMessage}
@@ -1270,15 +1383,15 @@
         {policyImportRunning}
         {policyTransferMessage}
         {policyTransferError}
+        onRefreshHealth={() => refreshAll()}
+        onCopyDiagnostics={copyDiagnostics}
         onRunUninstallBlockuntu={runUninstallBlockuntu}
         onUnlockTier1Edit={runUnlockTier1Edit}
         onExportPolicyToml={runExportPolicyToml}
         onImportPolicyToml={runImportPolicyToml}
-      />
-    {/if}
-
-    <footer class="footer-line">
-      <span>{lastRefresh ? `Last refresh ${lastRefresh}` : "Not refreshed"}</span>
-    </footer>
-  </main>
+        onUpdateApplicationUiPreferences={updateApplicationUiPreferences}
+        onShowFirstRunOverview={showFirstRunOverviewAgain}
+        onClose={closeSettings}
+    />
+  {/if}
 </div>

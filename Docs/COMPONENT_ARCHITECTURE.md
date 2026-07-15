@@ -180,7 +180,7 @@ The daemon accepts one JSON request per Unix socket connection. Current methods:
 | `config_snapshot` | GUI | Structured config for dashboards |
 | `config_file` | GUI | Load raw TOML and path |
 | `write_config_file` | GUI | Validate, atomically write, and reload TOML |
-| `recent_events` | GUI | Fetch recent SQLite event log rows |
+| `log_summary` | GUI | Parse the plain daemon event log into total and event-kind counts |
 | `evaluate_url` | Extension, GUI probe | Return allow/block decision for a URL |
 | `request_unlock` | GUI | Request a Tier 2 controlled-access unlock |
 | `record_visit_start` | Extension | Start allowed visit tracking |

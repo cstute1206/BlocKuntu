@@ -146,16 +146,10 @@ export interface DetoxMutationResponse {
 
 export type DetoxDurationUnit = "minutes" | "hours" | "days" | "weeks";
 
-export interface RecentEvent {
-  id: number;
-  kind: string;
-  target?: string | null;
-  details?: string | null;
-  created_at: string;
-}
-
-export interface EventsResponse {
-  events: RecentEvent[];
+export interface LogSummary {
+  path: string;
+  total_events: number;
+  event_counts: Record<string, number>;
 }
 
 export interface RunningAppsResponse {

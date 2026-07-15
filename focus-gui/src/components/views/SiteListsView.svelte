@@ -1,5 +1,6 @@
 <script lang="ts">
   import { AlertTriangle, ListChecks, Plus, Save, Shield, Trash2 } from "@lucide/svelte";
+  import { tick } from "svelte";
   import {
     defaultAllowanceForRule,
     patternKinds,
@@ -53,6 +54,7 @@
     )
   );
   let savedPatternCount = $derived(savedRule?.patterns.length ?? 0);
+  let patternValueInputs: HTMLInputElement[] = [];
 
   function patternIsSaved(index: number): boolean {
     return Boolean(savedRule && index < savedPatternCount);
@@ -72,6 +74,24 @@
       ...ruleDraft.patterns,
       { kind: "domain", value: "", match_subdomains: true }
     ];
+  }
+
+  async function addPatternOnEnter(event: KeyboardEvent, index: number): Promise<void> {
+    if (
+      event.key !== "Enter" ||
+      event.isComposing ||
+      !ruleDraft ||
+      index !== ruleDraft.patterns.length - 1 ||
+      patternEditLocked(index) ||
+      !ruleDraft.patterns[index].value.trim()
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    addPattern();
+    await tick();
+    patternValueInputs[ruleDraft.patterns.length - 1]?.focus();
   }
 
   function removePattern(index: number): void {
@@ -218,7 +238,11 @@
                 <td>
                   <input
                     bind:value={pattern.value}
+                    bind:this={patternValueInputs[index]}
                     disabled={patternEditLocked(index)}
+                    aria-keyshortcuts="Enter"
+                    title="Press Enter in the last pattern to add another"
+                    onkeydown={(event) => addPatternOnEnter(event, index)}
                   />
                 </td>
                 <td>

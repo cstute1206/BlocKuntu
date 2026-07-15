@@ -7,7 +7,7 @@ import type {
   DetoxMutationResponse,
   DetoxSessionsResponse,
   EnforcementStatus,
-  EventsResponse,
+  LogSummary,
   PolicyFileResult,
   RunningAppsResponse,
   AppRule,
@@ -154,8 +154,8 @@ export function cancelDetox(id: string, socketPath?: string): Promise<DetoxMutat
   ) as Promise<DetoxMutationResponse>;
 }
 
-export function recentEvents(limit = 50, socketPath?: string): Promise<EventsResponse> {
-  return invoke("recent_events", { limit, socketPath });
+export function logSummary(socketPath?: string): Promise<LogSummary> {
+  return daemonRpc("log_summary", {}, socketPath) as Promise<LogSummary>;
 }
 
 export function runningApps(socketPath?: string): Promise<RunningAppsResponse> {

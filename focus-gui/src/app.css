@@ -85,7 +85,8 @@ button {
   margin-top: 8px;
 }
 
-.nav-list button {
+.nav-list button,
+.sidebar-settings {
   align-items: center;
   background: transparent;
   border: 0;
@@ -99,9 +100,15 @@ button {
 }
 
 .nav-list button.active,
-.nav-list button:hover {
+.nav-list button:hover,
+.sidebar-settings.active,
+.sidebar-settings:hover {
   background: #27302d;
   color: #ffffff;
+}
+
+.sidebar-settings {
+  margin-top: auto;
 }
 
 .daemon-strip {
@@ -111,7 +118,7 @@ button {
   color: #c9f3df;
   display: flex;
   gap: 10px;
-  margin-top: auto;
+  margin-top: 10px;
   min-height: 44px;
   padding: 0 10px;
 }
@@ -1160,6 +1167,241 @@ pre {
   padding-top: 12px;
 }
 
+.settings-modal-backdrop {
+  align-items: center;
+  background: rgb(20 29 25 / 48%);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 22px;
+  position: fixed;
+  z-index: 100;
+}
+
+.settings-modal {
+  background: #ffffff;
+  border: 1px solid #cbd6d0;
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgb(14 24 19 / 32%);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: min(820px, calc(100vh - 44px));
+  outline: none;
+  overflow: hidden;
+  width: min(1060px, calc(100vw - 44px));
+}
+
+.settings-modal-header {
+  align-items: center;
+  border-bottom: 1px solid #dce4df;
+  display: flex;
+  justify-content: space-between;
+  padding: 16px 18px;
+}
+
+.settings-modal-header h2 {
+  font-size: 1.3rem;
+}
+
+.settings-modal-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.settings-section-nav {
+  background: #f4f7f5;
+  border-right: 1px solid #dce4df;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.settings-section-nav button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: #405049;
+  display: flex;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 10px;
+  text-align: left;
+}
+
+.settings-section-nav button:hover,
+.settings-section-nav button.active {
+  background: #dcebe3;
+  color: #145c3d;
+}
+
+.settings-modal-content {
+  overflow: auto;
+  padding: 20px;
+}
+
+.settings-panel {
+  margin: 0 auto;
+  max-width: 760px;
+}
+
+.settings-panel-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.settings-panel-header h3 {
+  color: #29332f;
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+.settings-panel-header p,
+.settings-note {
+  color: #63716b;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+.panel-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.health-summary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.settings-meta {
+  color: #63716b;
+  font-size: 0.82rem;
+  margin: 0 0 12px;
+}
+
+.settings-check-list,
+.preference-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-check {
+  align-items: start;
+  background: #f7faf8;
+  border: 1px solid #dfe7e2;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  padding: 10px;
+}
+
+.settings-check div,
+.preference-row > span,
+.log-file-note div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-check strong,
+.preference-row strong,
+.log-file-note strong {
+  color: #29332f;
+}
+
+.settings-check small,
+.repair-note p,
+.preference-row small,
+.log-file-note small {
+  color: #68766f;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.settings-check[data-state="ok"] svg {
+  color: #1f8f68;
+}
+
+.settings-check[data-state="warn"] svg,
+.settings-check[data-state="unknown"] svg {
+  color: #b87912;
+}
+
+.settings-check[data-state="error"] svg {
+  color: #c94f4f;
+}
+
+.browser-identifiers,
+.repair-note,
+.settings-action-row,
+.log-file-note,
+.log-command-list {
+  margin-top: 14px;
+}
+
+.repair-note,
+.log-file-note {
+  align-items: flex-start;
+  background: #f3f6f4;
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+}
+
+.repair-note svg,
+.log-file-note svg {
+  color: #386dc0;
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.repair-note code,
+.log-file-note code,
+.log-command-list code {
+  background: #e3ebe6;
+  border-radius: 4px;
+  color: #24322c;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+  padding: 2px 5px;
+}
+
+.preference-row {
+  align-items: center;
+  background: #f7faf8;
+  border: 1px solid #dfe7e2;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.45fr);
+  min-height: 68px;
+  padding: 10px;
+}
+
+.preference-row input[type="checkbox"] {
+  justify-self: end;
+}
+
+.log-command-list {
+  display: grid;
+  gap: 8px;
+}
+
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -1171,6 +1413,10 @@ pre {
 
   .nav-list {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .sidebar-settings {
+    margin-top: 8px;
   }
 
   .workspace {
@@ -1211,6 +1457,19 @@ pre {
   .topbar-actions {
     justify-content: flex-start;
   }
+
+  .panel-actions {
+    justify-content: flex-start;
+  }
+
+  .settings-modal {
+    height: calc(100vh - 24px);
+    width: calc(100vw - 24px);
+  }
+
+  .settings-modal-layout {
+    grid-template-columns: 180px minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 760px) {
@@ -1218,8 +1477,47 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .admin-panel-title {
-    align-items: flex-start;
-    flex-wrap: wrap;
+  .settings-modal-backdrop {
+    padding: 12px;
   }
+
+  .settings-modal-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-section-nav {
+    border-bottom: 1px solid #dce4df;
+    border-right: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: 184px;
+  }
+
+  .settings-modal-content {
+    padding: 16px;
+  }
+
+  .settings-panel-header,
+  .settings-modal-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settings-modal-header {
+    position: relative;
+  }
+
+  .settings-modal-header .icon-button {
+    position: absolute;
+    right: 16px;
+    top: 16px;
+  }
+
+  .preference-row {
+    grid-template-columns: 1fr;
+  }
+
+  .preference-row input[type="checkbox"] {
+    justify-self: start;
+  }
+
 }

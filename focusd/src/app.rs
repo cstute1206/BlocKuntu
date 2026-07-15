@@ -52,7 +52,8 @@ impl DaemonApp {
         create_parent_dir(&args.database, 0o700)?;
 
         let database_preexisting = args.database.exists();
-        let database = Database::open(&args.database)?;
+        let mut database = Database::open(&args.database)?;
+        database.set_event_log_path(&args.event_log)?;
         let policy_recovery = PolicyRecoveryManager::new(
             &args.policy_recovery,
             policy_recovery_immutable_enabled(args),
@@ -81,6 +82,7 @@ impl DaemonApp {
         let core = Arc::new(Mutex::new(FocusCore::new(config, database)?));
         let rpc_context = RpcContext::new(core.clone())
             .with_policy_recovery(policy_recovery)
+            .with_event_log_path(&args.event_log)
             .with_extension_heartbeat_timeout_seconds(args.extension_heartbeat_timeout_seconds);
         let firefox_policy = FirefoxPolicyManager::new(
             &args.firefox_policy,

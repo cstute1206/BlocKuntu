@@ -152,14 +152,14 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
     /^site list '([^']+)' is covered by an active detox session and cannot be edited$/
   );
   if (detoxSiteList) {
-    return `Website "${detoxSiteList[1]}" is covered by an active detox session. Cancel the detox session from Admin-unlocked Detox before editing it.`;
+    return `Website "${detoxSiteList[1]}" is covered by an active detox session. Unlock protected changes in Settings, then cancel the Detox session before editing it.`;
   }
 
   const detoxAppRule = normalized.match(
     /^app rule '([^']+)' is covered by an active detox session and cannot be edited$/
   );
   if (detoxAppRule) {
-    return `Application "${detoxAppRule[1]}" is covered by an active detox session. Cancel the detox session from Admin-unlocked Detox before editing it.`;
+    return `Application "${detoxAppRule[1]}" is covered by an active detox session. Unlock protected changes in Settings, then cancel the Detox session before editing it.`;
   }
 
   const activeSchedule = normalized.match(
@@ -269,7 +269,7 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   }
 
   if (normalized === "Tier 1 edit unlock is required to cancel detox") {
-    return "Unlock the Tier 1 edit window in Admin before cancelling detox.";
+    return "Unlock protected changes in Settings before cancelling Detox.";
   }
 
   if (normalized === "detox duration must be at least one minute") {

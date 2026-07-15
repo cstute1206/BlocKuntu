@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -13,6 +15,7 @@ use serde_json::{json, Value};
 
 use crate::app::{hosts_detox_sessions_for_clock, is_blockuntu_process};
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
+use crate::cli::DEFAULT_EVENT_LOG_PATH;
 use crate::clock_guard;
 use crate::error::{DaemonError, Result};
 use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
@@ -52,6 +55,7 @@ pub struct RpcContext {
     defer_firefox_policy_repair_until_heartbeat: bool,
     defer_chrome_policy_repair_until_heartbeat: bool,
     tier1_edit_key_path: PathBuf,
+    event_log_path: PathBuf,
     policy_recovery: Option<PolicyRecoveryManager>,
     trust_client_time: bool,
 }
@@ -69,6 +73,7 @@ impl RpcContext {
             defer_firefox_policy_repair_until_heartbeat: false,
             defer_chrome_policy_repair_until_heartbeat: false,
             tier1_edit_key_path: PathBuf::from(TIER1_EDIT_KEY_PATH),
+            event_log_path: PathBuf::from(DEFAULT_EVENT_LOG_PATH),
             policy_recovery: None,
             trust_client_time: false,
         }
@@ -115,6 +120,11 @@ impl RpcContext {
 
     pub fn with_tier1_edit_key_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.tier1_edit_key_path = path.into();
+        self
+    }
+
+    pub fn with_event_log_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.event_log_path = path.into();
         self
     }
 
@@ -238,12 +248,6 @@ struct ExtensionStatusParams {
     component: Option<String>,
     #[serde(default)]
     now: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RecentEventsParams {
-    #[serde(default = "default_recent_events_limit")]
-    limit: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -473,10 +477,7 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
             let params = parse_params::<DetoxSessionsParams>(params)?;
             detox_sessions_method(context, params)
         }
-        "recent_events" => {
-            let params = parse_params::<RecentEventsParams>(params)?;
-            recent_events(context, params)
-        }
+        "log_summary" => log_summary(context),
         "running_apps" => {
             let params = parse_params::<ListRunningAppsParams>(params)?;
             running_apps_method(context, params)
@@ -1392,40 +1393,35 @@ fn detox_sessions_method(context: &RpcContext, params: DetoxSessionsParams) -> R
     }))
 }
 
-fn recent_events(context: &RpcContext, params: RecentEventsParams) -> Result<Value> {
-    let limit = params.limit.clamp(1, 200);
-    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    let mut statement = core
-        .database()
-        .connection()
-        .prepare(
-            r#"
-            SELECT id, kind, target, details, created_at
-            FROM events
-            ORDER BY id DESC
-            LIMIT ?1
-            "#,
-        )
-        .map_err(focus_core::Error::from)?;
+fn log_summary(context: &RpcContext) -> Result<Value> {
+    let contents = match fs::read_to_string(&context.event_log_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
 
-    let rows = statement
-        .query_map([i64::from(limit)], |row| {
-            Ok(json!({
-                "id": row.get::<_, i64>(0)?,
-                "kind": row.get::<_, String>(1)?,
-                "target": row.get::<_, Option<String>>(2)?,
-                "details": row.get::<_, Option<String>>(3)?,
-                "created_at": row.get::<_, String>(4)?
-            }))
-        })
-        .map_err(focus_core::Error::from)?;
-
-    let mut events = Vec::new();
-    for row in rows {
-        events.push(row.map_err(focus_core::Error::from)?);
+    let mut event_counts = BTreeMap::<String, u64>::new();
+    for line in contents.lines() {
+        if let Some(kind) = event_kind_from_log_line(line) {
+            *event_counts.entry(kind).or_default() += 1;
+        }
     }
+    let total_events = event_counts.values().sum::<u64>();
 
-    Ok(json!({ "events": events }))
+    Ok(json!({
+        "path": context.event_log_path.display().to_string(),
+        "total_events": total_events,
+        "event_counts": event_counts,
+    }))
+}
+
+fn event_kind_from_log_line(line: &str) -> Option<String> {
+    let kind = line
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("kind="))?
+        .strip_prefix('"')?
+        .strip_suffix('"')?;
+    (!kind.is_empty()).then(|| kind.to_string())
 }
 
 fn running_apps_method(context: &RpcContext, params: ListRunningAppsParams) -> Result<Value> {
@@ -2227,10 +2223,6 @@ fn jsonrpc_error(id: Option<Value>, code: i64, message: &str, data: Option<Strin
     })
 }
 
-fn default_recent_events_limit() -> u32 {
-    50
-}
-
 fn default_detox_sessions_limit() -> u32 {
     50
 }
@@ -2809,6 +2801,39 @@ mod tests {
         assert_eq!(response["id"], 7);
         assert_eq!(response["result"]["decision"], "block");
         assert_eq!(response["result"]["reason"]["kind"], "hard_block");
+    }
+
+    #[test]
+    fn summarizes_events_from_the_plain_log_file() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let log_path = temp.path().join("blockuntu.log");
+        std::fs::write(
+            &log_path,
+            concat!(
+                "2026-07-15T10:00:00Z kind=\"website_blocked\" target=\"example.com\" details=None\n",
+                "2026-07-15T10:01:00Z kind=\"app_blocked\" target=\"game\" details=None\n",
+                "2026-07-15T10:02:00Z kind=\"website_blocked\" target=\"example.org\" details=None\n"
+            ),
+        )
+        .expect("event log should write");
+        let context = rpc_context().with_event_log_path(&log_path);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "log_summary",
+            "params": {}
+        });
+
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(response["result"]["path"], log_path.display().to_string());
+        assert_eq!(response["result"]["total_events"], 3);
+        assert_eq!(response["result"]["event_counts"]["website_blocked"], 2);
+        assert_eq!(response["result"]["event_counts"]["app_blocked"], 1);
     }
 
     #[test]

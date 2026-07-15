@@ -1,5 +1,8 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
@@ -13,6 +16,7 @@ use crate::{
 
 pub struct Database {
     conn: Connection,
+    event_log_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,17 +38,37 @@ impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let conn = Connection::open(path)?;
         migrate_database(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            event_log_path: None,
+        })
     }
 
     pub fn in_memory() -> Result<Self, Error> {
         let conn = Connection::open_in_memory()?;
         migrate_database(&conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            event_log_path: None,
+        })
     }
 
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    pub fn set_event_log_path(&mut self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o640)
+            .open(path)?;
+        self.event_log_path = Some(path.to_path_buf());
+        Ok(())
     }
 
     pub fn record_event(
@@ -54,11 +78,20 @@ impl Database {
         details: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<i64, Error> {
+        let created_at = format_time(now);
         self.conn.execute(
             "INSERT INTO events (kind, target, details, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![kind, target, details, format_time(now)],
+            params![kind, target, details, created_at],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+
+        if let Some(path) = &self.event_log_path {
+            if let Err(error) = append_event_log(path, &created_at, kind, target, details) {
+                eprintln!("BlocKuntu could not append to {}: {error}", path.display());
+            }
+        }
+
+        Ok(id)
     }
 
     pub fn upsert_heartbeat(
@@ -1227,6 +1260,25 @@ impl Database {
     }
 }
 
+fn append_event_log(
+    path: &Path,
+    created_at: &str,
+    kind: &str,
+    target: Option<&str>,
+    details: Option<&str>,
+) -> std::io::Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o640)
+        .open(path)?;
+    writeln!(
+        file,
+        "{created_at} kind={kind:?} target={target:?} details={details:?}"
+    )?;
+    file.sync_data()
+}
+
 pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
     conn.execute_batch(
         r#"
@@ -1816,4 +1868,33 @@ fn unlock_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnlockState> {
             })?
             .with_timezone(&Utc),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn records_events_in_plain_text_log() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let log_path = directory.path().join("blockuntu.log");
+        let mut database = Database::in_memory().expect("in-memory database");
+        database
+            .set_event_log_path(&log_path)
+            .expect("event log setup");
+
+        database
+            .record_event(
+                "website_blocked",
+                Some("https://example.com"),
+                Some("line one\nline two"),
+                Utc::now(),
+            )
+            .expect("event record");
+
+        let contents = std::fs::read_to_string(log_path).expect("event log contents");
+        assert!(contents.contains("kind=\"website_blocked\""));
+        assert!(contents.contains("target=Some(\"https://example.com\")"));
+        assert!(contents.contains("details=Some(\"line one\\nline two\")"));
+    }
 }
