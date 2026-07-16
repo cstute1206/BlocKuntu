@@ -37,6 +37,7 @@
     logSummary,
     runningApps as fetchRunningApps,
     requestUnlock,
+    scheduleActivitySummary,
     startDetox,
     systemHealth,
     tier1EditKey,
@@ -88,6 +89,7 @@
     LogSummary,
     PolicyFileResult,
     RunningApp,
+    ScheduleActivitySummary,
     WindowDetectionStatus,
     Rule,
     Schedule,
@@ -123,6 +125,7 @@
   let config = $state<ConfigSnapshot | null>(null);
   let detoxSessionList = $state<DetoxSession[]>([]);
   let logStatistics = $state<LogSummary | null>(null);
+  let scheduleActivityStatistics = $state<ScheduleActivitySummary | null>(null);
   let runningApps = $state<RunningApp[]>([]);
   let runningAppsWindowDetection = $state<WindowDetectionStatus | null>(null);
   let runningAppsLoading = $state(false);
@@ -294,6 +297,9 @@
       runningAppsLoadedOnce = true;
       void refreshRunningApps({ silent: true });
     }
+    if (view === "statistics") {
+      void refreshScheduleActivityStatistics();
+    }
   }
 
   function closeSettings(): void {
@@ -345,6 +351,9 @@
       );
       if (activeView === "apps") {
         void refreshRunningApps({ silent: true });
+      }
+      if (activeView === "statistics") {
+        void refreshScheduleActivityStatistics();
       }
       lastRefresh = new Date().toLocaleTimeString();
     } finally {
@@ -399,6 +408,9 @@
 
       if (activeView === "apps" || runningAppsLoadedOnce) {
         void refreshRunningApps({ silent: true });
+      }
+      if (activeView === "statistics") {
+        void refreshScheduleActivityStatistics();
       }
 
       lastRefresh = new Date().toLocaleTimeString();
@@ -740,6 +752,14 @@
       logStatistics = await logSummary(socketArg());
     } catch {
       // Full refresh surfaces connection errors; lightweight statistics refresh does not interrupt actions.
+    }
+  }
+
+  async function refreshScheduleActivityStatistics(): Promise<void> {
+    try {
+      scheduleActivityStatistics = await scheduleActivitySummary(socketArg());
+    } catch {
+      // Full refresh surfaces connection errors; the Statistics page stays usable with its last total.
     }
   }
 
@@ -1352,7 +1372,10 @@
         onRemoveScheduleDraft={removeScheduleDraft}
       />
     {:else if activeView === "statistics"}
-      <StatisticsView logSummary={logStatistics} />
+      <StatisticsView
+        logSummary={logStatistics}
+        scheduleActivitySummary={scheduleActivityStatistics}
+      />
     {/if}
 
     <footer class="footer-line">

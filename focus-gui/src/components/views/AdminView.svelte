@@ -2,8 +2,10 @@
   import {
     Activity,
     AlertTriangle,
+    CircleMinus,
     CheckCircle2,
     Clipboard,
+    Clock3,
     Download,
     FileText,
     Gauge,
@@ -138,9 +140,17 @@
 
   function checkIcon(check: HealthCheck): Icon {
     if (check.state === "ok") return CheckCircle2;
+    if (check.state === "inactive") return CircleMinus;
+    if (check.state === "pending") return Clock3;
     if (check.state === "error") return XCircle;
     if (check.state === "warn") return AlertTriangle;
     return Activity;
+  }
+
+  function healthStateLabel(state: HealthCheck["state"]): string {
+    if (state === "inactive") return "not running";
+    if (state === "pending") return "starting";
+    return state;
   }
 
   function formatStatus(value: boolean | undefined, enabled = "active", disabled = "not active"): string {
@@ -239,7 +249,7 @@
                 <div class="health-row" data-state={check.state}>
                   <HealthIcon size={18} aria-hidden="true" />
                   <div class="health-copy"><span>{check.label}</span><small>{check.detail}</small></div>
-                  <strong>{check.state}</strong>
+                  <strong>{healthStateLabel(check.state)}</strong>
                 </div>
               {:else}
                 <p class="empty-state">No health checks available. Refresh after the daemon starts.</p>

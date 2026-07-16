@@ -264,13 +264,23 @@ async function handleNavigation(details: BlockuntuChromeExtension.NavigationDeta
     url: details.url,
     now: new Date().toISOString(),
   })
-    .then((result) => {
+    .then(async (result) => {
       if (!isCurrentNavigation(details.tabId, token)) {
         return;
       }
 
       if (isBlockDecision(result)) {
         redirectToBlocked(details, blockReasonFromResult(result));
+        return;
+      }
+
+      if (!isMeteringActive(result)) {
+        void endVisitForTab(details.tabId);
+        return;
+      }
+
+      if (!(await isActiveTab(details.tabId)) || !isCurrentNavigation(details.tabId, token)) {
+        void endVisitForTab(details.tabId);
         return;
       }
 
@@ -411,6 +421,10 @@ function endVisitForTab(tabId: number): Promise<void> {
 }
 
 function heartbeatActiveVisits(): void {
+  void heartbeatActiveVisitsAsync();
+}
+
+async function heartbeatActiveVisitsAsync(): Promise<void> {
   if (blockingDisabled) {
     return;
   }
@@ -419,7 +433,13 @@ function heartbeatActiveVisits(): void {
     return;
   }
 
+  const activeTabs = await activeTabIds();
   for (const visit of activeVisits.values()) {
+    if (!activeTabs.has(visit.tabId)) {
+      void endVisitForTab(visit.tabId);
+      continue;
+    }
+
     sendRpc("record_visit_heartbeat", {
       visit_id: visit.visitId,
       now: new Date().toISOString(),
@@ -427,6 +447,29 @@ function heartbeatActiveVisits(): void {
       markBackendUnhealthy(`visit heartbeat failed: ${errorMessage(error)}`);
     });
   }
+}
+
+function queryActiveTabs(): Promise<BlockuntuChromeExtension.Tab[]> {
+  return new Promise((resolve) => {
+    chrome.tabs.query({ active: true }, (tabs) => {
+      const error = chrome.runtime.lastError;
+      if (error?.message) {
+        console.warn(`BlocKuntu failed to query active tabs: ${error.message}`);
+        resolve([]);
+        return;
+      }
+      resolve(tabs);
+    });
+  });
+}
+
+async function activeTabIds(): Promise<Set<number>> {
+  const tabs = await queryActiveTabs();
+  return new Set(tabs.flatMap((tab) => (typeof tab.id === "number" ? [tab.id] : [])));
+}
+
+async function isActiveTab(tabId: number): Promise<boolean> {
+  return (await activeTabIds()).has(tabId);
 }
 
 function nextNavigationToken(tabId: number): number {
@@ -441,6 +484,10 @@ function isCurrentNavigation(tabId: number, token: number): boolean {
 
 function isBlockDecision(result: unknown): boolean {
   return isObject(result) && result.decision === "block";
+}
+
+function isMeteringActive(result: unknown): boolean {
+  return isObject(result) && result.metering_active === true;
 }
 
 async function ensureBackendReady(): Promise<boolean> {
@@ -534,6 +581,10 @@ async function revalidateOpenTabsAsync(): Promise<void> {
     if (typeof tab.id !== "number" || typeof tab.url !== "string") {
       continue;
     }
+    if (!tab.active) {
+      void endVisitForTab(tab.id);
+      continue;
+    }
     void revalidateTab(tab.id, tab.url);
   }
 }
@@ -568,6 +619,11 @@ async function revalidateTab(tabId: number, url: string): Promise<void> {
     if (isBlockDecision(result)) {
       void endVisitForTab(tabId);
       redirectToBlocked(details, blockReasonFromResult(result));
+      return;
+    }
+
+    if (!isMeteringActive(result)) {
+      void endVisitForTab(tabId);
       return;
     }
 
@@ -684,6 +740,14 @@ chrome.webNavigation.onHistoryStateUpdated.addListener(handleBeforeNavigate);
 chrome.tabs.onRemoved.addListener((tabId: number) => {
   navigationTokens.delete(tabId);
   void endVisitForTab(tabId);
+});
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  for (const tabId of activeVisits.keys()) {
+    if (tabId !== activeInfo.tabId) {
+      void endVisitForTab(tabId);
+    }
+  }
+  revalidateOpenTabs();
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === HEARTBEAT_ALARM) {

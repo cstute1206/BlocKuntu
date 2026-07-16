@@ -39,12 +39,14 @@ declare namespace BlockuntuWebExtension {
   interface Tab {
     id?: number;
     url?: string;
+    active?: boolean;
   }
 
   interface TabsApi {
-    query(queryInfo: { url?: string | string[] }): Promise<Tab[]>;
+    query(queryInfo: { url?: string | string[]; active?: boolean }): Promise<Tab[]>;
     update(tabId: number, updateProperties: { url?: string }): Promise<unknown>;
     onRemoved: ExtensionEvent<(tabId: number) => void>;
+    onActivated: ExtensionEvent<(activeInfo: { tabId: number }) => void>;
   }
 
   interface StorageArea {

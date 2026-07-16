@@ -14,6 +14,21 @@ fn at_utc(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<F
         .expect("test timestamp is valid")
 }
 
+fn at_offset(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    offset_seconds: i32,
+) -> DateTime<FixedOffset> {
+    FixedOffset::east_opt(offset_seconds)
+        .expect("test offset is valid")
+        .with_ymd_and_hms(year, month, day, hour, minute, 0)
+        .single()
+        .expect("test timestamp is valid")
+}
+
 fn context<'a>(
     config: &'a Config,
     database: &'a Database,
@@ -1008,6 +1023,7 @@ fn overlapping_allowance_visits_are_metered_against_the_strictest_rule() {
     assert_eq!(visit.rule_id.as_deref(), Some("strict-controlled"));
 
     let exhausted_ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 2));
+    record_visit_heartbeat(visit.id, &exhausted_ctx).expect("heartbeat should record");
     assert_eq!(
         evaluate_url("https://overlap.example/watch", &exhausted_ctx),
         Decision::Block(BlockReason::ControlledAccess {
@@ -1722,6 +1738,153 @@ fn corrupt_and_unsafe_configurations_fail_safely() {
         "#,
     );
     assert!(zero_strict_grace.is_err());
+}
+
+#[test]
+fn site_allowances_charge_only_confirmed_time_inside_schedule_windows() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "daily"
+        daily_minutes = 30
+
+        [[schedules]]
+        id = "split-workday"
+
+        [[schedules.windows]]
+        weekday = "mon"
+        start = "09:00"
+        end = "10:00"
+
+        [[schedules.windows]]
+        weekday = "mon"
+        start = "11:00"
+        end = "12:00"
+
+        [[rules]]
+        id = "scheduled-site"
+        name = "Scheduled site"
+        tier = "controlled_access"
+        schedule_ids = ["split-workday"]
+        allowance_id = "daily"
+        patterns = [
+          { kind = "domain", value = "scheduled.example", match_subdomains = false }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+
+    let start_ctx = context(&config, &database, at_utc(2026, 5, 18, 9, 45));
+    let visit = record_visit_start("https://scheduled.example/", "firefox:7", &start_ctx)
+        .expect("visit should start");
+    let after_first_window = context(&config, &database, at_utc(2026, 5, 18, 10, 5));
+    record_visit_heartbeat(visit.id, &after_first_window).expect("heartbeat should record");
+
+    let second_window_start = context(&config, &database, at_utc(2026, 5, 18, 11, 0));
+    assert_eq!(
+        evaluate_url("https://scheduled.example/", &second_window_start),
+        Decision::Allow
+    );
+
+    let exhausted_at = context(&config, &database, at_utc(2026, 5, 18, 11, 15));
+    record_visit_heartbeat(visit.id, &exhausted_at).expect("heartbeat should record");
+    assert_eq!(
+        evaluate_url("https://scheduled.example/", &exhausted_at),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id: "scheduled-site".to_string(),
+            rule_name: "Scheduled site".to_string(),
+            reason: ControlledBlockReason::AllowanceExhausted,
+        })
+    );
+}
+
+#[test]
+fn stale_site_visits_stop_charging_at_the_last_heartbeat() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "daily"
+        daily_minutes = 30
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
+
+        [[rules]]
+        id = "stale-site"
+        name = "Stale site"
+        tier = "controlled_access"
+        schedule_ids = ["always"]
+        allowance_id = "daily"
+        patterns = [
+          { kind = "domain", value = "stale.example", match_subdomains = false }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+
+    let start_ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    let visit = record_visit_start("https://stale.example/", "firefox:8", &start_ctx)
+        .expect("visit should start");
+    let heartbeat_ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 10));
+    record_visit_heartbeat(visit.id, &heartbeat_ctx).expect("heartbeat should record");
+
+    let after_extension_stops = context(&config, &database, at_utc(2026, 5, 18, 10, 31));
+    assert_eq!(
+        evaluate_url("https://stale.example/", &after_extension_stops),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn site_allowances_reset_at_local_midnight() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "daily"
+        daily_minutes = 30
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
+
+        [[rules]]
+        id = "local-day-site"
+        name = "Local day site"
+        tier = "controlled_access"
+        schedule_ids = ["always"]
+        allowance_id = "daily"
+        patterns = [
+          { kind = "domain", value = "local-day.example", match_subdomains = false }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+
+    let start_ctx = context(&config, &database, at_offset(2026, 5, 18, 23, 0, 7_200));
+    let visit = record_visit_start("https://local-day.example/", "firefox:9", &start_ctx)
+        .expect("visit should start");
+    let end_ctx = context(&config, &database, at_offset(2026, 5, 18, 23, 30, 7_200));
+    record_visit_end(visit.id, &end_ctx).expect("visit should end");
+
+    assert!(evaluate_url("https://local-day.example/", &end_ctx).is_block());
+
+    let next_local_day = context(&config, &database, at_offset(2026, 5, 19, 0, 5, 7_200));
+    assert_eq!(
+        evaluate_url("https://local-day.example/", &next_local_day),
+        Decision::Allow
+    );
 }
 
 #[test]

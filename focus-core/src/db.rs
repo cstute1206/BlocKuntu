@@ -5,13 +5,13 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, SecondsFormat, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
     AllowanceConfig, AppMatcherConfig, AppMatcherKind, AppRuleConfig, Config, ConfigError,
     DetoxSession, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier, ScheduleConfig,
-    ScheduleDay, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockState, VisitState,
+    ScheduleDay, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockState, VisitState, Weekday,
 };
 
 pub struct Database {
@@ -27,10 +27,17 @@ pub struct HeartbeatState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleActivityTotal {
+    pub schedule_id: String,
+    pub total_active_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VisitUsage {
     pub rule_id: Option<String>,
     pub url: String,
     pub started_at: DateTime<Utc>,
+    pub last_heartbeat_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
 }
 
@@ -92,6 +99,78 @@ impl Database {
         }
 
         Ok(id)
+    }
+
+    pub fn sync_schedule_activity_totals(
+        &self,
+        schedules: &[ScheduleConfig],
+        now: DateTime<FixedOffset>,
+    ) -> Result<Vec<ScheduleActivityTotal>, Error> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let now_utc = now.with_timezone(&Utc);
+        let accounted_until = format_time(now_utc);
+        let mut totals = Vec::with_capacity(schedules.len());
+
+        for schedule in schedules {
+            let previous = transaction
+                .query_row(
+                    r#"
+                    SELECT total_active_seconds, accounted_until
+                    FROM schedule_activity_totals
+                    WHERE schedule_id = ?1
+                    "#,
+                    params![schedule.id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+
+            let total_active_seconds = match previous {
+                Some((total, previous_accounted_until)) => {
+                    let previous_accounted_until = parse_time(&previous_accounted_until)?;
+                    if now_utc <= previous_accounted_until {
+                        total
+                    } else {
+                        let elapsed = schedule_active_seconds_between(
+                            schedule,
+                            previous_accounted_until.with_timezone(now.offset()),
+                            now,
+                        );
+                        let total = total.saturating_add(elapsed);
+                        transaction.execute(
+                            r#"
+                            UPDATE schedule_activity_totals
+                            SET total_active_seconds = ?2, accounted_until = ?3
+                            WHERE schedule_id = ?1
+                            "#,
+                            params![schedule.id, total, accounted_until],
+                        )?;
+                        total
+                    }
+                }
+                None => {
+                    transaction.execute(
+                        r#"
+                        INSERT INTO schedule_activity_totals (
+                            schedule_id,
+                            total_active_seconds,
+                            accounted_until
+                        )
+                        VALUES (?1, 0, ?2)
+                        "#,
+                        params![schedule.id, accounted_until],
+                    )?;
+                    0
+                }
+            };
+
+            totals.push(ScheduleActivityTotal {
+                schedule_id: schedule.id.clone(),
+                total_active_seconds,
+            });
+        }
+
+        transaction.commit()?;
+        Ok(totals)
     }
 
     pub fn upsert_heartbeat(
@@ -957,18 +1036,13 @@ impl Database {
         Ok(reasons)
     }
 
-    pub(crate) fn used_seconds_for_app_rule_on_day(
+    pub(crate) fn used_seconds_for_app_rule_between(
         &self,
         rule_id: &str,
+        period_start: DateTime<Utc>,
+        period_end: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> Result<i64, Error> {
-        let day_start = now
-            .date_naive()
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight is valid")
-            .and_utc();
-        let day_end = day_start + Duration::days(1);
-
         let mut statement = self.conn.prepare(
             r#"
             SELECT started_at, ended_at
@@ -982,9 +1056,9 @@ impl Database {
         let rows = statement.query_map(
             params![
                 rule_id,
-                format_time(day_end),
+                format_time(period_end),
                 format_time(now),
-                format_time(day_start)
+                format_time(period_start)
             ],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
         )?;
@@ -998,8 +1072,8 @@ impl Database {
                 None => now,
             };
 
-            let clamped_start = started_at.max(day_start);
-            let clamped_end = ended_at.min(now).min(day_end);
+            let clamped_start = started_at.max(period_start);
+            let clamped_end = ended_at.min(now).min(period_end);
             if clamped_end > clamped_start {
                 used_seconds += (clamped_end - clamped_start).num_seconds();
             }
@@ -1126,46 +1200,46 @@ impl Database {
         Ok(())
     }
 
-    pub(crate) fn visit_usage_for_day(&self, now: DateTime<Utc>) -> Result<Vec<VisitUsage>, Error> {
-        let day_start = now
-            .date_naive()
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight is valid")
-            .and_utc();
-        let day_end = day_start + Duration::days(1);
-
+    pub(crate) fn visit_usage_between(
+        &self,
+        period_start: DateTime<Utc>,
+        period_end: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<VisitUsage>, Error> {
         let mut statement = self.conn.prepare(
             r#"
-            SELECT rule_id, url, started_at, ended_at
+            SELECT rule_id, url, started_at, last_heartbeat_at, ended_at
             FROM visits
             WHERE started_at < ?1
-              AND COALESCE(ended_at, ?2) > ?3
+              AND COALESCE(ended_at, last_heartbeat_at, ?2) > ?3
             "#,
         )?;
 
         let rows = statement.query_map(
             params![
-                format_time(day_end),
+                format_time(period_end),
                 format_time(now),
-                format_time(day_start)
+                format_time(period_start)
             ],
             |row| {
                 Ok((
                     row.get::<_, Option<String>>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )?;
 
         let mut visits = Vec::new();
         for row in rows {
-            let (rule_id, url, started_at, ended_at) = row?;
+            let (rule_id, url, started_at, last_heartbeat_at, ended_at) = row?;
             visits.push(VisitUsage {
                 rule_id,
                 url,
                 started_at: parse_time(&started_at)?,
+                last_heartbeat_at: parse_time(&last_heartbeat_at)?,
                 ended_at: ended_at.map(|value| parse_time(&value)).transpose()?,
             });
         }
@@ -1181,6 +1255,15 @@ impl Database {
         tab_id: &str,
         now: DateTime<Utc>,
     ) -> Result<VisitState, Error> {
+        self.conn.execute(
+            r#"
+            UPDATE visits
+            SET ended_at = ?1, last_heartbeat_at = ?1
+            WHERE tab_id = ?2 AND ended_at IS NULL
+            "#,
+            params![format_time(now), tab_id],
+        )?;
+
         self.conn.execute(
             r#"
             INSERT INTO visits (rule_id, target, url, tab_id, started_at, last_heartbeat_at)
@@ -1336,6 +1419,12 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
 
         CREATE INDEX IF NOT EXISTS idx_events_kind_created
             ON events(kind, created_at);
+
+        CREATE TABLE IF NOT EXISTS schedule_activity_totals (
+            schedule_id TEXT PRIMARY KEY,
+            total_active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (total_active_seconds >= 0),
+            accounted_until TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS heartbeats (
             component TEXT PRIMARY KEY,
@@ -1690,6 +1779,96 @@ pub(crate) fn parse_time(value: &str) -> Result<DateTime<Utc>, Error> {
     Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
 }
 
+fn schedule_active_seconds_between(
+    schedule: &ScheduleConfig,
+    start: DateTime<FixedOffset>,
+    end: DateTime<FixedOffset>,
+) -> i64 {
+    if end <= start {
+        return 0;
+    }
+
+    let mut date = start
+        .date_naive()
+        .pred_opt()
+        .unwrap_or_else(|| start.date_naive());
+    let final_date = end.date_naive();
+    let mut total_seconds = 0_i64;
+
+    while date <= final_date {
+        let weekday = Weekday::from(date.weekday());
+        let mut intervals = Vec::new();
+        for window in &schedule.windows {
+            if !window.weekday.includes(weekday) {
+                continue;
+            }
+
+            let window_start = start
+                .offset()
+                .with_ymd_and_hms(
+                    date.year(),
+                    date.month(),
+                    date.day(),
+                    u32::from(window.start.hour()),
+                    u32::from(window.start.minute()),
+                    0,
+                )
+                .single()
+                .expect("fixed offsets always resolve local times");
+            let window_end_date = if window.start < window.end {
+                date
+            } else {
+                date.succ_opt()
+                    .expect("schedule dates remain representable")
+            };
+            let window_end = start
+                .offset()
+                .with_ymd_and_hms(
+                    window_end_date.year(),
+                    window_end_date.month(),
+                    window_end_date.day(),
+                    u32::from(window.end.hour()),
+                    u32::from(window.end.minute()),
+                    0,
+                )
+                .single()
+                .expect("fixed offsets always resolve local times");
+
+            let overlap_start = std::cmp::max(window_start, start);
+            let overlap_end = std::cmp::min(window_end, end);
+            if overlap_end > overlap_start {
+                intervals.push((overlap_start, overlap_end));
+            }
+        }
+
+        intervals.sort_by_key(|(interval_start, _)| *interval_start);
+        let mut active_interval: Option<(DateTime<FixedOffset>, DateTime<FixedOffset>)> = None;
+        for (interval_start, interval_end) in intervals {
+            match active_interval {
+                Some((active_start, active_end)) if interval_start <= active_end => {
+                    active_interval = Some((active_start, std::cmp::max(active_end, interval_end)));
+                }
+                Some((active_start, active_end)) => {
+                    total_seconds =
+                        total_seconds.saturating_add((active_end - active_start).num_seconds());
+                    active_interval = Some((interval_start, interval_end));
+                }
+                None => active_interval = Some((interval_start, interval_end)),
+            }
+        }
+        if let Some((active_start, active_end)) = active_interval {
+            total_seconds = total_seconds.saturating_add((active_end - active_start).num_seconds());
+        }
+
+        let Some(next_date) = date.succ_opt() else {
+            break;
+        };
+        date = next_date;
+    }
+
+    total_seconds
+}
+
 fn to_u32(label: &str, value: i64) -> Result<u32, Error> {
     value.try_into().map_err(|_| {
         ConfigError::Validation(format!(
@@ -1874,6 +2053,10 @@ fn unlock_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnlockState> {
 mod tests {
     use super::*;
 
+    fn timestamp(value: &str) -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339(value).expect("timestamp should parse")
+    }
+
     #[test]
     fn records_events_in_plain_text_log() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -1896,5 +2079,66 @@ mod tests {
         assert!(contents.contains("kind=\"website_blocked\""));
         assert!(contents.contains("target=Some(\"https://example.com\")"));
         assert!(contents.contains("details=Some(\"line one\\nline two\")"));
+    }
+
+    #[test]
+    fn schedule_activity_totals_accumulate_active_time_without_double_counting_overlaps() {
+        let database = Database::in_memory().expect("in-memory database");
+        let schedule = ScheduleConfig {
+            id: "work-hours".to_string(),
+            name: Some("Work hours".to_string()),
+            windows: vec![
+                ScheduleWindow {
+                    weekday: ScheduleDay::Workdays,
+                    start: TimeOfDay::new(9, 0).unwrap(),
+                    end: TimeOfDay::new(17, 0).unwrap(),
+                },
+                ScheduleWindow {
+                    weekday: ScheduleDay::Mon,
+                    start: TimeOfDay::new(12, 0).unwrap(),
+                    end: TimeOfDay::new(13, 0).unwrap(),
+                },
+            ],
+        };
+
+        database
+            .sync_schedule_activity_totals(
+                &[schedule.clone()],
+                timestamp("2026-07-13T08:00:00+02:00"),
+            )
+            .expect("initial schedule activity sync");
+        let totals = database
+            .sync_schedule_activity_totals(&[schedule], timestamp("2026-07-14T10:00:00+02:00"))
+            .expect("follow-up schedule activity sync");
+
+        assert_eq!(totals.len(), 1);
+        assert_eq!(totals[0].schedule_id, "work-hours");
+        assert_eq!(totals[0].total_active_seconds, 9 * 60 * 60);
+    }
+
+    #[test]
+    fn schedule_activity_totals_include_overnight_windows_started_on_the_previous_day() {
+        let database = Database::in_memory().expect("in-memory database");
+        let schedule = ScheduleConfig {
+            id: "late-night".to_string(),
+            name: None,
+            windows: vec![ScheduleWindow {
+                weekday: ScheduleDay::Fri,
+                start: TimeOfDay::new(22, 0).unwrap(),
+                end: TimeOfDay::new(2, 0).unwrap(),
+            }],
+        };
+
+        database
+            .sync_schedule_activity_totals(
+                &[schedule.clone()],
+                timestamp("2026-07-17T21:00:00+02:00"),
+            )
+            .expect("initial schedule activity sync");
+        let totals = database
+            .sync_schedule_activity_totals(&[schedule], timestamp("2026-07-18T03:00:00+02:00"))
+            .expect("follow-up schedule activity sync");
+
+        assert_eq!(totals[0].total_active_seconds, 4 * 60 * 60);
     }
 }

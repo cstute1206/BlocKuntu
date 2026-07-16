@@ -1,7 +1,9 @@
 <script lang="ts">
   import {
     AlertTriangle,
+    CircleMinus,
     CheckCircle2,
+    Clock3,
     Play,
     Search,
     Server,
@@ -20,7 +22,7 @@
     UnlockResult
   } from "../../lib/types";
 
-  type BrowserSetupState = "ok" | "warn" | "error" | "unknown";
+  type BrowserSetupState = "ok" | "inactive" | "pending" | "warn" | "error" | "unknown";
 
   interface Props {
     status: DaemonStatus | null;
@@ -126,6 +128,8 @@
 
   function setupStateLabel(state: BrowserSetupState): string {
     if (state === "ok") return "Connected";
+    if (state === "inactive") return "Browser closed";
+    if (state === "pending") return "Starting";
     if (state === "error") return "Needs attention";
     if (state === "warn") return "Install extension";
     return "Checking";
@@ -153,6 +157,10 @@
         <div class="setup-row" data-state={firefoxSetupState}>
           {#if firefoxSetupState === "ok"}
             <CheckCircle2 size={18} aria-hidden="true" />
+          {:else if firefoxSetupState === "inactive"}
+            <CircleMinus size={18} aria-hidden="true" />
+          {:else if firefoxSetupState === "pending"}
+            <Clock3 size={18} aria-hidden="true" />
           {:else if firefoxSetupState === "error"}
             <XCircle size={18} aria-hidden="true" />
           {:else}
@@ -171,6 +179,10 @@
         <div class="setup-row" data-state={chromeSetupState}>
           {#if chromeSetupState === "ok"}
             <CheckCircle2 size={18} aria-hidden="true" />
+          {:else if chromeSetupState === "inactive"}
+            <CircleMinus size={18} aria-hidden="true" />
+          {:else if chromeSetupState === "pending"}
+            <Clock3 size={18} aria-hidden="true" />
           {:else if chromeSetupState === "error"}
             <XCircle size={18} aria-hidden="true" />
           {:else}

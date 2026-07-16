@@ -18,6 +18,12 @@ pub struct ProcessInfo {
     pub window_titles: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportedBrowser {
+    Firefox,
+    Chrome,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessKillEvent {
     pub pid: u32,
@@ -177,6 +183,53 @@ impl ProcessInfo {
             window_titles: self.window_titles.clone(),
         }
     }
+}
+
+pub fn supported_browser_for_process(process: &ProcessIdentity) -> Option<SupportedBrowser> {
+    let names = [
+        process.executable_basename.as_deref(),
+        process.command_name.as_deref(),
+        process.desktop_id.as_deref(),
+    ];
+
+    if names.iter().flatten().any(|value| {
+        matches_normalized(
+            value,
+            &[
+                "firefox",
+                "firefox-esr",
+                "firefox-bin",
+                "firefox.desktop",
+                "org.mozilla.firefox.desktop",
+            ],
+        )
+    }) {
+        return Some(SupportedBrowser::Firefox);
+    }
+
+    if names.iter().flatten().any(|value| {
+        matches_normalized(
+            value,
+            &[
+                "chrome",
+                "google-chrome",
+                "google-chrome-stable",
+                "google-chrome-beta",
+                "google-chrome-unstable",
+                "google-chrome.desktop",
+                "com.google.chrome.desktop",
+            ],
+        )
+    }) {
+        return Some(SupportedBrowser::Chrome);
+    }
+
+    None
+}
+
+fn matches_normalized(value: &str, expected_values: &[&str]) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    expected_values.iter().any(|expected| value == *expected)
 }
 
 fn desktop_id_from_process_dir(process_dir: &Path) -> Option<String> {

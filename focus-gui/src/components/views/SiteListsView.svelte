@@ -196,6 +196,21 @@
       {/if}
 
       <div class="section-label">Schedules</div>
+      {#if ruleDraft.tier === "controlled_access"}
+        <p class="tier2-schedule-note">
+          Tier 2 websites block only during an attached schedule or while selected in an active
+          Detox session.
+        </p>
+        {#if ruleDraft.schedule_ids.length === 0 && !ruleDraftDetoxLocked}
+          <section class="inline-warning">
+            <AlertTriangle size={17} aria-hidden="true" />
+            <span>
+              No schedule is attached. This Tier 2 website stays inactive unless you select it
+              for Detox.
+            </span>
+          </section>
+        {/if}
+      {/if}
       <div class="chip-grid">
         {#each config?.schedules ?? [] as schedule (schedule.id)}
           <label class="chip-check">

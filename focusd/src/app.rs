@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset, Local, Utc};
 use focus_core::{
     AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Database, Decision, DetoxSession,
     EvaluationContext, FocusCore, ProcessIdentity, RuleTier, StrictModeConfig,
@@ -20,7 +20,8 @@ use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
 use crate::policy_recovery::PolicyRecoveryManager;
 use crate::process_scan::{
-    attach_detected_window_titles, kill_processes, scan_procfs, LinuxSignalKiller, ProcessInfo,
+    attach_detected_window_titles, kill_processes, scan_procfs, supported_browser_for_process,
+    LinuxSignalKiller, ProcessInfo, SupportedBrowser,
 };
 use crate::rpc::{handle_payload, RpcContext};
 use crate::socket::listener_from_systemd_or_path;
@@ -31,6 +32,11 @@ const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
 const CHROME_EXTENSION_HEARTBEAT_COMPONENT: &str = "chrome_extension";
 const STRICT_FIREFOX_MISSING_SINCE_KEY: &str = "strict_mode.firefox_missing_since";
 const STRICT_CHROME_MISSING_SINCE_KEY: &str = "strict_mode.chrome_missing_since";
+const STRICT_FIREFOX_BROWSER_SESSION_STARTED_AT_KEY: &str =
+    "strict_mode.firefox_browser_session_started_at";
+const STRICT_CHROME_BROWSER_SESSION_STARTED_AT_KEY: &str =
+    "strict_mode.chrome_browser_session_started_at";
+const MIN_BROWSER_STARTUP_HEARTBEAT_GRACE_SECONDS: i64 = 60;
 
 #[derive(Clone)]
 pub struct DaemonApp {
@@ -80,6 +86,13 @@ impl DaemonApp {
             )?;
         }
         let core = Arc::new(Mutex::new(FocusCore::new(config, database)?));
+        {
+            let core = core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+            core.database().sync_schedule_activity_totals(
+                &core.config().schedules,
+                Local::now().fixed_offset(),
+            )?;
+        }
         let rpc_context = RpcContext::new(core.clone())
             .with_policy_recovery(policy_recovery)
             .with_event_log_path(&args.event_log)
@@ -455,6 +468,7 @@ fn strict_browser_kill_details(
 
         if browser_pids.is_empty() {
             database.set_service_state(browser.missing_since_key(), "inactive", now)?;
+            database.set_service_state(browser.session_started_at_key(), "inactive", now)?;
             continue;
         }
 
@@ -475,59 +489,87 @@ fn strict_browser_unhealthy_reason(
     database: &Database,
     now: DateTime<Utc>,
 ) -> Result<Option<String>> {
-    let grace_seconds = i64::from(strict_mode.grace_seconds);
+    let session_started_at = browser_session_started_at(browser, database, now)?;
+    let startup_grace_seconds = browser_startup_grace_seconds(strict_mode);
+    let startup_elapsed_seconds = now
+        .signed_duration_since(session_started_at)
+        .num_seconds()
+        .max(0);
+    let heartbeat = database.heartbeat(browser.heartbeat_component())?;
+    let heartbeat_is_for_current_session = heartbeat
+        .as_ref()
+        .is_some_and(|heartbeat| heartbeat.last_seen_at >= session_started_at);
 
-    if let Some(heartbeat) = database.heartbeat(browser.heartbeat_component())? {
-        database.set_service_state(browser.missing_since_key(), "healthy", now)?;
-        let age_seconds = now
-            .signed_duration_since(heartbeat.last_seen_at)
-            .num_seconds()
-            .max(0);
+    // A heartbeat from a previous browser launch is deliberately not accepted
+    // here. A newly observed browser gets a bounded opportunity to start its
+    // extension and Native Messaging host before strict enforcement begins.
+    if !heartbeat_is_for_current_session {
+        database.set_service_state(
+            browser.missing_since_key(),
+            &session_started_at.to_rfc3339(),
+            now,
+        )?;
 
-        if age_seconds <= grace_seconds {
+        if startup_elapsed_seconds <= startup_grace_seconds {
             return Ok(None);
         }
 
         return Ok(Some(format!(
-            "browser={};component={};heartbeat_age_seconds={};grace_seconds={}",
+            "browser={};component={};heartbeat_missing_since_launch_seconds={};startup_grace_seconds={}",
             browser.label(),
             browser.heartbeat_component(),
-            age_seconds,
-            strict_mode.grace_seconds
+            startup_elapsed_seconds,
+            startup_grace_seconds
         )));
     }
 
-    let missing_since = database.service_state(browser.missing_since_key())?;
-    let Some(missing_since) = missing_since
-        .as_deref()
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&Utc))
-    else {
-        database.set_service_state(browser.missing_since_key(), &now.to_rfc3339(), now)?;
-        return Ok(None);
-    };
-
-    let missing_seconds = now
-        .signed_duration_since(missing_since)
+    let heartbeat = heartbeat.expect("a current-session heartbeat was checked above");
+    let grace_seconds = i64::from(strict_mode.grace_seconds);
+    database.set_service_state(browser.missing_since_key(), "healthy", now)?;
+    let age_seconds = now
+        .signed_duration_since(heartbeat.last_seen_at)
         .num_seconds()
         .max(0);
-    if missing_seconds <= grace_seconds {
+
+    if age_seconds <= grace_seconds {
         return Ok(None);
     }
 
     Ok(Some(format!(
-        "browser={};component={};heartbeat_missing_seconds={};grace_seconds={}",
+        "browser={};component={};heartbeat_age_seconds={};grace_seconds={}",
         browser.label(),
         browser.heartbeat_component(),
-        missing_seconds,
+        age_seconds,
         strict_mode.grace_seconds
     )))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SupportedBrowser {
-    Firefox,
-    Chrome,
+fn browser_session_started_at(
+    browser: SupportedBrowser,
+    database: &Database,
+    now: DateTime<Utc>,
+) -> Result<DateTime<Utc>> {
+    if let Some(started_at) = strict_browser_session_started_at(database, browser)? {
+        return Ok(started_at);
+    }
+
+    database.set_service_state(browser.session_started_at_key(), &now.to_rfc3339(), now)?;
+    Ok(now)
+}
+
+pub(crate) fn strict_browser_session_started_at(
+    database: &Database,
+    browser: SupportedBrowser,
+) -> Result<Option<DateTime<Utc>>> {
+    Ok(database
+        .service_state(browser.session_started_at_key())?
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc)))
+}
+
+pub(crate) fn browser_startup_grace_seconds(strict_mode: &StrictModeConfig) -> i64 {
+    i64::from(strict_mode.grace_seconds).max(MIN_BROWSER_STARTUP_HEARTBEAT_GRACE_SECONDS)
 }
 
 impl SupportedBrowser {
@@ -551,6 +593,13 @@ impl SupportedBrowser {
             Self::Chrome => STRICT_CHROME_MISSING_SINCE_KEY,
         }
     }
+
+    fn session_started_at_key(self) -> &'static str {
+        match self {
+            Self::Firefox => STRICT_FIREFOX_BROWSER_SESSION_STARTED_AT_KEY,
+            Self::Chrome => STRICT_CHROME_BROWSER_SESSION_STARTED_AT_KEY,
+        }
+    }
 }
 
 fn browser_required_by_strict_mode(
@@ -566,53 +615,6 @@ fn browser_required_by_strict_mode(
 fn strict_supported_browser_enforcement_enabled(strict_mode: &StrictModeConfig) -> bool {
     strict_mode.kill_supported_browser_if_extension_stale
         && (strict_mode.require_firefox_extension || strict_mode.require_chrome_extension)
-}
-
-fn supported_browser_for_process(process: &ProcessIdentity) -> Option<SupportedBrowser> {
-    let names = [
-        process.executable_basename.as_deref(),
-        process.command_name.as_deref(),
-        process.desktop_id.as_deref(),
-    ];
-
-    if names.iter().flatten().any(|value| {
-        matches_normalized(
-            value,
-            &[
-                "firefox",
-                "firefox-esr",
-                "firefox-bin",
-                "firefox.desktop",
-                "org.mozilla.firefox.desktop",
-            ],
-        )
-    }) {
-        return Some(SupportedBrowser::Firefox);
-    }
-
-    if names.iter().flatten().any(|value| {
-        matches_normalized(
-            value,
-            &[
-                "chrome",
-                "google-chrome",
-                "google-chrome-stable",
-                "google-chrome-beta",
-                "google-chrome-unstable",
-                "google-chrome.desktop",
-                "com.google.chrome.desktop",
-            ],
-        )
-    }) {
-        return Some(SupportedBrowser::Chrome);
-    }
-
-    None
-}
-
-fn matches_normalized(value: &str, expected_values: &[&str]) -> bool {
-    let value = value.trim().to_ascii_lowercase();
-    expected_values.iter().any(|expected| value == *expected)
 }
 
 pub(crate) fn is_blockuntu_process(process: &ProcessIdentity) -> bool {
@@ -862,12 +864,11 @@ mod tests {
 
     use super::{
         ensure_mandatory_app_rules, is_blockuntu_process, load_startup_policy,
-        strict_browser_kill_details, supported_browser_for_process,
-        sync_metered_app_usage_sessions, SupportedBrowser, UNSUPPORTED_BROWSER_RULE_ID,
+        strict_browser_kill_details, sync_metered_app_usage_sessions, UNSUPPORTED_BROWSER_RULE_ID,
     };
     use crate::error::DaemonError;
     use crate::policy_recovery::PolicyRecoveryManager;
-    use crate::process_scan::ProcessInfo;
+    use crate::process_scan::{supported_browser_for_process, ProcessInfo, SupportedBrowser};
 
     #[test]
     fn restores_policy_snapshot_when_database_has_no_policy() {
@@ -1077,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_mode_kills_supported_browser_after_missing_extension_grace() {
+    fn strict_mode_kills_supported_browser_after_startup_heartbeat_grace() {
         let database = Database::in_memory().expect("database should initialize");
         let strict_mode = StrictModeConfig::default();
         let first_seen = Utc
@@ -1095,35 +1096,151 @@ mod tests {
             &processes,
             strict_mode,
             &database,
-            first_seen + Duration::seconds(31),
+            first_seen + Duration::seconds(61),
         )
         .expect("strict check should pass");
         assert!(after_grace
             .get(&1234)
             .expect("firefox should be selected")
-            .contains("heartbeat_missing_seconds=31"));
+            .contains("heartbeat_missing_since_launch_seconds=61"));
     }
 
     #[test]
-    fn strict_mode_keeps_supported_browser_when_extension_heartbeat_is_fresh() {
+    fn strict_mode_does_not_kill_new_browser_for_a_stale_previous_session_heartbeat() {
         let database = Database::in_memory().expect("database should initialize");
         let strict_mode = StrictModeConfig::default();
-        let now = Utc
+        let started_at = Utc
             .with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
             .single()
             .expect("timestamp should be valid");
         database
-            .upsert_heartbeat("firefox_extension", Some("{}"), now - Duration::seconds(20))
+            .upsert_heartbeat(
+                "firefox_extension",
+                Some("{}"),
+                started_at - Duration::hours(1),
+            )
+            .expect("heartbeat should write");
+
+        let processes = [process_info(1234, "firefox")];
+        let during_startup =
+            strict_browser_kill_details(&processes, strict_mode.clone(), &database, started_at)
+                .expect("strict check should pass");
+        assert!(during_startup.is_empty());
+
+        let after_startup_grace = strict_browser_kill_details(
+            &processes,
+            strict_mode,
+            &database,
+            started_at + Duration::seconds(61),
+        )
+        .expect("strict check should pass");
+        assert!(after_startup_grace
+            .get(&1234)
+            .expect("firefox should be selected")
+            .contains("heartbeat_missing_since_launch_seconds=61"));
+    }
+
+    #[test]
+    fn strict_mode_starts_a_new_heartbeat_grace_after_browser_closes_and_reopens() {
+        let database = Database::in_memory().expect("database should initialize");
+        let strict_mode = StrictModeConfig::default();
+        let first_started_at = Utc
+            .with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let processes = [process_info(1234, "firefox")];
+
+        strict_browser_kill_details(&processes, strict_mode.clone(), &database, first_started_at)
+            .expect("initial strict check should pass");
+        database
+            .upsert_heartbeat(
+                "firefox_extension",
+                Some("{}"),
+                first_started_at + Duration::seconds(5),
+            )
+            .expect("heartbeat should write");
+
+        strict_browser_kill_details(
+            &[],
+            strict_mode.clone(),
+            &database,
+            first_started_at + Duration::seconds(10),
+        )
+        .expect("browser close should reset the session state");
+
+        let reopened_at = first_started_at + Duration::seconds(20);
+        let reopened = strict_browser_kill_details(&processes, strict_mode, &database, reopened_at)
+            .expect("reopened browser should receive startup grace");
+        assert!(reopened.is_empty());
+        assert_eq!(
+            database
+                .service_state("strict_mode.firefox_browser_session_started_at")
+                .expect("session start state should read"),
+            Some(reopened_at.to_rfc3339())
+        );
+    }
+
+    #[test]
+    fn strict_mode_keeps_supported_browser_when_extension_heartbeat_is_from_current_session() {
+        let database = Database::in_memory().expect("database should initialize");
+        let strict_mode = StrictModeConfig::default();
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let processes = [process_info(1234, "firefox")];
+
+        strict_browser_kill_details(&processes, strict_mode.clone(), &database, started_at)
+            .expect("initial strict check should pass");
+        database
+            .upsert_heartbeat(
+                "firefox_extension",
+                Some("{}"),
+                started_at + Duration::seconds(20),
+            )
             .expect("heartbeat should write");
 
         let result = strict_browser_kill_details(
-            &[process_info(1234, "firefox")],
+            &processes,
             strict_mode,
             &database,
-            now,
+            started_at + Duration::seconds(30),
         )
         .expect("strict check should pass");
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn strict_mode_still_kills_browser_when_current_session_heartbeat_becomes_stale() {
+        let database = Database::in_memory().expect("database should initialize");
+        let strict_mode = StrictModeConfig::default();
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let processes = [process_info(1234, "firefox")];
+
+        strict_browser_kill_details(&processes, strict_mode.clone(), &database, started_at)
+            .expect("initial strict check should pass");
+        database
+            .upsert_heartbeat(
+                "firefox_extension",
+                Some("{}"),
+                started_at + Duration::seconds(5),
+            )
+            .expect("heartbeat should write");
+
+        let result = strict_browser_kill_details(
+            &processes,
+            strict_mode,
+            &database,
+            started_at + Duration::seconds(36),
+        )
+        .expect("strict check should pass");
+        assert!(result
+            .get(&1234)
+            .expect("firefox should be selected")
+            .contains("heartbeat_age_seconds=31"));
     }
 
     fn process(name: &str) -> ProcessIdentity {

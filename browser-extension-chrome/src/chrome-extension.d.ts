@@ -39,11 +39,12 @@ declare namespace BlockuntuChromeExtension {
   interface Tab {
     id?: number;
     url?: string;
+    active?: boolean;
   }
 
   interface TabsApi {
     query(
-      queryInfo: { url?: string | string[] },
+      queryInfo: { url?: string | string[]; active?: boolean },
       callback: (tabs: Tab[]) => void
     ): void;
     update(
@@ -52,6 +53,7 @@ declare namespace BlockuntuChromeExtension {
       callback?: () => void
     ): void;
     onRemoved: ExtensionEvent<(tabId: number) => void>;
+    onActivated: ExtensionEvent<(activeInfo: { tabId: number }) => void>;
   }
 
   interface Alarm {

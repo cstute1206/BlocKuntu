@@ -8,6 +8,7 @@ import type {
   DetoxSessionsResponse,
   EnforcementStatus,
   LogSummary,
+  ScheduleActivitySummary,
   PolicyFileResult,
   RunningAppsResponse,
   AppRule,
@@ -156,6 +157,14 @@ export function cancelDetox(id: string, socketPath?: string): Promise<DetoxMutat
 
 export function logSummary(socketPath?: string): Promise<LogSummary> {
   return daemonRpc("log_summary", {}, socketPath) as Promise<LogSummary>;
+}
+
+export function scheduleActivitySummary(socketPath?: string): Promise<ScheduleActivitySummary> {
+  return daemonRpc(
+    "schedule_activity_summary",
+    { now: clientNow() },
+    socketPath
+  ) as Promise<ScheduleActivitySummary>;
 }
 
 export function runningApps(socketPath?: string): Promise<RunningAppsResponse> {

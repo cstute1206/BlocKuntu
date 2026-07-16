@@ -421,6 +421,16 @@ button:disabled {
   color: #1f8f68;
 }
 
+.setup-row[data-state="inactive"] svg,
+.setup-row[data-state="inactive"] strong {
+  color: #64736c;
+}
+
+.setup-row[data-state="pending"] svg,
+.setup-row[data-state="pending"] strong {
+  color: #397aa5;
+}
+
 .setup-row[data-state="warn"] svg,
 .setup-row[data-state="warn"] strong,
 .setup-row[data-state="unknown"] svg,
@@ -560,6 +570,14 @@ button:disabled {
   margin-bottom: 12px;
   min-height: 38px;
   padding: 0 10px;
+}
+
+.tier2-schedule-note,
+.statistics-note {
+  color: #63716b;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  margin: 0 0 10px;
 }
 
 .section-label {
@@ -1109,6 +1127,14 @@ th {
   background: #dff4ea;
 }
 
+.health-row[data-state="inactive"] strong {
+  background: #e8eeea;
+}
+
+.health-row[data-state="pending"] strong {
+  background: #e0f0fa;
+}
+
 .health-row[data-state="warn"] strong {
   background: #f9edce;
 }
@@ -1119,6 +1145,14 @@ th {
 
 .health-row[data-state="ok"] {
   --health-color: #1f8f68;
+}
+
+.health-row[data-state="inactive"] {
+  --health-color: #64736c;
+}
+
+.health-row[data-state="pending"] {
+  --health-color: #397aa5;
 }
 
 .health-row[data-state="warn"] {
@@ -1334,6 +1368,14 @@ pre {
 
 .settings-check[data-state="ok"] svg {
   color: #1f8f68;
+}
+
+.settings-check[data-state="inactive"] svg {
+  color: #64736c;
+}
+
+.settings-check[data-state="pending"] svg {
+  color: #397aa5;
 }
 
 .settings-check[data-state="warn"] svg,

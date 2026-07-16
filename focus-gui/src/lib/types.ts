@@ -152,6 +152,17 @@ export interface LogSummary {
   event_counts: Record<string, number>;
 }
 
+export interface ScheduleActivityTotal {
+  id: string;
+  name?: string | null;
+  total_active_seconds: number;
+}
+
+export interface ScheduleActivitySummary {
+  tracked_at: string;
+  schedules: ScheduleActivityTotal[];
+}
+
 export interface RunningAppsResponse {
   apps: RunningApp[];
   window_detection: WindowDetectionStatus;
@@ -160,7 +171,7 @@ export interface RunningAppsResponse {
 export interface HealthCheck {
   key: string;
   label: string;
-  state: "ok" | "warn" | "error" | "unknown";
+  state: "ok" | "inactive" | "pending" | "warn" | "error" | "unknown";
   detail: string;
 }
 

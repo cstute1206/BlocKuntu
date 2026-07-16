@@ -335,12 +335,18 @@ Google Chrome are the supported browser paths. Chromium, Brave, Edge, Opera,
 Vivaldi, LibreWolf, Waterfox, Epiphany, Falkon, qutebrowser, Midori, Min, Nyxt,
 and Tor Browser are treated as Tier 1 application blocks.
 
-Strict mode also protects supported browsers. When Firefox or Chrome is running
-and its required extension heartbeat is missing or stale beyond the configured
-grace period, `focusd` terminates that browser and records a
-`browser_killed_extension_stale` event. The default grace period is 30 seconds.
-The stronger network fallback remains future work; see
+Strict mode also protects supported browsers. When Firefox or Chrome is newly
+observed, `focusd` records a browser-session start and allows at least 60
+seconds for a heartbeat produced by that launch. A heartbeat from a previous
+browser session does not satisfy this requirement. Once a current-session
+heartbeat has arrived, a missing or stale heartbeat beyond the configured
+grace period causes `focusd` to terminate that browser and record a
+`browser_killed_extension_stale` event. The default ongoing-heartbeat grace
+period is 30 seconds. The stronger network fallback remains future work; see
 `Docs/TODO.md`.
+
+The GUI reports this lifecycle as browser closed, starting, connected, or
+needs attention. A closed browser is neutral: it does not need a heartbeat.
 
 ## Development Connections
 

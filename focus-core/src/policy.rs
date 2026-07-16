@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, FixedOffset, TimeZone, Timelike, Utc};
 use url::Url;
 
 use crate::{
@@ -138,6 +138,16 @@ impl<'a> PolicyEngine<'a> {
         controlled_block
             .map(|(decision, _)| decision)
             .unwrap_or(Decision::Allow)
+    }
+
+    pub fn site_usage_is_metered(&self, url: &str, context: &EvaluationContext<'_>) -> bool {
+        let Ok(parsed) = NormalizedUrl::parse(url) else {
+            return false;
+        };
+
+        self.visit_rule_for_url(&parsed, context)
+            .and_then(|rule| self.rule_allowance_minutes(rule))
+            .is_some()
     }
 
     pub fn request_unlock(
@@ -361,11 +371,17 @@ impl<'a> PolicyEngine<'a> {
 
         let used_seconds = match usage {
             ControlledUsage::SiteRule(rule) => {
-                self.used_seconds_for_site_rule_on_day(rule, context.now_utc())
+                self.used_seconds_for_site_rule_on_day(rule, context)
             }
-            ControlledUsage::AppRule => self
-                .database
-                .used_seconds_for_app_rule_on_day(rule_id, context.now_utc()),
+            ControlledUsage::AppRule => {
+                let (day_start, day_end) = local_day_bounds(context.now);
+                self.database.used_seconds_for_app_rule_between(
+                    rule_id,
+                    day_start,
+                    day_end,
+                    context.now_utc(),
+                )
+            }
         };
 
         match used_seconds {
@@ -594,17 +610,13 @@ impl<'a> PolicyEngine<'a> {
     fn used_seconds_for_site_rule_on_day(
         &self,
         rule: &RuleConfig,
-        now: DateTime<Utc>,
+        context: &EvaluationContext<'_>,
     ) -> Result<i64, Error> {
-        let day_start = now
-            .date_naive()
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight is valid")
-            .and_utc();
-        let day_end = day_start + Duration::days(1);
+        let (day_start, day_end) = local_day_bounds(context.now);
+        let now = context.now_utc();
         let mut used_seconds = 0_i64;
 
-        for visit in self.database.visit_usage_for_day(now)? {
+        for visit in self.database.visit_usage_between(day_start, day_end, now)? {
             if visit.rule_id.as_deref() != Some(rule.id.as_str()) {
                 let parsed = match NormalizedUrl::parse(&visit.url) {
                     Ok(parsed) => parsed,
@@ -619,15 +631,118 @@ impl<'a> PolicyEngine<'a> {
                 }
             }
 
-            let ended_at = visit.ended_at.unwrap_or(now);
+            let ended_at = visit.ended_at.unwrap_or(visit.last_heartbeat_at);
             let clamped_start = visit.started_at.max(day_start);
             let clamped_end = ended_at.min(now).min(day_end);
             if clamped_end > clamped_start {
-                used_seconds += (clamped_end - clamped_start).num_seconds();
+                used_seconds += self.rule_schedule_active_seconds_between(
+                    rule,
+                    clamped_start,
+                    clamped_end,
+                    *context.now.offset(),
+                );
             }
         }
 
         Ok(used_seconds)
+    }
+
+    fn rule_schedule_active_seconds_between(
+        &self,
+        rule: &RuleConfig,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        local_offset: FixedOffset,
+    ) -> i64 {
+        if end <= start {
+            return 0;
+        }
+
+        let start = start.with_timezone(&local_offset);
+        let end = end.with_timezone(&local_offset);
+        let mut date = start
+            .date_naive()
+            .pred_opt()
+            .unwrap_or_else(|| start.date_naive());
+        let final_date = end.date_naive();
+        let mut intervals = Vec::new();
+
+        while date <= final_date {
+            let weekday = Weekday::from(date.weekday());
+            for schedule in self.config.schedules.iter().filter(|schedule| {
+                rule.schedule_ids
+                    .iter()
+                    .any(|schedule_id| schedule_id == &schedule.id)
+            }) {
+                for window in &schedule.windows {
+                    if !window.weekday.includes(weekday) {
+                        continue;
+                    }
+
+                    let window_start = local_offset
+                        .with_ymd_and_hms(
+                            date.year(),
+                            date.month(),
+                            date.day(),
+                            u32::from(window.start.hour()),
+                            u32::from(window.start.minute()),
+                            0,
+                        )
+                        .single()
+                        .expect("fixed offsets always resolve local times");
+                    let window_end_date = if window.start < window.end {
+                        date
+                    } else {
+                        date.succ_opt()
+                            .expect("schedule dates remain representable")
+                    };
+                    let window_end = local_offset
+                        .with_ymd_and_hms(
+                            window_end_date.year(),
+                            window_end_date.month(),
+                            window_end_date.day(),
+                            u32::from(window.end.hour()),
+                            u32::from(window.end.minute()),
+                            0,
+                        )
+                        .single()
+                        .expect("fixed offsets always resolve local times");
+
+                    let overlap_start = std::cmp::max(window_start, start);
+                    let overlap_end = std::cmp::min(window_end, end);
+                    if overlap_end > overlap_start {
+                        intervals.push((overlap_start, overlap_end));
+                    }
+                }
+            }
+
+            let Some(next_date) = date.succ_opt() else {
+                break;
+            };
+            date = next_date;
+        }
+
+        intervals.sort_by_key(|(interval_start, _)| *interval_start);
+        let mut total_seconds = 0_i64;
+        let mut active_interval: Option<(DateTime<FixedOffset>, DateTime<FixedOffset>)> = None;
+        for (interval_start, interval_end) in intervals {
+            match active_interval {
+                Some((active_start, active_end)) if interval_start <= active_end => {
+                    active_interval = Some((active_start, std::cmp::max(active_end, interval_end)));
+                }
+                Some((active_start, active_end)) => {
+                    total_seconds =
+                        total_seconds.saturating_add((active_end - active_start).num_seconds());
+                    active_interval = Some((interval_start, interval_end));
+                }
+                None => active_interval = Some((interval_start, interval_end)),
+            }
+        }
+        if let Some((active_start, active_end)) = active_interval {
+            total_seconds = total_seconds.saturating_add((active_end - active_start).num_seconds());
+        }
+
+        total_seconds
     }
 
     fn detox_block_for_url(
@@ -828,6 +943,10 @@ pub fn evaluate_app(process: &ProcessIdentity, context: &EvaluationContext<'_>) 
     PolicyEngine::new(context.config, context.database).evaluate_app(process, context)
 }
 
+pub fn site_usage_is_metered(url: &str, context: &EvaluationContext<'_>) -> bool {
+    PolicyEngine::new(context.config, context.database).site_usage_is_metered(url, context)
+}
+
 pub fn metered_app_rule_ids_for_process(
     process: &ProcessIdentity,
     context: &EvaluationContext<'_>,
@@ -858,6 +977,20 @@ pub fn record_visit_heartbeat(visit_id: i64, context: &EvaluationContext<'_>) ->
 
 pub fn record_visit_end(visit_id: i64, context: &EvaluationContext<'_>) -> Result<(), Error> {
     PolicyEngine::new(context.config, context.database).record_visit_end(visit_id, context)
+}
+
+fn local_day_bounds(now: DateTime<FixedOffset>) -> (DateTime<Utc>, DateTime<Utc>) {
+    let day_start = now
+        .offset()
+        .from_local_datetime(
+            &now.date_naive()
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight is valid"),
+        )
+        .single()
+        .expect("fixed offsets always resolve local times");
+    let day_end = day_start + Duration::days(1);
+    (day_start.with_timezone(&Utc), day_end.with_timezone(&Utc))
 }
 
 fn unlock_rule_from_app(rule: &AppRuleConfig, target: &str) -> Result<ResolvedUnlockRule, Error> {

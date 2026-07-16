@@ -43,7 +43,8 @@ Detox sessions, service state, and extension heartbeats.
 - URL normalization before policy evaluation.
 - Invalid URL blocking.
 - Tier 1 rules are always active when enabled.
-- Tier 2 rules are active only during linked schedule windows.
+- Tier 2 rules are active only during linked schedule windows, unless they are
+  selected in an active Detox session.
 - Multiple matching Tier 2 site rules are resolved by selecting the stricter  
 applicable rule.
 - Tier 2 strictness accounts for allowance size and pattern specificity.
@@ -288,6 +289,8 @@ flags.
 - Detox start/cancel/history UI.
 - Statistics view with total and event-kind counts parsed from the plain daemon
   event log.
+- Persistent per-schedule active-time counters that accumulate real active
+  periods across daemon restarts.
 - Plain daemon event log at `/etc/blockuntu/blockuntu.log`.
 - Settings health and browser-integration checks.
 - Settings Tier 1 edit key display and unlock form.
@@ -332,6 +335,7 @@ version.
 - System health checks in the GUI.
 - Statistics totals and event-kind counts parsed from the plain daemon event
   log.
+- Statistics cumulative active-time totals for configured schedules.
 - Structured event logging for policy edits, enforcement changes, unlocks,  
 Detox, URL blocks, and uninstall preparation.
 

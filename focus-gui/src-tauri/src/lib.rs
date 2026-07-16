@@ -124,10 +124,12 @@ struct HealthCheck {
     detail: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum HealthState {
     Ok,
+    Inactive,
+    Pending,
     Warn,
     Error,
     Unknown,
@@ -1286,8 +1288,10 @@ fn browser_extension_runtime_check(
 fn browser_extension_health_state(state: &str) -> HealthState {
     match state {
         "active" => HealthState::Ok,
+        "inactive" => HealthState::Inactive,
+        "starting" => HealthState::Pending,
         "stale" => HealthState::Error,
-        "missing" => HealthState::Warn,
+        "missing" => HealthState::Error,
         _ => HealthState::Unknown,
     }
 }
@@ -1631,5 +1635,23 @@ mod tests {
         assert!(operator_window_open_parts(Weekday::Sun, 20, 0));
         assert!(operator_window_open_parts(Weekday::Sun, 23, 59));
         assert!(!operator_window_open_parts(Weekday::Mon, 20, 0));
+    }
+
+    #[test]
+    fn browser_extension_health_maps_lifecycle_states_without_false_warnings() {
+        assert_eq!(
+            browser_extension_health_state("inactive"),
+            HealthState::Inactive
+        );
+        assert_eq!(
+            browser_extension_health_state("starting"),
+            HealthState::Pending
+        );
+        assert_eq!(browser_extension_health_state("active"), HealthState::Ok);
+        assert_eq!(
+            browser_extension_health_state("missing"),
+            HealthState::Error
+        );
+        assert_eq!(browser_extension_health_state("stale"), HealthState::Error);
     }
 }

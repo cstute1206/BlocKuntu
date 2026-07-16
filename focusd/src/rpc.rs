@@ -3,17 +3,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Datelike, Duration, FixedOffset, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelike, Utc};
 use focus_core::{
     evaluate_app, evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start,
-    request_unlock, AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason,
-    Decision, DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState,
-    RuleConfig, RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
+    request_unlock, site_usage_is_metered, AllowanceConfig, AppRuleConfig, BlockReason, Config,
+    ControlledBlockReason, Decision, DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore,
+    HeartbeatState, RuleConfig, RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::app::{hosts_detox_sessions_for_clock, is_blockuntu_process};
+use crate::app::{
+    browser_startup_grace_seconds, hosts_detox_sessions_for_clock, is_blockuntu_process,
+    strict_browser_session_started_at,
+};
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
 use crate::cli::DEFAULT_EVENT_LOG_PATH;
 use crate::clock_guard;
@@ -22,7 +25,8 @@ use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
 use crate::policy_recovery::PolicyRecoveryManager;
 use crate::process_scan::{
-    attach_detected_window_titles, scan_procfs, ProcessInfo, WindowTitleSupport,
+    attach_detected_window_titles, scan_procfs, supported_browser_for_process, ProcessInfo,
+    SupportedBrowser, WindowTitleSupport,
 };
 
 const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
@@ -363,6 +367,12 @@ struct DetoxSessionsParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct ScheduleActivitySummaryParams {
+    #[serde(default)]
+    now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ImportPolicyTomlParams {
     toml: String,
     #[serde(default)]
@@ -478,6 +488,10 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
             detox_sessions_method(context, params)
         }
         "log_summary" => log_summary(context),
+        "schedule_activity_summary" => {
+            let params = parse_params::<ScheduleActivitySummaryParams>(params)?;
+            schedule_activity_summary(context, params)
+        }
         "running_apps" => {
             let params = parse_params::<ListRunningAppsParams>(params)?;
             running_apps_method(context, params)
@@ -736,6 +750,32 @@ fn config_snapshot(context: &RpcContext) -> Result<Value> {
     serde_json::to_value(core.config()).map_err(DaemonError::from)
 }
 
+fn schedule_activity_summary(
+    context: &RpcContext,
+    params: ScheduleActivitySummaryParams,
+) -> Result<Value> {
+    let now = guarded_now(context, params.now.as_deref())?;
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let totals = core
+        .database()
+        .sync_schedule_activity_totals(&core.config().schedules, now)?;
+
+    Ok(json!({
+        "tracked_at": now.with_timezone(&Utc),
+        "schedules": core
+            .config()
+            .schedules
+            .iter()
+            .zip(totals)
+            .map(|(schedule, total)| json!({
+                "id": schedule.id,
+                "name": schedule.name,
+                "total_active_seconds": total.total_active_seconds,
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
 fn export_policy_toml_method(context: &RpcContext) -> Result<Value> {
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let toml = core.config().to_toml_string()?;
@@ -795,6 +835,9 @@ fn import_policy_toml_method(
 fn persist_policy_config(context: &RpcContext, core: &mut FocusCore, next: Config) -> Result<()> {
     focus_core::validate_config(&next)?;
     let previous = core.config().clone();
+    let now = Local::now().fixed_offset();
+    core.database()
+        .sync_schedule_activity_totals(&previous.schedules, now)?;
     if let Some(policy_recovery) = &context.policy_recovery {
         policy_recovery.write(&next)?;
     }
@@ -810,6 +853,8 @@ fn persist_policy_config(context: &RpcContext, core: &mut FocusCore, next: Confi
         return Err(database_error.into());
     }
     core.replace_config(next)?;
+    core.database()
+        .sync_schedule_activity_totals(&core.config().schedules, now)?;
     Ok(())
 }
 
@@ -1531,6 +1576,7 @@ fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Resul
     if !enforcement_active_from_core(&core)? {
         return Ok(json!({
             "decision": "allow",
+            "metering_active": false,
             "enforcement_state": ENFORCEMENT_UNINSTALLING
         }));
     }
@@ -1547,7 +1593,12 @@ fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Resul
         )?;
     }
 
-    Ok(decision_to_json(&decision, core.config(), now))
+    let metering_active = decision.is_allow() && site_usage_is_metered(&params.url, &eval_context);
+    let mut response = decision_to_json(&decision, core.config(), now);
+    if let Some(response) = response.as_object_mut() {
+        response.insert("metering_active".to_string(), json!(metering_active));
+    }
+    Ok(response)
 }
 
 fn request_unlock_method(context: &RpcContext, params: RequestUnlockParams) -> Result<Value> {
@@ -1674,12 +1725,14 @@ fn extension_heartbeat_method(
 fn extension_status_method(context: &RpcContext, params: ExtensionStatusParams) -> Result<Value> {
     let now = guarded_now(context, params.now.as_deref())?.with_timezone(&Utc);
     let component = extension_component(params.component.as_deref(), None, None);
+    let browser_running = extension_browser_running(component)?;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     browser_extension_status_from_core(
         &core,
         component,
         extension_heartbeat_timeout_seconds(context, component),
         now,
+        browser_running,
     )
 }
 
@@ -1688,13 +1741,22 @@ fn browser_extension_status_from_core(
     component: &str,
     heartbeat_timeout_seconds: u64,
     now: DateTime<Utc>,
+    browser_running: bool,
 ) -> Result<Value> {
     let heartbeat = core.database().heartbeat(component)?;
+    let browser = supported_browser_for_extension_component(component);
+    let session_started_at = browser_running
+        .then(|| strict_browser_session_started_at(core.database(), browser))
+        .transpose()?
+        .flatten();
     Ok(browser_extension_status_json(
         heartbeat.as_ref(),
         component,
         heartbeat_timeout_seconds,
         now,
+        browser_running,
+        session_started_at,
+        browser_startup_grace_seconds(&core.config().strict_mode),
     ))
 }
 
@@ -1703,38 +1765,17 @@ fn browser_extension_status_json(
     component: &str,
     heartbeat_timeout_seconds: u64,
     now: DateTime<Utc>,
+    browser_running: bool,
+    session_started_at: Option<DateTime<Utc>>,
+    startup_grace_seconds: i64,
 ) -> Value {
-    let Some(heartbeat) = heartbeat else {
-        let browser = browser_name_for_component(component);
-        return json!({
-            "state": "missing",
-            "component": component,
-            "browser": browser,
-            "installed_enabled": "unconfirmed",
-            "last_seen_at": Value::Null,
-            "age_seconds": Value::Null,
-            "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
-            "detail": format!(
-                "no heartbeat has been recorded; {browser} may be closed, or the extension is not installed/enabled"
-            )
-        });
-    };
-
-    let age_seconds = now
-        .signed_duration_since(heartbeat.last_seen_at)
-        .num_seconds()
-        .max(0);
-    let state = if age_seconds <= heartbeat_timeout_seconds as i64 {
-        "active"
-    } else {
-        "stale"
-    };
-    let installed_enabled = if state == "active" {
-        "confirmed"
-    } else {
-        "unconfirmed"
-    };
-    let details = heartbeat_details(heartbeat.details.as_deref());
+    let browser_label = browser_name_for_component(component);
+    let heartbeat_age_seconds = heartbeat.map(|heartbeat| {
+        now.signed_duration_since(heartbeat.last_seen_at)
+            .num_seconds()
+            .max(0)
+    });
+    let details = heartbeat.and_then(|heartbeat| heartbeat_details(heartbeat.details.as_deref()));
     let extension_id = details
         .as_ref()
         .and_then(|details| details.get("extension_id"))
@@ -1743,33 +1784,98 @@ fn browser_extension_status_json(
         .as_ref()
         .and_then(|details| details.get("extension_version"))
         .and_then(Value::as_str);
-    let browser = details
+    let browser_from_heartbeat = details
         .as_ref()
         .and_then(|details| details.get("browser"))
         .and_then(Value::as_str);
-    let detail = match state {
-        "active" => format!(
-            "recent heartbeat received {} second(s) ago; extension installation and enabled state are confirmed",
-            age_seconds
-        ),
-        _ => format!(
-            "last heartbeat was {} second(s) ago; extension installation and enabled state are no longer confirmed",
-            age_seconds
-        ),
+    let heartbeat_is_for_current_session = heartbeat
+        .zip(session_started_at)
+        .is_some_and(|(heartbeat, started_at)| heartbeat.last_seen_at >= started_at);
+    let startup_elapsed_seconds = session_started_at
+        .map(|started_at| now.signed_duration_since(started_at).num_seconds().max(0));
+    let startup_grace_remaining_seconds =
+        startup_elapsed_seconds.map(|elapsed| (startup_grace_seconds - elapsed).max(0));
+
+    let (state, detail) = if !browser_running {
+        (
+            "inactive",
+            format!("{browser_label} is not running; no extension heartbeat is expected"),
+        )
+    } else if !heartbeat_is_for_current_session {
+        let within_startup_grace = startup_elapsed_seconds
+            .map(|elapsed| elapsed <= startup_grace_seconds)
+            .unwrap_or(true);
+        if within_startup_grace {
+            let remaining_seconds =
+                startup_grace_remaining_seconds.unwrap_or(startup_grace_seconds);
+            (
+                "starting",
+                format!(
+                    "{browser_label} is starting; waiting for an extension heartbeat from this launch ({remaining_seconds} second(s) remaining)"
+                ),
+            )
+        } else {
+            (
+                "missing",
+                format!(
+                    "{browser_label} is running, but no extension heartbeat from this launch arrived within the {startup_grace_seconds}-second startup grace period"
+                ),
+            )
+        }
+    } else {
+        let age_seconds = heartbeat_age_seconds.expect("current-session heartbeat has an age");
+        if age_seconds <= heartbeat_timeout_seconds as i64 {
+            (
+                "active",
+                format!(
+                    "current-session heartbeat received {age_seconds} second(s) ago; extension installation and enabled state are confirmed"
+                ),
+            )
+        } else {
+            (
+                "stale",
+                format!(
+                    "{browser_label} is running, but its current-session heartbeat is {age_seconds} second(s) old (extension fail-closed timeout: {heartbeat_timeout_seconds} seconds)"
+                ),
+            )
+        }
     };
 
     json!({
         "state": state,
-        "component": heartbeat.component,
-        "installed_enabled": installed_enabled,
-        "last_seen_at": heartbeat.last_seen_at,
-        "age_seconds": age_seconds,
+        "component": component,
+        "installed_enabled": if heartbeat.is_some() { "confirmed" } else { "unconfirmed" },
+        "last_seen_at": heartbeat.map(|heartbeat| heartbeat.last_seen_at),
+        "age_seconds": heartbeat_age_seconds,
         "heartbeat_timeout_seconds": heartbeat_timeout_seconds,
-        "browser": browser,
+        "browser": browser_from_heartbeat.unwrap_or(browser_label),
+        "browser_running": browser_running,
+        "session_started_at": session_started_at,
+        "current_session_heartbeat": heartbeat_is_for_current_session,
+        "startup_grace_seconds": startup_grace_seconds,
+        "startup_grace_remaining_seconds": if state == "starting" {
+            startup_grace_remaining_seconds.unwrap_or(startup_grace_seconds)
+        } else {
+            0
+        },
         "extension_id": extension_id,
         "extension_version": extension_version,
         "detail": detail
     })
+}
+
+fn extension_browser_running(component: &str) -> Result<bool> {
+    let browser = supported_browser_for_extension_component(component);
+    Ok(scan_procfs(Path::new("/proc"))?
+        .iter()
+        .any(|process| supported_browser_for_process(&process.identity()) == Some(browser)))
+}
+
+fn supported_browser_for_extension_component(component: &str) -> SupportedBrowser {
+    match component {
+        CHROME_EXTENSION_HEARTBEAT_COMPONENT => SupportedBrowser::Chrome,
+        _ => SupportedBrowser::Firefox,
+    }
 }
 
 fn extension_component<'a>(
@@ -2142,12 +2248,13 @@ fn datetime_at_minute(
 }
 
 fn next_allowance_reset_at(now: DateTime<FixedOffset>) -> DateTime<FixedOffset> {
-    let now_utc = now.with_timezone(&Utc);
-    let next_utc_midnight = (now_utc.date_naive() + Duration::days(1))
+    let next_local_midnight = (now.date_naive() + Duration::days(1))
         .and_hms_opt(0, 0, 0)
-        .expect("midnight is valid")
-        .and_utc();
-    next_utc_midnight.with_timezone(now.offset())
+        .expect("midnight is valid");
+    now.offset()
+        .from_local_datetime(&next_local_midnight)
+        .single()
+        .expect("fixed offset local time should be unambiguous")
 }
 
 fn detox_session_to_json(session: &DetoxSession, now: DateTime<Utc>) -> Value {
@@ -2612,7 +2719,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use chrono::{Duration, Local, TimeZone, Utc};
-    use focus_core::{Config, Database, FocusCore};
+    use focus_core::{Config, Database, FocusCore, HeartbeatState};
     use serde_json::{json, Value};
 
     use crate::chrome_policy::ChromePolicyManager;
@@ -2621,7 +2728,8 @@ mod tests {
     use crate::policy_recovery::PolicyRecoveryManager;
 
     use super::{
-        handle_payload, parse_optional_now, running_app_snapshots_from_processes, RpcContext,
+        browser_extension_status_json, handle_payload, parse_optional_now,
+        running_app_snapshots_from_processes, RpcContext,
     };
     use crate::process_scan::ProcessInfo;
 
@@ -2834,6 +2942,43 @@ mod tests {
         assert_eq!(response["result"]["total_events"], 3);
         assert_eq!(response["result"]["event_counts"]["website_blocked"], 2);
         assert_eq!(response["result"]["event_counts"]["app_blocked"], 1);
+    }
+
+    #[test]
+    fn accumulates_schedule_activity_across_statistics_requests() {
+        let context = active_scheduled_rpc_context();
+        let initial_request = json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "schedule_activity_summary",
+            "params": { "now": "2026-05-22T08:00:00+02:00" }
+        });
+        let initial_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&initial_request).unwrap(),
+        ))
+        .expect("initial response should parse");
+        assert_eq!(
+            initial_response["result"]["schedules"][0]["total_active_seconds"],
+            0
+        );
+
+        let later_request = json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "schedule_activity_summary",
+            "params": { "now": "2026-05-22T11:00:00+02:00" }
+        });
+        let later_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&later_request).unwrap(),
+        ))
+        .expect("later response should parse");
+
+        assert_eq!(
+            later_response["result"]["schedules"][0]["total_active_seconds"],
+            2 * 60 * 60
+        );
     }
 
     #[test]
@@ -3180,6 +3325,69 @@ mod tests {
         .expect("response should parse");
 
         assert_eq!(response["result"]["decision"], "allow");
+    }
+
+    #[test]
+    fn evaluate_url_reports_whether_an_allowed_site_should_be_metered() {
+        let context = rpc_context_with_config_toml(
+            r#"
+            [[allowances]]
+            id = "daily"
+            daily_minutes = 30
+
+            [[schedules]]
+            id = "work-hours"
+
+            [[schedules.windows]]
+            weekday = "fri"
+            start = "09:00"
+            end = "17:00"
+
+            [[rules]]
+            id = "controlled"
+            name = "Controlled"
+            tier = "controlled_access"
+            schedule_ids = ["work-hours"]
+            allowance_id = "daily"
+            patterns = [
+              { kind = "domain", value = "controlled.example", match_subdomains = true }
+            ]
+            "#,
+        );
+
+        for (id, now, expected_metering) in [
+            (41, "2026-05-22T10:30:00+02:00", true),
+            (42, "2026-05-22T18:30:00+02:00", false),
+        ] {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "evaluate_url",
+                "params": {
+                    "url": "https://controlled.example/",
+                    "now": now
+                }
+            });
+            let response: Value = serde_json::from_slice(&handle_payload(
+                &context,
+                &serde_json::to_vec(&request).unwrap(),
+            ))
+            .expect("response should parse");
+
+            assert_eq!(response["result"]["decision"], "allow");
+            assert_eq!(response["result"]["metering_active"], expected_metering);
+        }
+    }
+
+    #[test]
+    fn allowance_reset_uses_local_midnight() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-18T23:30:00+02:00")
+            .expect("timestamp should parse");
+
+        assert_eq!(
+            super::next_allowance_reset_at(now).to_rfc3339(),
+            "2026-05-19T00:00:00+02:00"
+        );
     }
 
     #[test]
@@ -4428,67 +4636,81 @@ mod tests {
 
     #[test]
     fn reports_missing_extension_heartbeat() {
-        let context = rpc_context();
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": 12,
-            "method": "extension_status",
-            "params": {
-                "now": "2026-05-22T10:00:00Z"
-            }
-        });
-        let response: Value = serde_json::from_slice(&handle_payload(
-            &context,
-            &serde_json::to_vec(&request).unwrap(),
-        ))
-        .expect("response should parse");
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 22, 10, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let response = browser_extension_status_json(
+            None,
+            "firefox_extension",
+            15,
+            now,
+            true,
+            Some(now - Duration::seconds(61)),
+            60,
+        );
 
-        assert_eq!(response["result"]["state"], "missing");
-        assert_eq!(response["result"]["installed_enabled"], "unconfirmed");
+        assert_eq!(response["state"], "missing");
+        assert_eq!(response["installed_enabled"], "unconfirmed");
+    }
+
+    #[test]
+    fn reports_closed_and_starting_browser_states_without_an_error() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 22, 10, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+
+        let closed =
+            browser_extension_status_json(None, "firefox_extension", 15, now, false, None, 60);
+        assert_eq!(closed["state"], "inactive");
+
+        let starting = browser_extension_status_json(
+            None,
+            "firefox_extension",
+            15,
+            now,
+            true,
+            Some(now - Duration::seconds(20)),
+            60,
+        );
+        assert_eq!(starting["state"], "starting");
+        assert_eq!(starting["startup_grace_remaining_seconds"], 40);
     }
 
     #[test]
     fn reports_recent_extension_heartbeat_as_active() {
-        let context = rpc_context();
-        let heartbeat = json!({
-            "jsonrpc": "2.0",
-            "id": 13,
-            "method": "extension_heartbeat",
-            "params": {
-                "extension_id": "blockuntu@example.local",
-                "extension_version": "0.2.0",
-                "now": "2026-05-22T10:00:00Z"
-            }
-        });
-        let heartbeat_response: Value = serde_json::from_slice(&handle_payload(
-            &context,
-            &serde_json::to_vec(&heartbeat).unwrap(),
-        ))
-        .expect("response should parse");
-        assert_eq!(heartbeat_response["result"]["status"], "ok");
-
-        let status = json!({
-            "jsonrpc": "2.0",
-            "id": 14,
-            "method": "extension_status",
-            "params": {
-                "now": "2026-05-22T10:00:05Z"
-            }
-        });
-        let response: Value = serde_json::from_slice(&handle_payload(
-            &context,
-            &serde_json::to_vec(&status).unwrap(),
-        ))
-        .expect("response should parse");
-
-        assert_eq!(response["result"]["state"], "active");
-        assert_eq!(response["result"]["installed_enabled"], "confirmed");
-        assert_eq!(
-            response["result"]["extension_id"],
-            "blockuntu@example.local"
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 22, 10, 0, 5)
+            .single()
+            .expect("timestamp should be valid");
+        let heartbeat = HeartbeatState {
+            component: "firefox_extension".to_string(),
+            last_seen_at: now - Duration::seconds(5),
+            details: Some(
+                json!({
+                    "browser": "firefox",
+                    "extension_id": "blockuntu@example.local",
+                    "extension_version": "0.2.0"
+                })
+                .to_string(),
+            ),
+        };
+        let response = browser_extension_status_json(
+            Some(&heartbeat),
+            "firefox_extension",
+            15,
+            now,
+            true,
+            Some(now - Duration::seconds(10)),
+            60,
         );
-        assert_eq!(response["result"]["extension_version"], "0.2.0");
-        assert_eq!(response["result"]["age_seconds"], 5);
+
+        assert_eq!(response["state"], "active");
+        assert_eq!(response["installed_enabled"], "confirmed");
+        assert_eq!(response["extension_id"], "blockuntu@example.local");
+        assert_eq!(response["extension_version"], "0.2.0");
+        assert_eq!(response["age_seconds"], 5);
     }
 
     #[test]
@@ -4600,36 +4822,28 @@ mod tests {
 
     #[test]
     fn reports_stale_extension_heartbeat() {
-        let context = rpc_context();
-        let heartbeat = json!({
-            "jsonrpc": "2.0",
-            "id": 15,
-            "method": "extension_heartbeat",
-            "params": {
-                "extension_id": "blockuntu@example.local",
-                "extension_version": "0.2.0",
-                "now": "2026-05-22T10:00:00Z"
-            }
-        });
-        let _ = handle_payload(&context, &serde_json::to_vec(&heartbeat).unwrap());
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 22, 10, 0, 20)
+            .single()
+            .expect("timestamp should be valid");
+        let heartbeat = HeartbeatState {
+            component: "firefox_extension".to_string(),
+            last_seen_at: now - Duration::seconds(20),
+            details: None,
+        };
+        let response = browser_extension_status_json(
+            Some(&heartbeat),
+            "firefox_extension",
+            15,
+            now,
+            true,
+            Some(now - Duration::seconds(25)),
+            60,
+        );
 
-        let status = json!({
-            "jsonrpc": "2.0",
-            "id": 16,
-            "method": "extension_status",
-            "params": {
-                "now": "2026-05-22T10:00:20Z"
-            }
-        });
-        let response: Value = serde_json::from_slice(&handle_payload(
-            &context,
-            &serde_json::to_vec(&status).unwrap(),
-        ))
-        .expect("response should parse");
-
-        assert_eq!(response["result"]["state"], "stale");
-        assert_eq!(response["result"]["installed_enabled"], "unconfirmed");
-        assert_eq!(response["result"]["age_seconds"], 20);
+        assert_eq!(response["state"], "stale");
+        assert_eq!(response["installed_enabled"], "confirmed");
+        assert_eq!(response["age_seconds"], 20);
     }
 
     #[test]
@@ -4649,45 +4863,42 @@ mod tests {
         });
         let _ = handle_payload(&context, &serde_json::to_vec(&heartbeat).unwrap());
 
-        let chrome_status = json!({
-            "jsonrpc": "2.0",
-            "id": 19,
-            "method": "extension_status",
-            "params": {
-                "component": "chrome_extension",
-                "now": "2026-05-22T10:01:00Z"
-            }
-        });
-        let response: Value = serde_json::from_slice(&handle_payload(
-            &context,
-            &serde_json::to_vec(&chrome_status).unwrap(),
-        ))
-        .expect("response should parse");
-
-        assert_eq!(response["result"]["component"], "chrome_extension");
-        assert_eq!(response["result"]["state"], "active");
-        assert_eq!(response["result"]["browser"], "chrome");
-        assert_eq!(
-            response["result"]["extension_id"],
-            "odedgejjcdilkoibeljkeohekonmdfea"
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 22, 10, 1, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let chrome_heartbeat = {
+            let core = context.core.lock().expect("core lock should work");
+            core.database()
+                .heartbeat("chrome_extension")
+                .expect("chrome heartbeat should read")
+                .expect("chrome heartbeat should exist")
+        };
+        let response = browser_extension_status_json(
+            Some(&chrome_heartbeat),
+            "chrome_extension",
+            75,
+            now,
+            true,
+            Some(now - Duration::seconds(70)),
+            60,
         );
 
-        let firefox_status = json!({
-            "jsonrpc": "2.0",
-            "id": 20,
-            "method": "extension_status",
-            "params": {
-                "component": "firefox_extension",
-                "now": "2026-05-22T10:01:00Z"
-            }
-        });
-        let response: Value = serde_json::from_slice(&handle_payload(
-            &context,
-            &serde_json::to_vec(&firefox_status).unwrap(),
-        ))
-        .expect("response should parse");
+        assert_eq!(response["component"], "chrome_extension");
+        assert_eq!(response["state"], "active");
+        assert_eq!(response["browser"], "chrome");
+        assert_eq!(response["extension_id"], "odedgejjcdilkoibeljkeohekonmdfea");
 
-        assert_eq!(response["result"]["state"], "missing");
-        assert_eq!(response["result"]["component"], "firefox_extension");
+        let firefox_status = browser_extension_status_json(
+            None,
+            "firefox_extension",
+            15,
+            now,
+            true,
+            Some(now - Duration::seconds(61)),
+            60,
+        );
+        assert_eq!(firefox_status["state"], "missing");
+        assert_eq!(firefox_status["component"], "firefox_extension");
     }
 }
