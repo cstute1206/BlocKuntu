@@ -5,7 +5,7 @@
   "description": "System-enforced focus blocking for Linux through the local BlocKuntu daemon.",
   "browser_specific_settings": {
     "gecko": {
-      "id": "blockuntu-poc@example.local",
+      "id": "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
       "data_collection_permissions": {
         "required": ["browsingActivity"]
       },

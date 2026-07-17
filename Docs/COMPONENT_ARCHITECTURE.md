@@ -199,7 +199,7 @@ translates them into daemon JSON-RPC.
 `focusd` computes and repairs the Firefox policy JSON. The current expected
 policy:
 
-- Force-installs the signed extension ID `blockuntu-poc@example.local`.
+- Force-installs the signed extension ID `{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}`.
 - Uses the configured XPI path, defaulting to
   `/home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi`.
 - Keeps private browsing available and enables the extension there.

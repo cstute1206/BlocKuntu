@@ -23,7 +23,7 @@ const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.json";
 const DEV_FIREFOX_POLICY_PATH: &str = "/tmp/blockuntu/firefox/policies.json";
 const DEFAULT_CHROME_POLICY_PATH: &str = "/etc/opt/chrome/policies/managed/blockuntu.json";
 const DEV_CHROME_POLICY_PATH: &str = "/tmp/blockuntu/chrome/policies/managed/blockuntu.json";
-const FIREFOX_EXTENSION_IDS: [&str; 2] = ["blockuntu@example.local", "blockuntu-poc@example.local"];
+const FIREFOX_EXTENSION_IDS: [&str; 2] = ["blockuntu@example.local", "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}"];
 const FIREFOX_COMMANDS: [&str; 2] = ["/usr/bin/firefox", "/bin/firefox"];
 const FIREFOX_USER_NATIVE_HOST_MANIFEST: &str =
     ".mozilla/native-messaging-hosts/blockuntu_native.json";

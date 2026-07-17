@@ -8,7 +8,7 @@ pub const DEFAULT_EVENT_LOG_PATH: &str = "/etc/blockuntu/blockuntu.log";
 pub const DEFAULT_POLICY_RECOVERY_PATH: &str = "/etc/blockuntu/policy-recovery.toml";
 pub const DEFAULT_SOCKET_PATH: &str = "/run/blockuntu/blockuntud.sock";
 pub const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.json";
-pub const DEFAULT_EXTENSION_ID: &str = "blockuntu-poc@example.local";
+pub const DEFAULT_EXTENSION_ID: &str = "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}";
 pub const DEFAULT_EXTENSION_XPI_PATH: &str =
     "/home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi";
 pub const DEFAULT_CHROME_POLICY_PATH: &str = "/etc/opt/chrome/policies/managed/blockuntu.json";

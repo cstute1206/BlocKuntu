@@ -79,12 +79,12 @@ The Native Messaging manifest uses:
 {
   "name": "blockuntu_native",
   "path": "/usr/local/bin/blockuntu-native",
-  "allowed_extensions": ["blockuntu-poc@example.local"]
+  "allowed_extensions": ["{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}"]
 }
 ```
 
 The extension manifest uses the matching Firefox ID:
-`blockuntu-poc@example.local`.
+`{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}`.
 
 ## Firefox Extension Enforcement
 
@@ -137,7 +137,7 @@ The extension then redirects the top-level tab to its packaged
 The daemon should also log extension state transitions:
 
 ```text
-Firefox extension active (blockuntu-poc@example.local, version 0.1.0)
+Firefox extension active ({a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}, version 0.1.0)
 Firefox extension inactive: last heartbeat was 31 second(s) ago
 ```
 

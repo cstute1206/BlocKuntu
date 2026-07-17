@@ -2871,7 +2871,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir should be created");
         let firefox_policy = FirefoxPolicyManager::new(
             temp.path().join("firefox/policies.json"),
-            "blockuntu-poc@example.local",
+            "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
             temp.path().join("BlocKuntu-Signed.xpi"),
         );
         let chrome_policy = ChromePolicyManager::new(
@@ -3246,7 +3246,7 @@ mod tests {
             "params": {
                 "component": "firefox_extension",
                 "browser": "firefox",
-                "extension_id": "blockuntu-poc@example.local",
+                "extension_id": "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
                 "extension_version": "0.1.0"
             }
         });
@@ -4737,7 +4737,7 @@ mod tests {
             "params": {
                 "component": "firefox_extension",
                 "browser": "firefox",
-                "extension_id": "blockuntu-poc@example.local",
+                "extension_id": "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
                 "extension_version": "0.2.1",
                 "now": "2026-05-22T10:00:00Z"
             }
@@ -4781,7 +4781,7 @@ mod tests {
             "params": {
                 "component": "firefox_extension",
                 "browser": "firefox",
-                "extension_id": "blockuntu-poc@example.local",
+                "extension_id": "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
                 "extension_version": "0.2.1",
                 "now": "2026-05-22T10:00:05Z"
             }

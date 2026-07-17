@@ -91,7 +91,7 @@ write_manifest() {
   "description": "${description}",
   "path": "${host_path}",
   "type": "stdio",
-  "allowed_extensions": ["blockuntu@example.local", "blockuntu-poc@example.local"]
+  "allowed_extensions": ["blockuntu@example.local", "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}"]
 }
 EOF
   install -m 0644 "${temp_file}" "${manifest_path}"
@@ -117,7 +117,7 @@ write_firefox_policy() {
     "DisableSafeMode": true,
     "PrivateBrowsingModeAvailability": 0,
     "ExtensionSettings": {
-      "blockuntu-poc@example.local": {
+      "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}": {
         "installation_mode": "force_installed",
         "install_url": "${install_url}",
         "default_area": "navbar",

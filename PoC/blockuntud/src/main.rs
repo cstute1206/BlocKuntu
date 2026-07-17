@@ -38,7 +38,7 @@ const FIREFOX_POLICY_JSON: &str = r#"{
     "DisableSafeMode": true,
     "PrivateBrowsingModeAvailability": 1,
     "ExtensionSettings": {
-      "blockuntu-poc@example.local": {
+      "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}": {
         "installation_mode": "force_installed",
         "install_url": "file:///usr/local/share/blockuntu/BlocKuntu-PoC.xpi",
         "default_area": "navbar",

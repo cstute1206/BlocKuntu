@@ -39,7 +39,7 @@ cat > "${MANIFEST_PATH}" <<EOF
   "description": "BlocKuntu development Native Messaging bridge",
   "path": "${WRAPPER_PATH}",
   "type": "stdio",
-  "allowed_extensions": ["blockuntu@example.local", "blockuntu-poc@example.local"]
+  "allowed_extensions": ["blockuntu@example.local", "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}"]
 }
 EOF
 
