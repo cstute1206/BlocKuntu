@@ -901,6 +901,53 @@ impl Database {
         Ok(sessions.pop())
     }
 
+    pub(crate) fn detox_intervals_for_site_rule_between(
+        &self,
+        rule_id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<(DateTime<Utc>, DateTime<Utc>)>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT sessions.starts_at, sessions.ends_at, sessions.cancelled_at
+            FROM detox_sessions AS sessions
+            INNER JOIN detox_session_site_rules AS targets
+                ON targets.session_id = sessions.id
+            WHERE targets.rule_id = ?1
+              AND sessions.starts_at < ?3
+              AND sessions.ends_at > ?2
+              AND (sessions.cancelled_at IS NULL OR sessions.cancelled_at > ?2)
+            ORDER BY sessions.starts_at, sessions.ends_at
+            "#,
+        )?;
+        let rows = statement.query_map(
+            params![rule_id, format_time(start), format_time(end)],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )?;
+
+        let mut intervals = Vec::new();
+        for row in rows {
+            let (starts_at, ends_at, cancelled_at) = row?;
+            let starts_at = parse_time(&starts_at)?;
+            let mut ends_at = parse_time(&ends_at)?;
+            if let Some(cancelled_at) = cancelled_at {
+                ends_at = ends_at.min(parse_time(&cancelled_at)?);
+            }
+            let overlap_start = starts_at.max(start);
+            let overlap_end = ends_at.min(end);
+            if overlap_end > overlap_start {
+                intervals.push((overlap_start, overlap_end));
+            }
+        }
+        Ok(intervals)
+    }
+
     pub fn cancel_detox_session(
         &self,
         id: &str,
@@ -1515,7 +1562,7 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
         CREATE TABLE IF NOT EXISTS policy_site_lists (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            tier TEXT NOT NULL CHECK (tier IN ('hard', 'controlled_access')),
+            tier TEXT NOT NULL CHECK (tier IN ('hard', 'scheduled_block', 'controlled_access')),
             enabled INTEGER NOT NULL DEFAULT 1,
             allowance_id TEXT,
             max_session_minutes INTEGER,
@@ -1549,7 +1596,7 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
         CREATE TABLE IF NOT EXISTS policy_app_rules (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            tier TEXT NOT NULL CHECK (tier IN ('hard', 'controlled_access')),
+            tier TEXT NOT NULL CHECK (tier IN ('hard', 'scheduled_block', 'controlled_access')),
             enabled INTEGER NOT NULL DEFAULT 1,
             allowance_id TEXT,
             max_session_minutes INTEGER,
@@ -1590,6 +1637,92 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
     migrate_policy_allowances_zero_minutes(conn)?;
     migrate_policy_schedule_windows_day_groups(conn)?;
     migrate_policy_site_list_patterns_url_contains(conn)?;
+    migrate_policy_rule_tiers(conn)?;
+    Ok(())
+}
+
+fn migrate_policy_rule_tiers(conn: &Connection) -> Result<(), Error> {
+    let site_table_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'policy_site_lists'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let app_table_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'policy_app_rules'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    if site_table_sql
+        .as_deref()
+        .is_none_or(|sql| sql.contains("'scheduled_block'"))
+        && app_table_sql
+            .as_deref()
+            .is_none_or(|sql| sql.contains("'scheduled_block'"))
+    {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE policy_site_lists_new (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            tier TEXT NOT NULL CHECK (tier IN ('hard', 'scheduled_block', 'controlled_access')),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            allowance_id TEXT,
+            max_session_minutes INTEGER,
+            cooldown_minutes INTEGER,
+            max_unlocks_per_hour INTEGER,
+            FOREIGN KEY(allowance_id) REFERENCES policy_allowances(id) ON DELETE SET NULL
+        );
+
+        INSERT INTO policy_site_lists_new (
+            id, name, tier, enabled, allowance_id,
+            max_session_minutes, cooldown_minutes, max_unlocks_per_hour
+        )
+        SELECT
+            id, name, tier, enabled, allowance_id,
+            max_session_minutes, cooldown_minutes, max_unlocks_per_hour
+        FROM policy_site_lists;
+
+        DROP TABLE policy_site_lists;
+        ALTER TABLE policy_site_lists_new RENAME TO policy_site_lists;
+
+        CREATE TABLE policy_app_rules_new (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            tier TEXT NOT NULL CHECK (tier IN ('hard', 'scheduled_block', 'controlled_access')),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            allowance_id TEXT,
+            max_session_minutes INTEGER,
+            cooldown_minutes INTEGER,
+            max_unlocks_per_hour INTEGER,
+            FOREIGN KEY(allowance_id) REFERENCES policy_allowances(id) ON DELETE SET NULL
+        );
+
+        INSERT INTO policy_app_rules_new (
+            id, name, tier, enabled, allowance_id,
+            max_session_minutes, cooldown_minutes, max_unlocks_per_hour
+        )
+        SELECT
+            id, name, tier, enabled, allowance_id,
+            max_session_minutes, cooldown_minutes, max_unlocks_per_hour
+        FROM policy_app_rules;
+
+        DROP TABLE policy_app_rules;
+        ALTER TABLE policy_app_rules_new RENAME TO policy_app_rules;
+
+        PRAGMA foreign_keys = ON;
+        "#,
+    )?;
+
     Ok(())
 }
 
@@ -1889,6 +2022,7 @@ fn bool_to_i64(value: bool) -> i64 {
 fn rule_tier_to_str(value: RuleTier) -> &'static str {
     match value {
         RuleTier::Hard => "hard",
+        RuleTier::ScheduledBlock => "scheduled_block",
         RuleTier::ControlledAccess => "controlled_access",
     }
 }
@@ -1896,6 +2030,7 @@ fn rule_tier_to_str(value: RuleTier) -> &'static str {
 fn rule_tier_from_str(value: &str) -> Result<RuleTier, Error> {
     match value {
         "hard" => Ok(RuleTier::Hard),
+        "scheduled_block" => Ok(RuleTier::ScheduledBlock),
         "controlled_access" => Ok(RuleTier::ControlledAccess),
         _ => Err(ConfigError::Validation(format!("unknown rule tier '{value}'")).into()),
     }

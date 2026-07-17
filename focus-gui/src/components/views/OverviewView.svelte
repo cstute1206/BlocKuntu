@@ -83,11 +83,18 @@
   let controlledRules = $derived(
     config?.rules.filter((rule) => rule.tier === "controlled_access") ?? []
   );
+  let scheduledRules = $derived(
+    config?.rules.filter((rule) => rule.tier === "scheduled_block") ?? []
+  );
   let hardAppRules = $derived(config?.app_rules.filter((rule) => rule.tier === "hard") ?? []);
   let controlledAppRules = $derived(
     config?.app_rules.filter((rule) => rule.tier === "controlled_access") ?? []
   );
+  let scheduledAppRules = $derived(
+    config?.app_rules.filter((rule) => rule.tier === "scheduled_block") ?? []
+  );
   let hardBlockCount = $derived(hardRules.length + hardAppRules.length);
+  let scheduledBlockCount = $derived(scheduledRules.length + scheduledAppRules.length);
   let controlledBlockCount = $derived(controlledRules.length + controlledAppRules.length);
   let failingChecks = $derived(
     health?.checks.filter((check) => check.state === "error" || check.state === "warn") ?? []
@@ -306,8 +313,12 @@
       <span>hard blocks</span>
     </div>
     <div class="metric-line">
+      <span class="metric-value warn">{scheduledBlockCount}</span>
+      <span>scheduled strict</span>
+    </div>
+    <div class="metric-line">
       <span class="metric-value accent">{controlledBlockCount}</span>
-      <span>controlled</span>
+      <span>controlled access</span>
     </div>
   </article>
 
@@ -359,8 +370,8 @@
       <h2>Manual Unlock</h2>
     </div>
     <p class="policy-note">
-      Manual unlocks only apply to Tier 2 rules. Active Detox sessions and Tier 1 blocks cannot be
-      bypassed.
+      Manual unlocks only apply to active Tier 3 rules, including Tier 3 activated by Detox. Tier 1
+      and Tier 2 blocks cannot be bypassed.
     </p>
     <div class="unlock-grid">
       <label>

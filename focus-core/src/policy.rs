@@ -8,7 +8,7 @@ use crate::{
     UnlockState, VisitState, Weekday,
 };
 
-const TIER_2_UNLOCK_MINUTES: u32 = 2;
+const TIER_3_UNLOCK_MINUTES: u32 = 2;
 const GLOBAL_UNLOCKS_PER_HOUR: u32 = 1;
 const MIN_UNLOCK_REASON_LETTERS: usize = 20;
 
@@ -57,15 +57,22 @@ impl<'a> PolicyEngine<'a> {
             }
         };
 
+        for rule in self.matching_rules(&parsed, RuleTier::Hard) {
+            return Decision::Block(BlockReason::HardBlock {
+                rule_id: rule.id.clone(),
+                rule_name: rule.name.clone(),
+            });
+        }
+
         match self.detox_block_for_url(&parsed, context) {
             Ok(Some(reason)) => return Decision::Block(reason),
             Ok(None) => {}
             Err(err) => return runtime_error(err),
         }
 
-        for rule in self.matching_rules(&parsed, RuleTier::Hard) {
+        for rule in self.matching_rules(&parsed, RuleTier::ScheduledBlock) {
             if self.rule_is_active(rule, context) {
-                return Decision::Block(BlockReason::HardBlock {
+                return Decision::Block(BlockReason::ScheduledBlock {
                     rule_id: rule.id.clone(),
                     rule_name: rule.name.clone(),
                 });
@@ -74,8 +81,10 @@ impl<'a> PolicyEngine<'a> {
 
         let mut controlled_block: Option<(Decision, ControlledRuleStrictness)> = None;
         for rule in self.matching_rules(&parsed, RuleTier::ControlledAccess) {
-            if !self.rule_is_active(rule, context) {
-                continue;
+            match self.controlled_rule_is_active(rule, context) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(err) => return runtime_error(err),
             }
 
             let decision = self.evaluate_controlled_rule(rule, context);
@@ -101,15 +110,22 @@ impl<'a> PolicyEngine<'a> {
         process: &ProcessIdentity,
         context: &EvaluationContext<'_>,
     ) -> Decision {
+        for rule in self.matching_app_rules(process, RuleTier::Hard) {
+            return Decision::Block(BlockReason::HardBlock {
+                rule_id: rule.id.clone(),
+                rule_name: rule.name.clone(),
+            });
+        }
+
         match self.detox_block_for_app(process, context) {
             Ok(Some(reason)) => return Decision::Block(reason),
             Ok(None) => {}
             Err(err) => return runtime_error(err),
         }
 
-        for rule in self.matching_app_rules(process, RuleTier::Hard) {
+        for rule in self.matching_app_rules(process, RuleTier::ScheduledBlock) {
             if self.app_rule_is_active(rule, context) {
-                return Decision::Block(BlockReason::HardBlock {
+                return Decision::Block(BlockReason::ScheduledBlock {
                     rule_id: rule.id.clone(),
                     rule_name: rule.name.clone(),
                 });
@@ -118,8 +134,10 @@ impl<'a> PolicyEngine<'a> {
 
         let mut controlled_block: Option<(Decision, ControlledRuleStrictness)> = None;
         for rule in self.matching_app_rules(process, RuleTier::ControlledAccess) {
-            if !self.app_rule_is_active(rule, context) {
-                continue;
+            match self.controlled_app_rule_is_active(rule, context) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(err) => return runtime_error(err),
             }
 
             let decision = self.evaluate_controlled_app_rule(rule, context);
@@ -197,7 +215,7 @@ impl<'a> PolicyEngine<'a> {
             return Err(UnlockError::ReasonAlreadyUsed.into());
         }
 
-        let minutes = TIER_2_UNLOCK_MINUTES;
+        let minutes = TIER_3_UNLOCK_MINUTES;
 
         let now = context.now_utc();
         let active_unlock = self.database.active_unlock_for_rule(&rule.id, now)?;
@@ -273,7 +291,11 @@ impl<'a> PolicyEngine<'a> {
         process: &ProcessIdentity,
         context: &EvaluationContext<'_>,
     ) -> Result<Vec<String>, Error> {
-        if self.detox_block_for_app(process, context)?.is_some() {
+        if self.detox_block_for_app(process, context)?.is_some()
+            || self
+                .matching_app_rules(process, RuleTier::ScheduledBlock)
+                .any(|rule| self.app_rule_is_active(rule, context))
+        {
             return Ok(Vec::new());
         }
 
@@ -284,14 +306,15 @@ impl<'a> PolicyEngine<'a> {
             return Ok(Vec::new());
         }
 
-        Ok(self
-            .matching_app_rules(process, RuleTier::ControlledAccess)
-            .filter(|rule| {
-                self.app_rule_is_active(rule, context)
-                    && self.app_rule_allowance_minutes(rule).is_some()
-            })
-            .map(|rule| rule.id.clone())
-            .collect())
+        let mut metered = Vec::new();
+        for rule in self.matching_app_rules(process, RuleTier::ControlledAccess) {
+            if self.controlled_app_rule_is_active(rule, context)?
+                && self.app_rule_allowance_minutes(rule).is_some()
+            {
+                metered.push(rule.id.clone());
+            }
+        }
+        Ok(metered)
     }
 
     fn evaluate_controlled_rule(
@@ -405,27 +428,36 @@ impl<'a> PolicyEngine<'a> {
         target: &str,
         context: &EvaluationContext<'_>,
     ) -> Result<ResolvedUnlockRule, Error> {
-        if let Some(rule) = self
-            .config
-            .app_rules
-            .iter()
-            .find(|rule| rule.id == target && self.app_rule_is_active(rule, context))
-        {
-            return unlock_rule_from_app(rule, target);
+        if let Some(rule) = self.config.app_rules.iter().find(|rule| rule.id == target) {
+            let active = match rule.tier {
+                RuleTier::Hard => true,
+                RuleTier::ScheduledBlock => self.app_rule_is_active(rule, context),
+                RuleTier::ControlledAccess => self.controlled_app_rule_is_active(rule, context)?,
+            };
+            if active {
+                return unlock_rule_from_app(rule, target);
+            }
         }
 
         if let Some(parsed) = normalize_unlock_url_target(target) {
             let unlock_target = parsed.url_without_fragment.clone();
             for rule in self.matching_rules(&parsed, RuleTier::Hard) {
+                return Err(UnlockError::TargetIsHardBlocked {
+                    rule_id: rule.id.clone(),
+                }
+                .into());
+            }
+
+            for rule in self.matching_rules(&parsed, RuleTier::ScheduledBlock) {
                 if self.rule_is_active(rule, context) {
-                    return Err(UnlockError::TargetIsHardBlocked {
+                    return Err(UnlockError::TargetIsScheduledBlocked {
                         rule_id: rule.id.clone(),
                     }
                     .into());
                 }
             }
 
-            if let Some(rule) = self.controlled_rule_for_unlock(&parsed, context) {
+            if let Some(rule) = self.controlled_rule_for_unlock(&parsed, context)? {
                 return Ok(ResolvedUnlockRule {
                     id: rule.id.clone(),
                     target: unlock_target,
@@ -433,21 +465,38 @@ impl<'a> PolicyEngine<'a> {
             }
         }
 
-        if let Some(rule) = self.config.app_rules.iter().find(|rule| {
-            rule.tier == RuleTier::Hard
-                && self.app_rule_is_active(rule, context)
-                && app_rule_target_matches(rule, target)
-        }) {
+        if let Some(rule) = self
+            .config
+            .app_rules
+            .iter()
+            .find(|rule| rule.tier == RuleTier::Hard && app_rule_target_matches(rule, target))
+        {
             return Err(UnlockError::TargetIsHardBlocked {
                 rule_id: rule.id.clone(),
             }
             .into());
         }
 
-        for rule in self.config.app_rules.iter().filter(|rule| {
-            rule.tier == RuleTier::ControlledAccess && self.app_rule_is_active(rule, context)
+        if let Some(rule) = self.config.app_rules.iter().find(|rule| {
+            rule.tier == RuleTier::ScheduledBlock
+                && self.app_rule_is_active(rule, context)
+                && app_rule_target_matches(rule, target)
         }) {
-            if app_rule_target_matches(rule, target) {
+            return Err(UnlockError::TargetIsScheduledBlocked {
+                rule_id: rule.id.clone(),
+            }
+            .into());
+        }
+
+        for rule in self
+            .config
+            .app_rules
+            .iter()
+            .filter(|rule| rule.tier == RuleTier::ControlledAccess)
+        {
+            if app_rule_target_matches(rule, target)
+                && self.controlled_app_rule_is_active(rule, context)?
+            {
                 return unlock_rule_from_app(rule, target);
             }
         }
@@ -484,6 +533,7 @@ impl<'a> PolicyEngine<'a> {
             .config
             .app_rules
             .iter()
+            .filter(|rule| rule.tier == RuleTier::ScheduledBlock)
             .filter(|rule| rule.id == target || app_rule_target_matches(rule, target))
             .map(|rule| rule.id.as_str())
             .collect();
@@ -503,12 +553,12 @@ impl<'a> PolicyEngine<'a> {
         &'b self,
         parsed: &'b NormalizedUrl,
         context: &EvaluationContext<'_>,
-    ) -> Option<&'b RuleConfig> {
+    ) -> Result<Option<&'b RuleConfig>, Error> {
         let mut active_match: Option<(&RuleConfig, ControlledRuleStrictness)> = None;
         let mut blocking_match: Option<(&RuleConfig, ControlledRuleStrictness)> = None;
 
         for rule in self.matching_rules(parsed, RuleTier::ControlledAccess) {
-            if !self.rule_is_active(rule, context) {
+            if !self.controlled_rule_is_active(rule, context)? {
                 continue;
             }
 
@@ -532,7 +582,7 @@ impl<'a> PolicyEngine<'a> {
             }
         }
 
-        blocking_match.or(active_match).map(|(rule, _)| rule)
+        Ok(blocking_match.or(active_match).map(|(rule, _)| rule))
     }
 
     fn visit_rule_for_url<'b>(
@@ -544,7 +594,10 @@ impl<'a> PolicyEngine<'a> {
         let mut active_match: Option<(&RuleConfig, ControlledRuleStrictness)> = None;
 
         for rule in self.matching_rules(parsed, RuleTier::ControlledAccess) {
-            if !self.rule_is_active(rule, context) {
+            if !self
+                .controlled_rule_is_active(rule, context)
+                .unwrap_or(false)
+            {
                 continue;
             }
 
@@ -635,37 +688,49 @@ impl<'a> PolicyEngine<'a> {
             let clamped_start = visit.started_at.max(day_start);
             let clamped_end = ended_at.min(now).min(day_end);
             if clamped_end > clamped_start {
-                used_seconds += self.rule_schedule_active_seconds_between(
+                used_seconds += self.rule_active_seconds_between(
                     rule,
                     clamped_start,
                     clamped_end,
                     *context.now.offset(),
-                );
+                )?;
             }
         }
 
         Ok(used_seconds)
     }
 
-    fn rule_schedule_active_seconds_between(
+    fn rule_active_seconds_between(
         &self,
         rule: &RuleConfig,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         local_offset: FixedOffset,
-    ) -> i64 {
+    ) -> Result<i64, Error> {
         if end <= start {
-            return 0;
+            return Ok(0);
         }
 
-        let start = start.with_timezone(&local_offset);
-        let end = end.with_timezone(&local_offset);
+        let start_utc = start;
+        let end_utc = end;
+        let start = start_utc.with_timezone(&local_offset);
+        let end = end_utc.with_timezone(&local_offset);
         let mut date = start
             .date_naive()
             .pred_opt()
             .unwrap_or_else(|| start.date_naive());
         let final_date = end.date_naive();
         let mut intervals = Vec::new();
+
+        for (detox_start, detox_end) in self
+            .database
+            .detox_intervals_for_site_rule_between(&rule.id, start_utc, end_utc)?
+        {
+            intervals.push((
+                detox_start.with_timezone(&local_offset),
+                detox_end.with_timezone(&local_offset),
+            ));
+        }
 
         while date <= final_date {
             let weekday = Weekday::from(date.weekday());
@@ -742,7 +807,7 @@ impl<'a> PolicyEngine<'a> {
             total_seconds = total_seconds.saturating_add((active_end - active_start).num_seconds());
         }
 
-        total_seconds
+        Ok(total_seconds)
     }
 
     fn detox_block_for_url(
@@ -758,6 +823,9 @@ impl<'a> PolicyEngine<'a> {
         let mut block: Option<(&DetoxSession, &RuleConfig)> = None;
 
         for rule in &self.config.rules {
+            if rule.tier != RuleTier::ScheduledBlock {
+                continue;
+            }
             if !rule
                 .patterns
                 .iter()
@@ -813,6 +881,9 @@ impl<'a> PolicyEngine<'a> {
         let mut block: Option<(&DetoxSession, &AppRuleConfig)> = None;
 
         for rule in &self.config.app_rules {
+            if rule.tier != RuleTier::ScheduledBlock {
+                continue;
+            }
             if !rule
                 .matchers
                 .iter()
@@ -890,15 +961,41 @@ impl<'a> PolicyEngine<'a> {
     fn rule_is_active(&self, rule: &RuleConfig, context: &EvaluationContext<'_>) -> bool {
         match rule.tier {
             RuleTier::Hard => true,
-            RuleTier::ControlledAccess => self.schedule_ids_are_active(&rule.schedule_ids, context),
+            RuleTier::ScheduledBlock | RuleTier::ControlledAccess => {
+                self.schedule_ids_are_active(&rule.schedule_ids, context)
+            }
         }
     }
 
     fn app_rule_is_active(&self, rule: &AppRuleConfig, context: &EvaluationContext<'_>) -> bool {
         match rule.tier {
             RuleTier::Hard => true,
-            RuleTier::ControlledAccess => self.schedule_ids_are_active(&rule.schedule_ids, context),
+            RuleTier::ScheduledBlock | RuleTier::ControlledAccess => {
+                self.schedule_ids_are_active(&rule.schedule_ids, context)
+            }
         }
+    }
+
+    fn controlled_rule_is_active(
+        &self,
+        rule: &RuleConfig,
+        context: &EvaluationContext<'_>,
+    ) -> Result<bool, Error> {
+        Ok(self.rule_is_active(rule, context)
+            || active_detox_sessions(self.database, context)?
+                .iter()
+                .any(|session| session.site_rule_ids.iter().any(|id| id == &rule.id)))
+    }
+
+    fn controlled_app_rule_is_active(
+        &self,
+        rule: &AppRuleConfig,
+        context: &EvaluationContext<'_>,
+    ) -> Result<bool, Error> {
+        Ok(self.app_rule_is_active(rule, context)
+            || active_detox_sessions(self.database, context)?
+                .iter()
+                .any(|session| session.app_rule_ids.iter().any(|id| id == &rule.id)))
     }
 
     fn schedule_ids_are_active(
@@ -906,19 +1003,12 @@ impl<'a> PolicyEngine<'a> {
         schedule_ids: &[String],
         context: &EvaluationContext<'_>,
     ) -> bool {
-        if context.clock_tampered {
-            return !schedule_ids.is_empty();
-        }
-
-        !schedule_ids.is_empty()
-            && schedule_ids.iter().any(|schedule_id| {
-                self.config
-                    .schedules
-                    .iter()
-                    .find(|schedule| schedule.id == *schedule_id)
-                    .map(|schedule| schedule_is_active(schedule, context))
-                    .unwrap_or(true)
-            })
+        schedule_ids_are_active_at(
+            schedule_ids,
+            self.config,
+            context.now,
+            context.clock_tampered,
+        )
     }
 }
 
@@ -999,10 +1089,25 @@ fn unlock_rule_from_app(rule: &AppRuleConfig, target: &str) -> Result<ResolvedUn
             rule_id: rule.id.clone(),
         }
         .into()),
+        RuleTier::ScheduledBlock => Err(UnlockError::TargetIsScheduledBlocked {
+            rule_id: rule.id.clone(),
+        }
+        .into()),
         RuleTier::ControlledAccess => Ok(ResolvedUnlockRule {
             id: rule.id.clone(),
             target: target.to_string(),
         }),
+    }
+}
+
+fn active_detox_sessions(
+    database: &Database,
+    context: &EvaluationContext<'_>,
+) -> Result<Vec<DetoxSession>, Error> {
+    if context.clock_tampered {
+        database.uncancelled_detox_sessions()
+    } else {
+        database.active_detox_sessions(context.now_utc())
     }
 }
 
@@ -1056,8 +1161,28 @@ fn app_matcher_value_matches(kind: AppMatcherKind, actual: &str, expected: &str)
     }
 }
 
-fn schedule_is_active(schedule: &ScheduleConfig, context: &EvaluationContext<'_>) -> bool {
-    let now = context.now;
+pub fn schedule_ids_are_active_at(
+    schedule_ids: &[String],
+    config: &Config,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> bool {
+    if clock_tampered {
+        return !schedule_ids.is_empty();
+    }
+
+    !schedule_ids.is_empty()
+        && schedule_ids.iter().any(|schedule_id| {
+            config
+                .schedules
+                .iter()
+                .find(|schedule| schedule.id == *schedule_id)
+                .map(|schedule| schedule_is_active(schedule, now))
+                .unwrap_or(true)
+        })
+}
+
+fn schedule_is_active(schedule: &ScheduleConfig, now: DateTime<FixedOffset>) -> bool {
     let current_weekday = Weekday::from(now.weekday());
     let current_minute = (now.hour() as u16) * 60 + now.minute() as u16;
 

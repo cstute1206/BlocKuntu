@@ -320,15 +320,10 @@ fn controlled_app_allowances_use_recorded_runtime() {
 fn detox_sessions_block_site_rules_until_the_absolute_end_time() {
     let config = Config::from_toml_str(
         r#"
-        [[allowances]]
-        id = "daily"
-        daily_minutes = 60
-
         [[rules]]
         id = "video"
         name = "Video"
-        tier = "controlled_access"
-        allowance_id = "daily"
+        tier = "scheduled_block"
         patterns = [
           { kind = "domain", value = "video.example", match_subdomains = true }
         ]
@@ -376,32 +371,26 @@ fn detox_sessions_block_site_rules_until_the_absolute_end_time() {
 }
 
 #[test]
-fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
+fn tier3_detox_activates_rules_and_allows_manual_unlocks() {
     let config = Config::from_toml_str(
         r#"
         [[rules]]
         id = "social"
         name = "Social"
         tier = "controlled_access"
-        schedule_ids = ["work-hours"]
         patterns = [
           { kind = "domain", value = "social.example", match_subdomains = false }
         ]
 
-        [[schedules]]
-        id = "work-hours"
-        name = "Work hours"
-
-        [[schedules.windows]]
-        weekday = "mon"
-        start = "09:00"
-        end = "17:00"
+        [[allowances]]
+        id = "game-daily"
+        daily_minutes = 30
 
         [[app_rules]]
         id = "game"
         name = "Game"
         tier = "controlled_access"
-        schedule_ids = ["work-hours"]
+        allowance_id = "game-daily"
         matchers = [
           { kind = "command_name", value = "game-bin" }
         ]
@@ -410,13 +399,6 @@ fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
     .expect("config should parse");
     let database = Database::in_memory().expect("database should initialize");
     let starts_at = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
-    let before_detox = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
-    request_unlock(
-        "https://social.example/",
-        "I need temporary access to complete this scheduled work item".to_string(),
-        &before_detox,
-    )
-    .expect("unlock should be active before detox starts");
     database
         .insert_detox_session(&DetoxSession {
             id: "detox-override".to_string(),
@@ -432,8 +414,22 @@ fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
     let during = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
     assert!(matches!(
         evaluate_url("https://social.example/", &during),
-        Decision::Block(BlockReason::Detox { rule_id, .. }) if rule_id == "social"
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id,
+            reason: ControlledBlockReason::NoAllowance,
+            ..
+        }) if rule_id == "social"
     ));
+    request_unlock(
+        "https://social.example/",
+        "I need temporary access to complete this scheduled work item".to_string(),
+        &during,
+    )
+    .expect("Tier 3 should allow an unlock while Detox is active");
+    assert_eq!(
+        evaluate_url("https://social.example/", &during),
+        Decision::Allow
+    );
 
     let process = ProcessIdentity {
         pid: Some(1234),
@@ -443,24 +439,85 @@ fn detox_sessions_override_active_unlocks_and_inactive_app_schedules() {
         desktop_id: None,
         window_titles: Vec::new(),
     };
-    let before_detox_app = context(&config, &database, at_utc(2026, 5, 18, 8, 0));
+    let before_detox_app = context(&config, &database, at_utc(2026, 5, 18, 9, 59));
     assert_eq!(evaluate_app(&process, &before_detox_app), Decision::Allow);
 
-    let during_app_detox = context(&config, &database, at_utc(2026, 5, 18, 18, 0));
+    let during_app_detox = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
+    assert_eq!(evaluate_app(&process, &during_app_detox), Decision::Allow);
+}
+
+#[test]
+fn tier3_detox_uses_and_accounts_for_the_daily_allowance() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "detox-daily"
+        daily_minutes = 1
+
+        [[rules]]
+        id = "video"
+        name = "Video"
+        tier = "controlled_access"
+        allowance_id = "detox-daily"
+        patterns = [
+          { kind = "domain", value = "video.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let starts_at = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
+    database
+        .insert_detox_session(&DetoxSession {
+            id: "detox-allowance".to_string(),
+            name: None,
+            starts_at,
+            ends_at: starts_at + chrono::Duration::hours(2),
+            cancelled_at: None,
+            site_rule_ids: vec!["video".to_string()],
+            app_rule_ids: Vec::new(),
+        })
+        .expect("detox session should insert");
+
+    let start_context = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    assert_eq!(
+        evaluate_url("https://video.example/", &start_context),
+        Decision::Allow
+    );
+    let visit = record_visit_start("https://video.example/", "tab-detox", &start_context)
+        .expect("visit should start");
+    record_visit_heartbeat(
+        visit.id,
+        &context(&config, &database, at_utc(2026, 5, 18, 10, 2)),
+    )
+    .expect("visit heartbeat should record");
+    record_visit_end(
+        visit.id,
+        &context(&config, &database, at_utc(2026, 5, 18, 10, 2)),
+    )
+    .expect("visit should end");
+
     assert!(matches!(
-        evaluate_app(&process, &during_app_detox),
-        Decision::Block(BlockReason::Detox { rule_id, .. }) if rule_id == "game"
+        evaluate_url(
+            "https://video.example/",
+            &context(&config, &database, at_utc(2026, 5, 18, 10, 2)),
+        ),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id,
+            reason: ControlledBlockReason::AllowanceExhausted,
+            ..
+        }) if rule_id == "video"
     ));
 }
 
 #[test]
-fn detox_rejects_manual_unlock_without_consuming_reason_or_hourly_quota() {
+fn tier2_detox_rejects_manual_unlocks() {
     let config = Config::from_toml_str(
         r#"
         [[rules]]
         id = "social"
         name = "Social"
-        tier = "controlled_access"
+        tier = "scheduled_block"
         schedule_ids = ["always"]
         patterns = [
           { kind = "domain", value = "social.example", match_subdomains = false }
@@ -491,10 +548,13 @@ fn detox_rejects_manual_unlock_without_consuming_reason_or_hourly_quota() {
         })
         .expect("detox session should insert");
 
-    let reason = "I need temporary access to complete this specific work item";
     let during = context(&config, &database, at_utc(2026, 5, 18, 10, 5));
-    let denied = request_unlock("https://social.example/", reason.to_string(), &during)
-        .expect_err("detox should reject manual unlock");
+    let denied = request_unlock(
+        "https://social.example/",
+        "I need temporary access to complete this specific work item".to_string(),
+        &during,
+    )
+    .expect_err("Tier 2 Detox should reject manual unlock");
     assert!(
         matches!(
             &denied,
@@ -506,10 +566,59 @@ fn detox_rejects_manual_unlock_without_consuming_reason_or_hourly_quota() {
         ),
         "unexpected unlock error: {denied:?}"
     );
+}
 
-    let after = context(&config, &database, at_utc(2026, 5, 18, 10, 31));
-    request_unlock("https://social.example/", reason.to_string(), &after)
-        .expect("the rejected attempt must not consume its reason or hourly quota");
+#[test]
+fn tier2_blocks_only_while_scheduled_and_cannot_be_unlocked() {
+    let config = Config::from_toml_str(
+        r#"
+        [[schedules]]
+        id = "work"
+
+        [[schedules.windows]]
+        weekday = "mon"
+        start = "09:00"
+        end = "17:00"
+
+        [[rules]]
+        id = "strict"
+        name = "Strict"
+        tier = "scheduled_block"
+        schedule_ids = ["work"]
+        patterns = [{ kind = "domain", value = "strict.example" }]
+        "#,
+    )
+    .expect("config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+
+    assert_eq!(
+        evaluate_url(
+            "https://strict.example/",
+            &context(&config, &database, at_utc(2026, 5, 18, 8, 59)),
+        ),
+        Decision::Allow
+    );
+    let active = context(&config, &database, at_utc(2026, 5, 18, 9, 0));
+    assert!(matches!(
+        evaluate_url("https://strict.example/", &active),
+        Decision::Block(BlockReason::ScheduledBlock { rule_id, .. }) if rule_id == "strict"
+    ));
+    assert!(matches!(
+        request_unlock(
+            "https://strict.example/",
+            "I need temporary access to complete this particular assigned task".to_string(),
+            &active,
+        ),
+        Err(Error::Unlock(UnlockError::TargetIsScheduledBlocked { rule_id }))
+            if rule_id == "strict"
+    ));
+    assert_eq!(
+        evaluate_url(
+            "https://strict.example/",
+            &context(&config, &database, at_utc(2026, 5, 18, 17, 0)),
+        ),
+        Decision::Allow
+    );
 }
 
 #[test]
@@ -615,7 +724,11 @@ fn clock_tamper_evaluation_fails_closed_for_time_sensitive_rules() {
     );
     assert!(matches!(
         evaluate_url("https://detox.example/", &tampered),
-        Decision::Block(BlockReason::Detox { session_id, .. }) if session_id == "ended-detox"
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id,
+            reason: ControlledBlockReason::UnlockRequired,
+            ..
+        }) if rule_id == "detox-target"
     ));
     assert_eq!(
         evaluate_url("https://unlock.example/", &tampered),
@@ -1437,6 +1550,64 @@ fn database_migration_adds_url_contains_to_existing_site_pattern_constraint() {
         )
         .expect("legacy row should survive migration");
     assert_eq!(legacy_value, "https://legacy.example/");
+}
+
+#[test]
+fn database_migration_adds_scheduled_block_tier_without_relabeling_existing_rules() {
+    let conn = Connection::open_in_memory().expect("database should open");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE policy_site_lists (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            tier TEXT NOT NULL CHECK (tier IN ('hard', 'controlled_access')),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            allowance_id TEXT,
+            max_session_minutes INTEGER,
+            cooldown_minutes INTEGER,
+            max_unlocks_per_hour INTEGER
+        );
+
+        CREATE TABLE policy_app_rules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            tier TEXT NOT NULL CHECK (tier IN ('hard', 'controlled_access')),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            allowance_id TEXT,
+            max_session_minutes INTEGER,
+            cooldown_minutes INTEGER,
+            max_unlocks_per_hour INTEGER
+        );
+
+        INSERT INTO policy_site_lists (id, name, tier, enabled)
+        VALUES ('existing-flexible', 'Existing flexible', 'controlled_access', 1);
+        INSERT INTO policy_app_rules (id, name, tier, enabled)
+        VALUES ('existing-app', 'Existing app', 'hard', 1);
+        "#,
+    )
+    .expect("legacy tier schema should initialize");
+
+    migrate_database(&conn).expect("database should migrate");
+
+    conn.execute(
+        "INSERT INTO policy_site_lists (id, name, tier, enabled) VALUES (?1, ?2, ?3, 1)",
+        ("new-strict", "New strict", "scheduled_block"),
+    )
+    .expect("scheduled site tier should satisfy migrated constraint");
+    conn.execute(
+        "INSERT INTO policy_app_rules (id, name, tier, enabled) VALUES (?1, ?2, ?3, 1)",
+        ("new-strict-app", "New strict app", "scheduled_block"),
+    )
+    .expect("scheduled app tier should satisfy migrated constraint");
+
+    let existing_tier: String = conn
+        .query_row(
+            "SELECT tier FROM policy_site_lists WHERE id = 'existing-flexible'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("existing site tier should remain");
+    assert_eq!(existing_tier, "controlled_access");
 }
 
 #[test]

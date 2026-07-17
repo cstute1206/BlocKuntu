@@ -45,7 +45,7 @@
     enforcement: EnforcementStatus | null;
     runningAppsWindowDetection: WindowDetectionStatus | null;
     applicationUiPreferences: ApplicationUiPreferences;
-    uninstallPhrase: string | null;
+    buildNumber: string | null;
     uninstallPhraseLoading: boolean;
     uninstallPhraseInput?: string;
     uninstallRunning: boolean;
@@ -89,7 +89,7 @@
     enforcement,
     runningAppsWindowDetection,
     applicationUiPreferences,
-    uninstallPhrase,
+    buildNumber,
     uninstallPhraseLoading,
     uninstallPhraseInput = $bindable(""),
     uninstallRunning,
@@ -128,7 +128,7 @@
   let warnHealthCount = $derived(healthChecks.filter((check) => check.state === "warn").length);
   let errorHealthCount = $derived(healthChecks.filter((check) => check.state === "error").length);
   let canRunUninstall = $derived(
-    Boolean(operatorWindowOpen && uninstallPhrase && uninstallPhraseInput.trim() && !uninstallPhraseLoading)
+    Boolean(uninstallPhraseInput.trim() && !uninstallPhraseLoading)
   );
   let canUnlockTier1Edit = $derived(Boolean(operatorWindowOpen && tier1EditPhraseInput.trim()));
   let policyActionRunning = $derived(policyExportRunning || policyImportRunning);
@@ -322,6 +322,7 @@
               <label class="preference-row"><span><strong>Restore last selected page</strong><small>Open the page you were using when the GUI was last closed.</small></span><input type="checkbox" checked={applicationUiPreferences.restoreLastSelectedPage} onchange={updateRestoreLastSelectedPage} /></label>
               <label class="preference-row"><span><strong>Dashboard and status refresh</strong><small>How often the GUI reloads live daemon status.</small></span><select value={applicationUiPreferences.refreshIntervalSeconds} onchange={updateRefreshInterval}><option value="5">Every 5 seconds</option><option value="15">Every 15 seconds</option><option value="30">Every 30 seconds</option><option value="60">Every minute</option></select></label>
             </div>
+            <div class="status-list"><div class="status-row"><span>Build</span><code>{buildNumber ?? "Unavailable"}</code></div></div>
             <div class="button-row compact-row settings-action-row"><button class="secondary" onclick={onShowFirstRunOverview}>Show first-run overview</button></div>
             <p class="settings-note">Starting on login, tray-close behaviour, and desktop notifications need reviewed native-runtime support and are not configurable yet.</p>
           </section>

@@ -4,10 +4,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, FixedOffset, Local, Utc};
+use chrono::{DateTime, Datelike, Days, FixedOffset, Local, TimeZone, Utc};
 use focus_core::{
     AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Database, Decision, DetoxSession,
-    EvaluationContext, FocusCore, ProcessIdentity, RuleTier, StrictModeConfig,
+    EvaluationContext, FocusCore, ProcessIdentity, RuleTier, StrictModeConfig, Weekday,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -187,8 +187,12 @@ impl DaemonApp {
             guarded.now.with_timezone(&Utc),
             guarded.integrity.state == "tampered",
         )?;
-        self.hosts
-            .verify_and_repair_with_active_detox(core.config(), &active_detox_sessions)
+        self.hosts.verify_and_repair_with_active_detox(
+            core.config(),
+            &active_detox_sessions,
+            guarded.now,
+            guarded.integrity.state == "tampered",
+        )
     }
 
     pub async fn serve(self, args: &Args) -> Result<()> {
@@ -205,9 +209,7 @@ impl DaemonApp {
     fn spawn_repair_loop(&self) {
         let app = self.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(app.policy_repair_interval);
             loop {
-                interval.tick().await;
                 if let Err(err) = app.repair_firefox_policy() {
                     eprintln!("Firefox policy repair failed: {err}");
                 }
@@ -217,8 +219,25 @@ impl DaemonApp {
                 if let Err(err) = app.repair_hosts() {
                     eprintln!("hosts repair failed: {err}");
                 }
+                tokio::time::sleep(app.next_policy_repair_delay()).await;
             }
         });
+    }
+
+    fn next_policy_repair_delay(&self) -> Duration {
+        let Ok(core) = self.core.lock() else {
+            return self.policy_repair_interval;
+        };
+        let Ok(guarded) = clock_guard::guarded_now(core.database(), None, false) else {
+            return self.policy_repair_interval;
+        };
+        if guarded.integrity.state == "tampered" {
+            return self.policy_repair_interval;
+        }
+
+        next_tier2_site_schedule_boundary(core.config(), guarded.now)
+            .map(|delay| delay.min(self.policy_repair_interval))
+            .unwrap_or(self.policy_repair_interval)
     }
 
     fn spawn_process_scan_loop(&self) {
@@ -403,6 +422,73 @@ impl DaemonApp {
             }
         }
     }
+}
+
+fn next_tier2_site_schedule_boundary(
+    config: &focus_core::Config,
+    now: DateTime<FixedOffset>,
+) -> Option<Duration> {
+    let schedule_ids: HashSet<&str> = config
+        .rules
+        .iter()
+        .filter(|rule| rule.tier == RuleTier::ScheduledBlock)
+        .flat_map(|rule| rule.schedule_ids.iter().map(String::as_str))
+        .collect();
+    let mut next: Option<DateTime<FixedOffset>> = None;
+
+    for schedule in config
+        .schedules
+        .iter()
+        .filter(|schedule| schedule_ids.contains(schedule.id.as_str()))
+    {
+        for day_offset in 0..=8 {
+            let Some(date) = now.date_naive().checked_add_days(Days::new(day_offset)) else {
+                continue;
+            };
+            let weekday = Weekday::from(date.weekday());
+            for window in schedule
+                .windows
+                .iter()
+                .filter(|window| window.weekday.includes(weekday))
+            {
+                let start = now
+                    .offset()
+                    .with_ymd_and_hms(
+                        date.year(),
+                        date.month(),
+                        date.day(),
+                        u32::from(window.start.hour()),
+                        u32::from(window.start.minute()),
+                        0,
+                    )
+                    .single()?;
+                let end_date = if window.start < window.end {
+                    date
+                } else {
+                    date.checked_add_days(Days::new(1))?
+                };
+                let end = now
+                    .offset()
+                    .with_ymd_and_hms(
+                        end_date.year(),
+                        end_date.month(),
+                        end_date.day(),
+                        u32::from(window.end.hour()),
+                        u32::from(window.end.minute()),
+                        0,
+                    )
+                    .single()?;
+
+                for boundary in [start, end] {
+                    if boundary > now && next.is_none_or(|current| boundary < current) {
+                        next = Some(boundary);
+                    }
+                }
+            }
+        }
+    }
+
+    next.and_then(|boundary| (boundary - now).to_std().ok())
 }
 
 async fn handle_client(mut stream: UnixStream, context: RpcContext) -> Result<()> {
@@ -837,6 +923,7 @@ fn blocked_rule_id(reason: &BlockReason) -> Option<&str> {
     match reason {
         BlockReason::Detox { rule_id, .. }
         | BlockReason::HardBlock { rule_id, .. }
+        | BlockReason::ScheduledBlock { rule_id, .. }
         | BlockReason::ControlledAccess { rule_id, .. } => Some(rule_id.as_str()),
         BlockReason::InvalidUrl { .. } | BlockReason::RuntimeError { .. } => None,
     }
@@ -864,11 +951,42 @@ mod tests {
 
     use super::{
         ensure_mandatory_app_rules, is_blockuntu_process, load_startup_policy,
-        strict_browser_kill_details, sync_metered_app_usage_sessions, UNSUPPORTED_BROWSER_RULE_ID,
+        next_tier2_site_schedule_boundary, strict_browser_kill_details,
+        sync_metered_app_usage_sessions, UNSUPPORTED_BROWSER_RULE_ID,
     };
     use crate::error::DaemonError;
     use crate::policy_recovery::PolicyRecoveryManager;
     use crate::process_scan::{supported_browser_for_process, ProcessInfo, SupportedBrowser};
+
+    #[test]
+    fn tier2_hosts_repair_wakes_at_the_next_schedule_boundary() {
+        let config = Config::from_toml_str(
+            r#"
+            [[schedules]]
+            id = "work"
+
+            [[schedules.windows]]
+            weekday = "mon"
+            start = "09:00"
+            end = "17:00"
+
+            [[rules]]
+            id = "strict"
+            name = "Strict"
+            tier = "scheduled_block"
+            schedule_ids = ["work"]
+            patterns = [{ kind = "domain", value = "strict.example" }]
+            "#,
+        )
+        .expect("config should parse");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-18T08:59:00+00:00")
+            .expect("timestamp should parse");
+
+        assert_eq!(
+            next_tier2_site_schedule_boundary(&config, now),
+            Some(std::time::Duration::from_secs(60))
+        );
+    }
 
     #[test]
     fn restores_policy_snapshot_when_database_has_no_policy() {

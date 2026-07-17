@@ -18,8 +18,8 @@ Detox sessions, service state, and extension heartbeats.
 - Unique ID validation for site rules, app rules, schedules, and allowances.
 - Validation that referenced schedules and allowances exist.
 - Validation that one allowance is linked to only one site or app rule.
-- Validation that hard-block rules cannot define allowances.
-- Fixed Tier 2 unlock policy enforced by the policy engine.
+- Validation that Tier 1 and Tier 2 rules cannot define allowances.
+- Fixed Tier 3 unlock policy enforced by the policy engine.
 - Strict-mode settings:
   - require Firefox extension heartbeat
   - require Chrome extension heartbeat
@@ -30,7 +30,8 @@ Detox sessions, service state, and extension heartbeats.
 ## Website Blocking
 
 - Tier 1 hard-block website rules.
-- Tier 2 controlled-access website rules.
+- Tier 2 strict scheduled-block website rules.
+- Tier 3 controlled-access website rules.
 - Per-rule enabled/disabled state.
 - Multiple patterns per website rule.
 - Website pattern kinds:
@@ -43,11 +44,13 @@ Detox sessions, service state, and extension heartbeats.
 - URL normalization before policy evaluation.
 - Invalid URL blocking.
 - Tier 1 rules are always active when enabled.
-- Tier 2 rules are active only during linked schedule windows, unless they are
-  selected in an active Detox session.
-- Multiple matching Tier 2 site rules are resolved by selecting the stricter  
+- Tier 2 and Tier 3 rules are active only during linked schedule windows,
+  unless they are selected in an active Detox session.
+- Tier 2 cannot use an allowance or manual unlock. Tier 3 retains both during
+  schedule and Detox activation.
+- Multiple matching Tier 3 site rules are resolved by selecting the stricter
 applicable rule.
-- Tier 2 strictness accounts for allowance size and pattern specificity.
+- Tier 3 strictness accounts for allowance size and pattern specificity.
 - Block reason metadata includes rule ID, rule name, tier, controlled-access  
 reason, schedule details, expected release time, and allowance reset time.
 - URL probe support through the GUI and daemon RPC.
@@ -55,7 +58,8 @@ reason, schedule details, expected release time, and allowance reset time.
 ## Application Blocking
 
 - Tier 1 hard-block application rules.
-- Tier 2 controlled-access application rules.
+- Tier 2 strict scheduled-block application rules.
+- Tier 3 controlled-access application rules.
 - Per-rule enabled/disabled state.
 - Multiple matchers per application rule.
 - Application matcher kinds:
@@ -113,15 +117,15 @@ required extension heartbeat is stale beyond the configured grace period.
   - visit end
 - App usage accounting for metered app rules.
 - Daily usage calculation with current-day clamping.
-- Tier 2 allow while daily allowance remains.
-- Tier 2 block when allowance is exhausted.
+- Tier 3 allow while daily allowance remains.
+- Tier 3 block when allowance is exhausted.
 - Allowance exhaustion block reasons include next reset time.
 - Guardrails that prevent editing or deleting currently active allowances.
 - Automatic cleanup of unreferenced allowances after rule edits.
 
 ## Temporary Unlocks
 
-- Daemon-mediated `request_unlock` flow for Tier 2 targets.
+- Daemon-mediated `request_unlock` flow for Tier 3 targets.
 - Unlock target resolution for URLs and app rules.
 - Hard-blocked targets cannot be unlocked.
 - Unlock reasons must contain at least 20 letters.
@@ -129,24 +133,27 @@ required extension heartbeat is stale beyond the configured grace period.
 - Empty target validation.
 - Active unlock detection to prevent duplicate unlocks for a rule.
 - One global unlock per rolling hour across all website and application rules.
-- Active Detox targets reject manual unlock requests before the reason or
-  hourly quota is consumed.
+- Active Tier 2 targets reject manual unlock requests before the reason or
+  hourly quota is consumed, including when activated through Detox.
+- Active Tier 3 Detox targets remain eligible for manual unlock.
 - Unlock rows persisted in SQLite.
 - `unlock_granted` event logging.
 - GUI manual unlock form.
-- Every Tier 2 unlock lasts exactly 2 minutes.
+- Every Tier 3 unlock lasts exactly 2 minutes.
 
 ## Detox Sessions
 
-- Detox sessions that temporarily block selected site rules and app rules.
+- Detox sessions that temporarily activate selected Tier 2 and Tier 3 site
+  rules and app rules.
 - Optional Detox session name.
 - Duration validation from 1 minute to 12 weeks.
 - Session target validation against configured site and app rules.
 - Active, scheduled, expired, and cancelled session status reporting.
 - Remaining time reporting for active sessions.
-- Detox blocks take precedence over normal hard/controlled evaluation.
-- Detox block reasons include session ID, session name, target kind, rule ID,  
-rule name, end time, and expected release time.
+- Detox makes Tier 2 targets strict and non-bypassable. Tier 3 targets continue
+  through normal allowance and manual-unlock evaluation.
+- Tier 2 Detox block reasons include session ID, session name, target kind,
+  rule ID, rule name, end time, and expected release time.
 - GUI Detox start workflow with custom minute, hour, day, and week durations
   plus hour/day/week presets.
 - GUI active Detox list and recent Detox history.
@@ -253,7 +260,10 @@ path.
 - Deferred browser policy repair until the first matching extension heartbeat.
 - Optional disabling of Firefox and Chrome policy management through daemon  
 flags.
-- Hosts-file fallback for Tier 1 domain patterns.
+- Hosts-file fallback for Tier 1 domain patterns and active Tier 2 domain
+  patterns, whether Tier 2 is activated by a schedule or Detox.
+- Schedule-boundary hosts repair so Tier 2 domains enter and leave the managed
+  block when their activation changes.
 - Managed `/etc/hosts` block between BlocKuntu markers.
 - Preservation of user-owned hosts-file content outside the managed block.
 - Hosts repair after relevant site-list policy changes.
@@ -379,13 +389,15 @@ active implementation.
 
 ## Known Implemented Limitations
 
-- Hosts-file fallback only represents Tier 1 domain patterns. Exact URL,  
-prefix, contains, and path-level rules are browser-extension enforcement.
+- Hosts-file fallback represents Tier 1 and active Tier 2 domain patterns.
+  Tier 3 is deliberately excluded so allowances and manual unlocks work.
+  Exact URL, prefix, contains, and path-level rules remain browser-extension
+  enforcement.
 - Window-title app matching depends on `wmctrl` and is mainly useful on  
 X11-compatible sessions.
 - Firefox and Google Chrome are the supported browser enforcement paths;  
 other browsers are handled as blocked applications in strict mode.
-- Tier 2 unlock behavior is fixed in the policy engine and is not configurable
+- Tier 3 unlock behavior is fixed in the policy engine and is not configurable
   through TOML.
 - Network-level fallback beyond browser and hosts enforcement is documented as  
 future work.

@@ -124,7 +124,8 @@ webNavigation.onBeforeNavigate
   -> focusd builds EvaluationContext
   -> focus-core evaluates:
        Tier 1 hard block
-       Tier 2 controlled access
+       Tier 2 strict scheduled block
+       Tier 3 controlled access
        active unlocks
        weekly schedule windows
        daily allowance usage
@@ -135,14 +136,22 @@ webNavigation.onBeforeNavigate
 Tier 1 hard blocks are strict. Once active, the unprivileged GUI editor is not
 allowed to remove or weaken them.
 
-Tier 2 controlled access can be unlocked only through `request_unlock`, which
+Tier 2 blocks are active through a linked schedule or Detox, cannot use an
+allowance or manual unlock, and contribute domain patterns to the managed hosts
+block while active.
+
+Tier 3 controlled access can be unlocked only through `request_unlock`, which
 enforces:
 
 - Fixed two-minute duration.
 - One global unlock per rolling hour.
 - A unique reason containing at least 20 letters.
 - Target matching against controlled-access rules.
-- Rejection before unlock accounting when the target is covered by Detox.
+- Rejection when a stricter Tier 1 or active Tier 2 rule also matches.
+
+Detox is an activation source rather than one universal strictness level: Tier
+2 remains non-bypassable, while Tier 3 continues through its normal allowance
+and manual-unlock evaluation.
 
 ## Heartbeat Flow
 
@@ -182,7 +191,7 @@ The daemon accepts one JSON request per Unix socket connection. Current methods:
 | `write_config_file` | GUI | Validate, atomically write, and reload TOML |
 | `log_summary` | GUI | Parse the plain daemon event log into total and event-kind counts |
 | `evaluate_url` | Extension, GUI probe | Return allow/block decision for a URL |
-| `request_unlock` | GUI | Request a Tier 2 controlled-access unlock |
+| `request_unlock` | GUI | Request a Tier 3 controlled-access unlock |
 | `record_visit_start` | Extension | Start allowed visit tracking |
 | `record_visit_heartbeat` | Extension | Keep visit tracking alive |
 | `record_visit_end` | Extension | End visit tracking |
@@ -238,8 +247,8 @@ write managed policy once the integration is proven alive.
 
 ### Hosts Fallback
 
-`focusd` renders a managed block in the hosts file for Tier 1 domain
-patterns:
+`focusd` renders a managed block in the hosts file for Tier 1 domain patterns
+and Tier 2 domain patterns while their schedule or Detox activation is active:
 
 ```text
 # BEGIN BLOCKUNTU MANAGED
@@ -435,9 +444,10 @@ Firefox/Chrome navigation
 GUI request
   -> request_unlock RPC
   -> focus-core validates target and constraints
-  -> active Detox rejects the request without consuming reason/quota
+  -> an active Tier 2 match rejects without consuming reason/quota
+  -> Tier 3 remains unlockable when activated by schedule or Detox
   -> SQLite unlock row
-  -> future evaluate_url calls may allow the matched Tier 2 rule until expiry
+  -> future evaluate_url calls may allow the matched Tier 3 rule until expiry
 ```
 
 ### Config Edit

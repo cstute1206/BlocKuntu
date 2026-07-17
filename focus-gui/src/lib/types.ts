@@ -25,7 +25,7 @@ export interface RulePattern {
 export interface Rule {
   id: string;
   name: string;
-  tier: "hard" | "controlled_access";
+  tier: "hard" | "scheduled_block" | "controlled_access";
   enabled: boolean;
   patterns: RulePattern[];
   schedule_ids: string[];
@@ -46,7 +46,7 @@ export interface AppMatcher {
 export interface AppRule {
   id: string;
   name: string;
-  tier: "hard" | "controlled_access";
+  tier: "hard" | "scheduled_block" | "controlled_access";
   enabled: boolean;
   matchers: AppMatcher[];
   schedule_ids: string[];
@@ -272,6 +272,10 @@ export interface Tier1EditStatus {
 
 export interface UninstallConfirmation {
   phrase: string;
+}
+
+export interface BuildInfo {
+  build_number: string;
 }
 
 export interface UninstallResult {

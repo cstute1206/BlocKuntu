@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Local, Timelike, Utc, Weekday};
+use focus_core::{emergency_uninstall_code_is_valid, BUILD_NUMBER};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -23,7 +24,10 @@ const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.json";
 const DEV_FIREFOX_POLICY_PATH: &str = "/tmp/blockuntu/firefox/policies.json";
 const DEFAULT_CHROME_POLICY_PATH: &str = "/etc/opt/chrome/policies/managed/blockuntu.json";
 const DEV_CHROME_POLICY_PATH: &str = "/tmp/blockuntu/chrome/policies/managed/blockuntu.json";
-const FIREFOX_EXTENSION_IDS: [&str; 2] = ["blockuntu@example.local", "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}"];
+const FIREFOX_EXTENSION_IDS: [&str; 2] = [
+    "blockuntu@example.local",
+    "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
+];
 const FIREFOX_COMMANDS: [&str; 2] = ["/usr/bin/firefox", "/bin/firefox"];
 const FIREFOX_USER_NATIVE_HOST_MANIFEST: &str =
     ".mozilla/native-messaging-hosts/blockuntu_native.json";
@@ -151,6 +155,11 @@ struct UnlockRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UninstallConfirmation {
     phrase: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BuildInfo {
+    build_number: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,6 +310,13 @@ fn uninstall_confirmation_phrase() -> Result<UninstallConfirmation, GuiError> {
 }
 
 #[tauri::command]
+fn build_info() -> BuildInfo {
+    BuildInfo {
+        build_number: BUILD_NUMBER.to_string(),
+    }
+}
+
+#[tauri::command]
 fn tier1_edit_key() -> Result<Tier1EditKey, GuiError> {
     let key = fs::read_to_string(TIER1_EDIT_KEY_FILE)?
         .lines()
@@ -319,12 +335,15 @@ fn tier1_edit_key() -> Result<Tier1EditKey, GuiError> {
 
 #[tauri::command]
 fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
-    if !operator_window_open_now() {
-        return Err(GuiError::OperatorWindowClosed);
-    }
-
-    if !uninstall_phrase_matches(phrase.trim())? {
-        return Err(GuiError::InvalidUninstallPhrase);
+    let candidate = phrase.trim();
+    let emergency_authorized = emergency_uninstall_code_is_valid(candidate);
+    if !emergency_authorized {
+        if !operator_window_open_now() {
+            return Err(GuiError::OperatorWindowClosed);
+        }
+        if !uninstall_phrase_matches(candidate)? {
+            return Err(GuiError::InvalidUninstallPhrase);
+        }
     }
 
     if !debian_package_installed()? {
@@ -333,7 +352,7 @@ fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
         ));
     }
 
-    if notify_browser_extensions_before_uninstall() {
+    if notify_browser_extensions_before_uninstall(emergency_authorized.then_some(candidate)) {
         std::thread::sleep(Duration::from_secs(BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS));
     }
 
@@ -456,12 +475,15 @@ fn resolve_socket_path(socket_path: Option<&str>) -> String {
     }
 }
 
-fn notify_browser_extensions_before_uninstall() -> bool {
+fn notify_browser_extensions_before_uninstall(emergency_code: Option<&str>) -> bool {
     let socket = resolve_socket_path(None);
     call_daemon(
         &socket,
         "prepare_uninstall",
-        json!({ "now": Utc::now().to_rfc3339() }),
+        json!({
+            "now": Utc::now().to_rfc3339(),
+            "emergency_code": emergency_code
+        }),
     )
     .is_ok()
 }
@@ -1567,6 +1589,7 @@ pub fn run() {
             import_policy_toml,
             evaluate_url,
             request_unlock,
+            build_info,
             uninstall_confirmation_phrase,
             tier1_edit_key,
             uninstall_blockuntu,

@@ -76,20 +76,22 @@ focus-gui frontend -> Tauri command -> blockuntud -> focus-core
 BlocKuntu supports:
 
 - Tier 1 hard blocks.
-- Tier 2 controlled access rules.
+- Tier 2 strict scheduled blocks that cannot be bypassed.
+- Tier 3 controlled-access rules with allowances and manual unlocks.
 - Domain and URL pattern matching.
 - Weekly schedules, including grouped days such as workdays and weekends.
 - Daily allowances, including zero-minute allowances.
-- Two-minute temporary unlocks for Tier 2 rules.
+- Two-minute temporary unlocks for Tier 3 rules.
 - One global unlock per rolling hour with unique, substantive reasons.
-- Manual unlocks cannot bypass active Detox sessions.
+- Detox activates Tier 2 and Tier 3 rules outside their schedules; Tier 2 stays
+  strict while Tier 3 keeps its allowance and manual unlock behavior.
 - Detox durations from one minute through 12 weeks.
 - App rules based on process identity such as executable path, basename,
   command name, desktop id, and fallback window title matching.
 - Browser heartbeat fail-closed behavior when the extension, native host, or
   daemon chain is unhealthy.
 
-If multiple Tier 2 site rules match, the policy engine evaluates the stricter
+If multiple Tier 3 site rules match, the policy engine evaluates the stricter
 applicable rule rather than relying on the first matching rule.
 
 ## Production Package

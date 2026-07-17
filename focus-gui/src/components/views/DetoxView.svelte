@@ -68,10 +68,10 @@
   ];
 
   let detoxSiteRules = $derived(
-    config?.rules.filter((rule) => rule.tier === "controlled_access") ?? []
+    config?.rules.filter((rule) => rule.tier !== "hard") ?? []
   );
   let detoxAppRules = $derived(
-    config?.app_rules.filter((rule) => rule.tier === "controlled_access") ?? []
+    config?.app_rules.filter((rule) => rule.tier !== "hard") ?? []
   );
   let activeSessions = $derived(
     detoxSessions.filter(
@@ -121,7 +121,8 @@
   }
 
   function ruleLabel(rule: Rule | AppRule): string {
-    return rule.name || rule.id;
+    const tier = rule.tier === "scheduled_block" ? "Tier 2" : "Tier 3";
+    return `${rule.name || rule.id} (${tier})`;
   }
 
   function sessionTitle(session: DetoxSession): string {
@@ -203,7 +204,8 @@
       {#if detoxDurationMinutes > MAX_DETOX_DURATION_MINUTES}
         Detox can run for at most 12 weeks.
       {:else if plannedEnd}
-        Ends {plannedEnd.toLocaleString()}. Manual unlock cannot bypass Detox.
+        Ends {plannedEnd.toLocaleString()}. Tier 2 stays strict; Tier 3 keeps its allowance and
+        manual unlock.
       {:else}
         Choose a duration from one minute to 12 weeks.
       {/if}
@@ -221,7 +223,7 @@
           <span>{ruleLabel(rule)}</span>
         </label>
       {:else}
-        <p class="empty-state">No Tier 2 websites.</p>
+        <p class="empty-state">No Tier 2 or Tier 3 websites.</p>
       {/each}
     </div>
 
@@ -237,7 +239,7 @@
           <span>{ruleLabel(rule)}</span>
         </label>
       {:else}
-        <p class="empty-state">No Tier 2 applications.</p>
+        <p class="empty-state">No Tier 2 or Tier 3 applications.</p>
       {/each}
     </div>
 

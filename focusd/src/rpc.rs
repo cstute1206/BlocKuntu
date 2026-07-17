@@ -5,10 +5,11 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelike, Utc};
 use focus_core::{
-    evaluate_app, evaluate_url, record_visit_end, record_visit_heartbeat, record_visit_start,
-    request_unlock, site_usage_is_metered, AllowanceConfig, AppRuleConfig, BlockReason, Config,
-    ControlledBlockReason, Decision, DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore,
-    HeartbeatState, RuleConfig, RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
+    emergency_uninstall_code_is_valid, evaluate_app, evaluate_url, record_visit_end,
+    record_visit_heartbeat, record_visit_start, request_unlock, site_usage_is_metered,
+    AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision,
+    DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState, RuleConfig,
+    RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -215,6 +216,8 @@ struct Tier1EditStatusParams {
 struct PrepareUninstallParams {
     #[serde(default)]
     now: Option<String>,
+    #[serde(default)]
+    emergency_code: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -554,7 +557,7 @@ fn status(context: &RpcContext) -> Result<Value> {
 
 fn enforcement_status(context: &RpcContext) -> Result<Value> {
     let hosts = context.hosts()?;
-    let (enforcement_state, config, active_detox_sessions) = {
+    let (enforcement_state, config, active_detox_sessions, now, clock_tampered) = {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
         let guarded = clock_guard::guarded_now(core.database(), None, context.trust_client_time)?;
         let active_detox_sessions = hosts_detox_sessions_for_clock(
@@ -566,6 +569,8 @@ fn enforcement_status(context: &RpcContext) -> Result<Value> {
             enforcement_state_from_core(&core)?,
             core.config().clone(),
             active_detox_sessions,
+            guarded.now,
+            guarded.integrity.state == "tampered",
         )
     };
 
@@ -575,7 +580,12 @@ fn enforcement_status(context: &RpcContext) -> Result<Value> {
         "clock_integrity": clock_integrity_status_method(context)?,
         "firefox_policy": firefox_policy_status_json(context)?,
         "chrome_policy": chrome_policy_status_json(context)?,
-        "hosts_file": hosts.status_with_active_detox(&config, &active_detox_sessions)
+        "hosts_file": hosts.status_with_active_detox(
+            &config,
+            &active_detox_sessions,
+            now,
+            clock_tampered,
+        )
     }))
 }
 
@@ -590,9 +600,15 @@ fn clock_integrity_status_method(context: &RpcContext) -> Result<Value> {
 fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Result<Value> {
     let hosts = context.hosts()?;
     let operator_now = guarded_now(context, params.now.as_deref())?;
-    reject_if_clock_tampered(context)?;
-    if !operator_window_open(operator_now) {
-        return Err(operator_window_closed_error("GUI uninstall"));
+    let emergency_authorized = params
+        .emergency_code
+        .as_deref()
+        .is_some_and(emergency_uninstall_code_is_valid);
+    if !emergency_authorized {
+        reject_if_clock_tampered(context)?;
+        if !operator_window_open(operator_now) {
+            return Err(operator_window_closed_error("GUI uninstall"));
+        }
     }
     let now = Utc::now();
     let uninstalling_until = now + Duration::seconds(UNINSTALL_HANDOFF_SECONDS);
@@ -622,7 +638,8 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
             "uninstall_prepared",
             Some("system"),
             Some(&format!(
-                "browser_extension_mode={BROWSER_EXTENSION_MODE_UNINSTALLING};until={};firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}",
+                "authorization={};browser_extension_mode={BROWSER_EXTENSION_MODE_UNINSTALLING};until={};firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}",
+                if emergency_authorized { "emergency" } else { "operator_window" },
                 uninstalling_until.to_rfc3339()
             )),
             now,
@@ -1042,7 +1059,7 @@ fn upsert_allowance_method(context: &RpcContext, params: UpsertAllowanceParams) 
         Some(index) => {
             let current_allowance = &next.allowances[index];
             if current_allowance != &params.allowance
-                && allowance_is_active_at(&current_allowance.id, core.config(), now)
+                && allowance_is_active_at(&current_allowance.id, &core, now)?
             {
                 return Err(active_allowance_edit_error(&current_allowance.id));
             }
@@ -1084,7 +1101,7 @@ fn delete_allowance_method(context: &RpcContext, params: DeleteAllowanceParams) 
         )));
     };
 
-    if allowance_is_active_at(&params.id, core.config(), now) {
+    if allowance_is_active_at(&params.id, &core, now)? {
         return Err(active_allowance_edit_error(&params.id));
     }
 
@@ -1557,6 +1574,9 @@ fn running_app_decision_details(
         Decision::Block(BlockReason::HardBlock { rule_id, rule_name }) => {
             ("block", Some(rule_id.clone()), Some(rule_name.clone()))
         }
+        Decision::Block(BlockReason::ScheduledBlock { rule_id, rule_name }) => {
+            ("block", Some(rule_id.clone()), Some(rule_name.clone()))
+        }
         Decision::Block(BlockReason::ControlledAccess {
             rule_id, rule_name, ..
         }) => ("block", Some(rule_id.clone()), Some(rule_name.clone())),
@@ -1595,10 +1615,75 @@ fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Resul
 
     let metering_active = decision.is_allow() && site_usage_is_metered(&params.url, &eval_context);
     let mut response = decision_to_json(&decision, core.config(), now);
+    if let Decision::Block(BlockReason::ControlledAccess {
+        rule_id, reason, ..
+    }) = &decision
+    {
+        let detox_sessions = if guarded.integrity.state == "tampered" {
+            core.database().uncancelled_detox_sessions()?
+        } else {
+            core.database()
+                .active_detox_sessions(now.with_timezone(&Utc))?
+        };
+        if let Some(session) = detox_sessions
+            .iter()
+            .filter(|session| session.site_rule_ids.iter().any(|id| id == rule_id))
+            .max_by_key(|session| session.ends_at.timestamp_micros())
+        {
+            decorate_controlled_detox_reason(
+                &mut response,
+                rule_id,
+                reason,
+                session,
+                core.config(),
+                now,
+            );
+        }
+    }
     if let Some(response) = response.as_object_mut() {
         response.insert("metering_active".to_string(), json!(metering_active));
     }
     Ok(response)
+}
+
+fn decorate_controlled_detox_reason(
+    response: &mut Value,
+    rule_id: &str,
+    controlled_reason: &ControlledBlockReason,
+    session: &DetoxSession,
+    config: &Config,
+    now: DateTime<FixedOffset>,
+) {
+    let Some(reason) = response.get_mut("reason").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let schedule_end = config
+        .rules
+        .iter()
+        .find(|rule| rule.id == rule_id)
+        .and_then(|rule| rule_schedule_inactive_at(rule, config, now));
+    let detox_end = session.ends_at.with_timezone(now.offset());
+    let activation_end = schedule_end
+        .map(|schedule_end| schedule_end.max(detox_end))
+        .unwrap_or(detox_end);
+    let free_at = if matches!(controlled_reason, ControlledBlockReason::AllowanceExhausted) {
+        activation_end.min(next_allowance_reset_at(now))
+    } else {
+        activation_end
+    };
+
+    reason.insert(
+        "blocked_by".to_string(),
+        json!(if schedule_end.is_some() {
+            "schedule_and_detox"
+        } else {
+            "detox"
+        }),
+    );
+    reason.insert("session_id".to_string(), json!(session.id));
+    reason.insert("session_name".to_string(), json!(session.name));
+    reason.insert("detox_ends_at".to_string(), json!(session.ends_at));
+    reason.insert("free_at".to_string(), json!(free_at.to_rfc3339()));
 }
 
 fn request_unlock_method(context: &RpcContext, params: RequestUnlockParams) -> Result<Value> {
@@ -2053,6 +2138,19 @@ fn block_reason_to_json(
             "detail": "Tier 1 sites are always blocked and are also eligible for the hosts-file fallback.",
             "free_at": Value::Null
         }),
+        BlockReason::ScheduledBlock { rule_id, rule_name } => json!({
+            "kind": "scheduled_block",
+            "tier": "tier_2",
+            "rule_id": rule_id,
+            "rule_name": rule_name,
+            "blocked_by": "schedule",
+            "summary": "This target is on an active Tier 2 scheduled-block list.",
+            "detail": "Tier 2 cannot be bypassed with an allowance or manual unlock and domain rules also use the hosts-file fallback while active.",
+            "free_at": config.rules.iter()
+                .find(|rule| rule.id == *rule_id)
+                .and_then(|rule| rule_schedule_inactive_at(rule, config, now))
+                .map(|free_at| free_at.to_rfc3339())
+        }),
         BlockReason::ControlledAccess {
             rule_id,
             rule_name,
@@ -2075,7 +2173,7 @@ fn controlled_block_reason_to_json(
 ) -> Value {
     let mut value = json!({
         "kind": "controlled_access",
-        "tier": "tier_2",
+        "tier": "tier_3",
         "rule_id": rule_id,
         "rule_name": rule_name,
         "controlled_reason": controlled_reason_to_str(reason),
@@ -2145,11 +2243,11 @@ fn controlled_reason_to_str(reason: &ControlledBlockReason) -> &'static str {
 
 fn controlled_reason_summary(reason: &ControlledBlockReason) -> &'static str {
     match reason {
-        ControlledBlockReason::NoAllowance => "This Tier 2 site needs an explicit unlock.",
+        ControlledBlockReason::NoAllowance => "This Tier 3 target needs an explicit unlock.",
         ControlledBlockReason::AllowanceExhausted => {
-            "This Tier 2 site used up its daily allowance."
+            "This Tier 3 target used up its daily allowance."
         }
-        ControlledBlockReason::UnlockRequired => "This Tier 2 site requires an unlock.",
+        ControlledBlockReason::UnlockRequired => "This Tier 3 target requires an unlock.",
     }
 }
 
@@ -2357,7 +2455,7 @@ fn validate_detox_targets(
                 rule_id
             )));
         };
-        if rule.tier != RuleTier::ControlledAccess {
+        if rule.tier == RuleTier::Hard {
             return Err(DaemonError::InvalidRequest(format!(
                 "site list '{}' is Tier 1 and cannot be used for detox",
                 rule_id
@@ -2372,7 +2470,7 @@ fn validate_detox_targets(
                 rule_id
             )));
         };
-        if rule.tier != RuleTier::ControlledAccess {
+        if rule.tier == RuleTier::Hard {
             return Err(DaemonError::InvalidRequest(format!(
                 "app rule '{}' is Tier 1 and cannot be used for detox",
                 rule_id
@@ -2525,7 +2623,7 @@ fn repair_hosts_after_policy_change(
         .database()
         .active_detox_sessions(now.with_timezone(&Utc))?;
     hosts
-        .verify_and_repair_with_active_detox(core.config(), &active_detox_sessions)
+        .verify_and_repair_with_active_detox(core.config(), &active_detox_sessions, now, false)
         .map(Some)
 }
 
@@ -2598,13 +2696,33 @@ fn remove_unreferenced_allowance(config: &mut Config, allowance_id: Option<&str>
     }
 }
 
-fn allowance_is_active_at(allowance_id: &str, config: &Config, now: DateTime<FixedOffset>) -> bool {
-    config.rules.iter().any(|rule| {
+fn allowance_is_active_at(
+    allowance_id: &str,
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+) -> Result<bool> {
+    let config = core.config();
+    if config.rules.iter().any(|rule| {
         rule.allowance_id.as_deref() == Some(allowance_id) && rule_is_active_at(rule, config, now)
     }) || config.app_rules.iter().any(|rule| {
         rule.allowance_id.as_deref() == Some(allowance_id)
             && app_rule_is_active_at(rule, config, now)
-    })
+    }) {
+        return Ok(true);
+    }
+
+    let active_detox_sessions = core
+        .database()
+        .active_detox_sessions(now.with_timezone(&Utc))?;
+    Ok(active_detox_sessions.iter().any(|session| {
+        config.rules.iter().any(|rule| {
+            rule.allowance_id.as_deref() == Some(allowance_id)
+                && session.site_rule_ids.iter().any(|id| id == &rule.id)
+        }) || config.app_rules.iter().any(|rule| {
+            rule.allowance_id.as_deref() == Some(allowance_id)
+                && session.app_rule_ids.iter().any(|id| id == &rule.id)
+        })
+    }))
 }
 
 fn site_list_edit_is_additive(current: &RuleConfig, proposed: &RuleConfig) -> bool {
@@ -2664,7 +2782,9 @@ fn app_rule_in_active_detox(
 fn rule_is_active_at(rule: &RuleConfig, config: &Config, now: DateTime<FixedOffset>) -> bool {
     match rule.tier {
         RuleTier::Hard => true,
-        RuleTier::ControlledAccess => schedule_ids_are_active_at(&rule.schedule_ids, config, now),
+        RuleTier::ScheduledBlock | RuleTier::ControlledAccess => {
+            schedule_ids_are_active_at(&rule.schedule_ids, config, now)
+        }
     }
 }
 
@@ -2675,7 +2795,9 @@ fn app_rule_is_active_at(
 ) -> bool {
     match rule.tier {
         RuleTier::Hard => true,
-        RuleTier::ControlledAccess => schedule_ids_are_active_at(&rule.schedule_ids, config, now),
+        RuleTier::ScheduledBlock | RuleTier::ControlledAccess => {
+            schedule_ids_are_active_at(&rule.schedule_ids, config, now)
+        }
     }
 }
 
@@ -3423,7 +3545,7 @@ mod tests {
         let reason = &response["result"]["reason"];
         assert_eq!(response["result"]["decision"], "block");
         assert_eq!(reason["kind"], "controlled_access");
-        assert_eq!(reason["tier"], "tier_2");
+        assert_eq!(reason["tier"], "tier_3");
         assert_eq!(reason["blocked_by"], "schedule");
         assert_eq!(reason["active_schedules"][0]["id"], "work-hours");
         assert_eq!(reason["free_at"], local_window_end);
@@ -4230,7 +4352,11 @@ mod tests {
         .expect("response should parse");
 
         assert_eq!(eval_response["result"]["decision"], "block");
-        assert_eq!(eval_response["result"]["reason"]["kind"], "detox");
+        assert_eq!(
+            eval_response["result"]["reason"]["kind"],
+            "controlled_access"
+        );
+        assert_eq!(eval_response["result"]["reason"]["tier"], "tier_3");
         assert_eq!(eval_response["result"]["reason"]["blocked_by"], "detox");
         assert_eq!(eval_response["result"]["reason"]["session_id"], session_id);
 
@@ -4448,8 +4574,18 @@ mod tests {
 
     #[test]
     fn start_and_cancel_detox_repairs_hosts_file_domains() {
-        let (temp, context) =
-            rpc_context_with_enforcement_managers_for(editable_rpc_context(), false);
+        let strict_context = rpc_context_with_config_toml(
+            r#"
+            [[rules]]
+            id = "controlled"
+            name = "Strict scheduled"
+            tier = "scheduled_block"
+            patterns = [
+              { kind = "domain", value = "controlled.example", match_subdomains = true }
+            ]
+            "#,
+        );
+        let (temp, context) = rpc_context_with_enforcement_managers_for(strict_context, false);
         let (_key_temp, context) = rpc_context_with_tier1_edit_key(context);
         let hosts_path = temp.path().join("hosts");
         let start_request = json!({

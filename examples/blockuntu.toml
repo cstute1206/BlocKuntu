@@ -74,7 +74,7 @@ patterns = [
 
 [[rules]]
 id = "youtube-controlled"
-name = "YouTube controlled access"
+name = "YouTube Tier 3 controlled access"
 tier = "controlled_access"
 schedule_ids = ["work-hours"]
 allowance_id = "social-daily"
@@ -83,9 +83,9 @@ patterns = [
 ]
 
 [[app_rules]]
-id = "kmines-hard"
-name = "KMines hard block"
-tier = "hard"
+id = "kmines-scheduled"
+name = "KMines Tier 2 scheduled block"
+tier = "scheduled_block"
 schedule_ids = ["work-hours"]
 matchers = [
   { kind = "command_name", value = "kmines" },

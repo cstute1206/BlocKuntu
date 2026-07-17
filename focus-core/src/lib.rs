@@ -8,6 +8,7 @@
 mod config;
 mod core;
 mod db;
+mod emergency_uninstall;
 mod error;
 mod policy;
 mod types;
@@ -19,11 +20,12 @@ pub use config::{
 };
 pub use core::FocusCore;
 pub use db::{migrate_database, Database, HeartbeatState, ScheduleActivityTotal};
+pub use emergency_uninstall::{emergency_uninstall_code_is_valid, BUILD_NUMBER};
 pub use error::{ConfigError, Error, UnlockError};
 pub use policy::{
     evaluate_app, evaluate_url, metered_app_rule_ids_for_process, record_visit_end,
-    record_visit_heartbeat, record_visit_start, request_unlock, site_usage_is_metered,
-    PolicyEngine,
+    record_visit_heartbeat, record_visit_start, request_unlock, schedule_ids_are_active_at,
+    site_usage_is_metered, PolicyEngine,
 };
 pub use types::{
     BlockReason, ControlledBlockReason, Decision, DetoxSession, DetoxTargetKind, EvaluationContext,

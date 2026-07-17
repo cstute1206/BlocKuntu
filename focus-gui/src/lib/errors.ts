@@ -217,18 +217,25 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
     return `This target is covered by hard block "${hardBlockedTarget[1]}" and cannot be manually unlocked.`;
   }
 
+  const scheduledBlockedTarget = normalized.match(
+    /^target is Tier 2 scheduled-blocked and cannot be unlocked: (.+)$/
+  );
+  if (scheduledBlockedTarget) {
+    return `This target is covered by active Tier 2 rule "${scheduledBlockedTarget[1]}" and cannot be manually unlocked.`;
+  }
+
   const detoxBlockedTarget = normalized.match(
     /^target is covered by active detox session (.+) until (.+): (.+)$/
   );
   if (detoxBlockedTarget) {
-    return `Manual unlock is unavailable because rule "${detoxBlockedTarget[3]}" is in active Detox "${detoxBlockedTarget[1]}" until ${formatTimestamp(detoxBlockedTarget[2])}.`;
+    return `Manual unlock is unavailable because Tier 2 rule "${detoxBlockedTarget[3]}" is in active Detox "${detoxBlockedTarget[1]}" until ${formatTimestamp(detoxBlockedTarget[2])}.`;
   }
 
   const unknownUnlockTarget = normalized.match(
     /^target does not match a configured controlled-access rule: (.+)$/
   );
   if (unknownUnlockTarget) {
-    return `No active Tier 2 rule matches ${unknownUnlockTarget[1]}. Manual unlocks only work for active Tier 2 rules.`;
+    return `No active Tier 3 rule matches ${unknownUnlockTarget[1]}. Manual unlocks only work for Tier 3 rules activated by a schedule or Detox.`;
   }
 
   const activeUnlock = normalized.match(/^an unlock is already active for rule (.+) until (.+)$/);

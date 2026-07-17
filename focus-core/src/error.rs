@@ -41,6 +41,8 @@ pub enum UnlockError {
     UnknownTarget { target: String },
     #[error("target is hard-blocked and cannot be unlocked: {rule_id}")]
     TargetIsHardBlocked { rule_id: String },
+    #[error("target is Tier 2 scheduled-blocked and cannot be unlocked: {rule_id}")]
+    TargetIsScheduledBlocked { rule_id: String },
     #[error("target is covered by active detox session {session_id} until {ends_at}: {rule_id}")]
     TargetInActiveDetox {
         rule_id: String,

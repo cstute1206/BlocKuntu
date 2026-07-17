@@ -102,7 +102,7 @@
   function setRuleTier(tier: Rule["tier"]): void {
     if (!ruleDraft) return;
     ruleDraft.tier = tier;
-    if (tier === "hard") {
+    if (tier !== "controlled_access") {
       ruleDraft.allowance_id = null;
       ruleAllowanceDraft = null;
     } else if (!ruleAllowanceDraft) {
@@ -135,7 +135,7 @@
         <button class:active={ruleDraft?.id === rule.id} onclick={() => onSelectRule(rule)}>
           <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
           <span>{rule.name}</span>
-          <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
+          <em>{rule.tier === "hard" ? "Tier 1" : rule.tier === "scheduled_block" ? "Tier 2" : "Tier 3"}</em>
         </button>
       {:else}
         <p class="empty-state">No websites reported by the daemon.</p>
@@ -171,8 +171,9 @@
             disabled={ruleDraftEditLocked}
             onchange={(event) => setRuleTier(event.currentTarget.value as Rule["tier"])}
           >
-            <option value="controlled_access">Tier 2</option>
             <option value="hard">Tier 1</option>
+            <option value="scheduled_block">Tier 2</option>
+            <option value="controlled_access">Tier 3</option>
           </select>
         </label>
       </div>
@@ -196,17 +197,17 @@
       {/if}
 
       <div class="section-label">Schedules</div>
-      {#if ruleDraft.tier === "controlled_access"}
+      {#if ruleDraft.tier !== "hard"}
         <p class="tier2-schedule-note">
-          Tier 2 websites block only during an attached schedule or while selected in an active
-          Detox session.
+          {ruleDraft.tier === "scheduled_block"
+            ? "Tier 2 websites block strictly during an attached schedule or Detox, cannot be unlocked, and domain patterns enter the hosts file while active."
+            : "Tier 3 websites use allowances and manual unlocks during an attached schedule or Detox, and never enter the hosts file."}
         </p>
         {#if ruleDraft.schedule_ids.length === 0 && !ruleDraftDetoxLocked}
           <section class="inline-warning">
             <AlertTriangle size={17} aria-hidden="true" />
             <span>
-              No schedule is attached. This Tier 2 website stays inactive unless you select it
-              for Detox.
+              No schedule is attached. This {ruleDraft.tier === "scheduled_block" ? "Tier 2" : "Tier 3"} website stays inactive unless you select it for Detox.
             </span>
           </section>
         {/if}

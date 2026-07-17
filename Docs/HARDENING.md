@@ -89,13 +89,15 @@ Known limits:
   overwritten automatically. The recovery snapshot remains available for an
   explicit repair flow.
 
-### Detox Unlock Isolation
+### Detox Tier Isolation
 
 Status: implemented in `focus-core`.
 
-- Detox blocks take precedence over active Tier 2 unlocks.
-- Manual unlock requests for active Detox targets are rejected before a reason
-  or the global hourly quota is consumed.
+- Tier 2 rules activated by Detox remain strict, enter the managed hosts block
+  for domain patterns, and reject manual unlock requests before a reason or the
+  global hourly quota is consumed.
+- Tier 3 rules activated by Detox intentionally retain their daily allowance
+  and manual unlock behavior and therefore never enter the hosts file.
 - Ending Detox early still requires the privileged Tier 1 cancellation path.
 
 ### Clock Tamper Detection

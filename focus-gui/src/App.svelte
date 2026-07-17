@@ -23,6 +23,7 @@
   import SiteListsView from "./components/views/SiteListsView.svelte";
   import StatisticsView from "./components/views/StatisticsView.svelte";
   import {
+    buildInfo,
     cancelDetox,
     configSnapshot,
     daemonStatus,
@@ -176,6 +177,7 @@
   let detoxMessage: string | null = $state(null);
 
   let uninstallPhrase: string | null = $state(null);
+  let buildNumber: string | null = $state(null);
   let uninstallPhraseLoading = $state(false);
   let uninstallPhraseError: string | null = $state(null);
   let uninstallPhraseInput = $state("");
@@ -237,6 +239,7 @@
     configureRuntimeRefresh(uiPreferences.refreshIntervalSeconds);
     showFirstRunOverview = !firstRunOverviewDismissed();
     void loadUninstallPhrase();
+    void loadBuildInfo();
     void loadTier1EditKey();
     void refreshAll();
     let disposed = false;
@@ -522,10 +525,10 @@
     }
 
     selectedDetoxSiteRuleIds = selectedDetoxSiteRuleIds.filter((ruleId) =>
-      snapshot.rules.some((rule) => rule.id === ruleId && rule.tier === "controlled_access")
+      snapshot.rules.some((rule) => rule.id === ruleId && rule.tier !== "hard")
     );
     selectedDetoxAppRuleIds = selectedDetoxAppRuleIds.filter((ruleId) =>
-      snapshot.app_rules.some((rule) => rule.id === ruleId && rule.tier === "controlled_access")
+      snapshot.app_rules.some((rule) => rule.id === ruleId && rule.tier !== "hard")
     );
   }
 
@@ -793,6 +796,14 @@
     }
   }
 
+  async function loadBuildInfo(): Promise<void> {
+    try {
+      buildNumber = (await buildInfo()).build_number;
+    } catch {
+      buildNumber = null;
+    }
+  }
+
   async function loadTier1EditKey(): Promise<void> {
     tier1EditKeyLoading = true;
     tier1EditKeyError = null;
@@ -827,7 +838,7 @@
   }
 
   async function runUninstallBlockuntu(): Promise<void> {
-    if (!uninstallPhrase || !uninstallPhraseInput.trim() || !operatorWindowOpen) return;
+    if (!uninstallPhraseInput.trim()) return;
     uninstallRunning = true;
     uninstallResult = null;
     lastError = null;
@@ -1389,7 +1400,7 @@
         {enforcement}
         runningAppsWindowDetection={runningAppsWindowDetection}
         applicationUiPreferences={uiPreferences}
-        {uninstallPhrase}
+        {buildNumber}
         {uninstallPhraseLoading}
         bind:uninstallPhraseInput
         {uninstallRunning}

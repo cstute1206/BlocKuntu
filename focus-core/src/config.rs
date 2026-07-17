@@ -163,11 +163,11 @@ impl Config {
             }
 
             match rule.tier {
-                RuleTier::Hard => {
+                RuleTier::Hard | RuleTier::ScheduledBlock => {
                     if rule.allowance_id.is_some() {
                         return Err(ConfigError::Validation(format!(
-                            "hard rule '{}' cannot define allowances",
-                            rule.id
+                            "{} rule '{}' cannot define allowances",
+                            rule.tier, rule.id,
                         )));
                     }
                 }
@@ -228,11 +228,11 @@ impl Config {
             }
 
             match app_rule.tier {
-                RuleTier::Hard => {
+                RuleTier::Hard | RuleTier::ScheduledBlock => {
                     if app_rule.allowance_id.is_some() {
                         return Err(ConfigError::Validation(format!(
-                            "hard app rule '{}' cannot define allowances",
-                            app_rule.id
+                            "{} app rule '{}' cannot define allowances",
+                            app_rule.tier, app_rule.id,
                         )));
                     }
                 }
@@ -344,8 +344,19 @@ impl AppMatcherKind {
 #[serde(rename_all = "snake_case")]
 pub enum RuleTier {
     Hard,
+    ScheduledBlock,
     #[serde(alias = "controlled")]
     ControlledAccess,
+}
+
+impl fmt::Display for RuleTier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Hard => "hard",
+            Self::ScheduledBlock => "scheduled-block",
+            Self::ControlledAccess => "controlled-access",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

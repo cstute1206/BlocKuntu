@@ -67,7 +67,7 @@ export const defaultDailyAllowanceMinutes = 30;
 interface AllowanceOwner {
   id: string;
   name: string;
-  tier: "hard" | "controlled_access";
+  tier: "hard" | "scheduled_block" | "controlled_access";
   allowance_id?: string | null;
 }
 

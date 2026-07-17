@@ -144,7 +144,7 @@
   function setAppRuleTier(tier: AppRule["tier"]): void {
     if (!appRuleDraft) return;
     appRuleDraft.tier = tier;
-    if (tier === "hard") {
+    if (tier !== "controlled_access") {
       appRuleDraft.allowance_id = null;
       appRuleAllowanceDraft = null;
     } else if (!appRuleAllowanceDraft) {
@@ -180,7 +180,7 @@
         >
           <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
           <span>{rule.name}</span>
-          <em>{rule.tier === "hard" ? "Tier 1" : "Tier 2"}</em>
+          <em>{rule.tier === "hard" ? "Tier 1" : rule.tier === "scheduled_block" ? "Tier 2" : "Tier 3"}</em>
         </button>
       {:else}
         <p class="empty-state">No applications reported by the daemon.</p>
@@ -217,7 +217,8 @@
             onchange={(event) => setAppRuleTier(event.currentTarget.value as AppRule["tier"])}
           >
             <option value="hard">Tier 1</option>
-            <option value="controlled_access">Tier 2</option>
+            <option value="scheduled_block">Tier 2</option>
+            <option value="controlled_access">Tier 3</option>
           </select>
         </label>
       </div>
@@ -241,17 +242,17 @@
       {/if}
 
       <div class="section-label">Schedules</div>
-      {#if appRuleDraft.tier === "controlled_access"}
+      {#if appRuleDraft.tier !== "hard"}
         <p class="tier2-schedule-note">
-          Tier 2 applications block only during an attached schedule or while selected in an
-          active Detox session.
+          {appRuleDraft.tier === "scheduled_block"
+            ? "Tier 2 applications block strictly during an attached schedule or Detox and cannot be unlocked."
+            : "Tier 3 applications use allowances and manual unlocks during an attached schedule or Detox."}
         </p>
         {#if appRuleDraft.schedule_ids.length === 0 && !appRuleDraftDetoxLocked}
           <section class="inline-warning">
             <AlertTriangle size={17} aria-hidden="true" />
             <span>
-              No schedule is attached. This Tier 2 application stays inactive unless you select
-              it for Detox.
+              No schedule is attached. This {appRuleDraft.tier === "scheduled_block" ? "Tier 2" : "Tier 3"} application stays inactive unless you select it for Detox.
             </span>
           </section>
         {/if}

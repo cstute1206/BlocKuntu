@@ -5,11 +5,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-10"
+VERSION="0.1.0-11"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
 WORK_DIR=""
+BUILD_NUMBER_STAMP="${REPO_ROOT}/target/.blockuntu-build-number"
 
 usage() {
   cat <<'USAGE'
@@ -22,7 +23,7 @@ time; policy repair is deferred until the first browser-extension heartbeat.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-10.
+  --version VERSION   Package version, default 0.1.0-11.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -78,7 +79,7 @@ if [[ "${BUILD}" -eq 1 ]]; then
   require_cmd npm
 
   log "building release daemon"
-  cargo build --manifest-path focusd/Cargo.toml --release --locked
+  BLOCKUNTU_BUILD_NUMBER="${VERSION}" cargo build --manifest-path focusd/Cargo.toml --release --locked
 
   log "building release native host"
   cargo build --manifest-path native-host/Cargo.toml --release --locked
@@ -87,10 +88,16 @@ if [[ "${BUILD}" -eq 1 ]]; then
   (
     cd focus-gui
     npm ci
+    export BLOCKUNTU_BUILD_NUMBER="${VERSION}"
     npm run tauri -- build --no-bundle
   )
+  install -d "$(dirname -- "${BUILD_NUMBER_STAMP}")"
+  printf '%s\n' "${VERSION}" >"${BUILD_NUMBER_STAMP}"
 else
   log "skipping builds"
+  [[ -f "${BUILD_NUMBER_STAMP}" ]] || die "missing build-number stamp; run without --no-build first"
+  [[ "$(tr -d '[:space:]' <"${BUILD_NUMBER_STAMP}")" == "${VERSION}" ]] || \
+    die "release artifacts were built for a different build number; run without --no-build"
 fi
 
 [[ -x focusd/target/release/blockuntud ]] || die "missing focusd/target/release/blockuntud"

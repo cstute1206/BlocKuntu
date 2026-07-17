@@ -35,6 +35,10 @@ pub enum BlockReason {
         rule_id: String,
         rule_name: String,
     },
+    ScheduledBlock {
+        rule_id: String,
+        rule_name: String,
+    },
     ControlledAccess {
         rule_id: String,
         rule_name: String,

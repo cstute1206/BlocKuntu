@@ -35,13 +35,13 @@ if (ruleName || ruleId) {
 if (activeSchedules.length > 0) {
   addDetail("Schedule", scheduleText(activeSchedules));
 }
-if (reason === "detox" && (detoxSessionName || detoxSessionId)) {
+if ((reason === "detox" || blockedBy?.includes("detox")) && (detoxSessionName || detoxSessionId)) {
   addDetail(
     "Detox session",
     detoxSessionName ? `${detoxSessionName}${detoxSessionId ? ` (${detoxSessionId})` : ""}` : detoxSessionId
   );
 }
-if (reason === "detox" && targetKind) {
+if ((reason === "detox" || blockedBy?.includes("detox")) && targetKind) {
   addDetail("Target", humanize(targetKind));
 }
 if (freeAt) {
@@ -100,11 +100,11 @@ function reasonTitle(): string {
   if (reason === "hard_block") {
     return "Tier 1 hard block";
   }
+  if (reason === "scheduled_block") {
+    return "Tier 2 scheduled block";
+  }
   if (reason === "controlled_access") {
-    if (blockedBy === "schedule") {
-      return "Tier 2 scheduled block";
-    }
-    return "Tier 2 controlled access";
+    return "Tier 3 controlled access";
   }
   if (reason === "backend_unhealthy") {
     return "Daemon heartbeat missing";
@@ -212,6 +212,9 @@ function tierTitle(value: string): string {
   }
   if (value === "tier_2") {
     return "Tier 2";
+  }
+  if (value === "tier_3") {
+    return "Tier 3";
   }
   return humanize(value);
 }
