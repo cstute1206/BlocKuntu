@@ -4,6 +4,12 @@
   "version": "0.2.1",
   "description": "System-enforced focus blocking for Linux through the local BlocKuntu daemon.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvdfgPXyy5QiPTnB6HGfdNdWmm/67cLDM4wcQlXT5H4cfYws7tYa0BCGMxt22hxL4ftywuzw23n80sD1NjVtti1BubuBTqfIBFPZnTq2lyY2OrplgrL5RGw0wzzDvtwOaXvEZvhq7iLdpr2hoc0vTO11MPpigZj55C6kGt9L61nKC/v69u8Yzpb6u0O5ZGeYvTctHSlsyd4JB4xO/FailEiCXMZG4GTy2bCnERMVN/crvyqdOVl5+sPR6EkpIzPGaLWC8N9nk1fGz1bdtaRxjNi4RrZmvBftiYtrL1evuFAMRCieh1NzdGau4usZO/z2TnZsYOdtOnwtJHSDQ7h4GvQIDAQAB",
+  "icons": {
+    "16": "icons/blockuntu-16.png",
+    "32": "icons/blockuntu-32.png",
+    "48": "icons/blockuntu-48.png",
+    "128": "icons/blockuntu-128.png"
+  },
   "permissions": [
     "alarms",
     "nativeMessaging",

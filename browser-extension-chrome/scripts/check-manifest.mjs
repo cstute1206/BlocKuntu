@@ -8,6 +8,12 @@ const manifestPath = resolve("manifest.json");
 const backgroundPath = resolve("dist/background.js");
 const blockedScriptPath = resolve("dist/blocked.js");
 const blockedPath = resolve("blocked.html");
+const requiredIcons = {
+  16: "icons/blockuntu-16.png",
+  32: "icons/blockuntu-32.png",
+  48: "icons/blockuntu-48.png",
+  128: "icons/blockuntu-128.png",
+};
 
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 
@@ -35,6 +41,10 @@ assert(
   extensionIdFromKey(manifest.key) === EXPECTED_EXTENSION_ID,
   "manifest key must produce the documented Chrome extension id"
 );
+for (const [size, path] of Object.entries(requiredIcons)) {
+  assert(manifest.icons?.[size] === path, `manifest icon ${size} must be ${path}`);
+  assert(existsSync(resolve(path)), `manifest icon is missing: ${path}`);
+}
 assert(manifest.permissions?.includes("alarms"), "alarms permission is required");
 assert(
   manifest.permissions?.includes("nativeMessaging"),

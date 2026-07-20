@@ -1,8 +1,19 @@
-import { existsSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const output = "BlocKuntu-Chrome.zip";
-const required = ["manifest.json", "blocked.html", "dist/background.js", "dist/blocked.js"];
+const required = [
+  "manifest.json",
+  "blocked.html",
+  "dist/background.js",
+  "dist/blocked.js",
+  "icons/blockuntu-16.png",
+  "icons/blockuntu-32.png",
+  "icons/blockuntu-48.png",
+  "icons/blockuntu-128.png",
+];
 
 for (const path of required) {
   if (!existsSync(path)) {
@@ -12,11 +23,29 @@ for (const path of required) {
 
 rmSync(output, { force: true });
 
-const result = spawnSync("zip", ["-r", output, "manifest.json", "blocked.html", "dist"], {
-  stdio: "inherit",
-});
-if (result.status !== 0) {
-  throw new Error(`zip failed with status ${result.status}`);
+const stagingDirectory = mkdtempSync(join(tmpdir(), "blockuntu-chrome-store-"));
+const storeManifest = JSON.parse(readFileSync("manifest.json", "utf8"));
+delete storeManifest.key;
+
+try {
+  writeFileSync(join(stagingDirectory, "manifest.json"), `${JSON.stringify(storeManifest, null, 2)}\n`);
+  cpSync("blocked.html", join(stagingDirectory, "blocked.html"));
+  cpSync("dist", join(stagingDirectory, "dist"), { recursive: true });
+  cpSync("icons", join(stagingDirectory, "icons"), { recursive: true });
+
+  const result = spawnSync(
+    "zip",
+    ["-r", resolve(output), "manifest.json", "blocked.html", "dist", "icons"],
+    { cwd: stagingDirectory, stdio: "inherit" }
+  );
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`zip failed with status ${result.status}`);
+  }
+} finally {
+  rmSync(stagingDirectory, { recursive: true, force: true });
 }
 
 console.log(`Created ${output}`);

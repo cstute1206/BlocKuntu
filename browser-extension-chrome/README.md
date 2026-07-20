@@ -40,6 +40,19 @@ Package a local ZIP:
 npm run package:zip
 ```
 
+This writes `BlocKuntu-Chrome.zip`, with `manifest.json` at the archive root,
+ready for the Chrome Web Store upload form. The package deliberately excludes
+source files, development dependencies, the private signing key, and the
+self-hosted `.crx`. It also removes the development-only manifest `key`, which
+the Chrome Web Store rejects during upload.
+
+For the first Chrome Web Store upload, create the dashboard item but do not
+publish it yet. Chrome assigns that item its own extension ID and public key.
+Before publishing, replace the current self-hosted ID everywhere it is used
+(the manifest key, daemon/default policy, GUI status, and Native Messaging
+`allowed_origins`) with the dashboard values. Otherwise the store-installed
+extension cannot connect to `blockuntu_native` and will fail closed.
+
 The production Chrome policy currently points at this hosted CRX through a  
 local update manifest written by `focusd`:
 

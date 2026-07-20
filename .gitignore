@@ -58,3 +58,6 @@ Thumbs.db
 .vscode/
 .env
 LICENSE
+
+# Local emergency-uninstall operator material
+/emergency-uninstall-tools/
