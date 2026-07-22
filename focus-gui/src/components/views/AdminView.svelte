@@ -45,6 +45,7 @@
     enforcement: EnforcementStatus | null;
     runningAppsWindowDetection: WindowDetectionStatus | null;
     applicationUiPreferences: ApplicationUiPreferences;
+    installationSerial: string | null;
     buildNumber: string | null;
     uninstallPhraseLoading: boolean;
     uninstallPhraseInput?: string;
@@ -64,6 +65,7 @@
     policyTransferError: string | null;
     onRefreshHealth: () => void | Promise<void>;
     onCopyDiagnostics: () => void | Promise<void>;
+    onCopyInstallationSerial: () => void | Promise<void>;
     onRunUninstallBlockuntu: () => void | Promise<void>;
     onUnlockTier1Edit: () => void | Promise<void>;
     onExportPolicyToml: () => void | Promise<void>;
@@ -89,6 +91,7 @@
     enforcement,
     runningAppsWindowDetection,
     applicationUiPreferences,
+    installationSerial,
     buildNumber,
     uninstallPhraseLoading,
     uninstallPhraseInput = $bindable(""),
@@ -108,6 +111,7 @@
     policyTransferError,
     onRefreshHealth,
     onCopyDiagnostics,
+    onCopyInstallationSerial,
     onRunUninstallBlockuntu,
     onUnlockTier1Edit,
     onExportPolicyToml,
@@ -118,6 +122,10 @@
   }: Props = $props();
 
   let activeSection: SettingsSection = $state("health");
+  let refreshIntervalSelection = $state("");
+  $effect(() => {
+    refreshIntervalSelection = String(applicationUiPreferences.refreshIntervalSeconds);
+  });
   let healthChecks = $derived(health?.checks ?? []);
   let browserIntegrationChecks = $derived(
     healthChecks.filter((check) =>
@@ -165,8 +173,8 @@
     });
   }
 
-  function updateRefreshInterval(event: Event): void {
-    const value = Number((event.currentTarget as HTMLSelectElement).value);
+  function updateRefreshInterval(): void {
+    const value = Number(refreshIntervalSelection);
     if (![5, 15, 30, 60].includes(value)) return;
     onUpdateApplicationUiPreferences({
       ...applicationUiPreferences,
@@ -287,7 +295,7 @@
               <div class="status-row"><span>Firefox extension ID</span><small>{enforcement?.firefox_policy?.extension_id ?? "unavailable"}</small></div>
               <div class="status-row"><span>Chrome extension ID</span><small>{enforcement?.chrome_policy?.extension_id ?? "unavailable"}</small></div>
             </div>
-            <div class="repair-note"><Wrench size={17} aria-hidden="true" /><p>For Firefox Snap or Flatpak, open a terminal and run <code>blockuntu-setup-confined-firefox</code>, then restart Firefox.</p></div>
+            <div class="repair-note"><Wrench size={17} aria-hidden="true" /><p>Firefox Snap and Flatpak setup runs automatically when BlocKuntu starts. Restart Firefox afterwards; if it remains unavailable, run <code>blockuntu-setup-confined-firefox</code> manually.</p></div>
           </section>
         {:else if activeSection === "policy"}
           <section class="settings-panel">
@@ -320,10 +328,10 @@
             <div class="settings-panel-header"><div><h3>Application UI</h3><p>These local preferences do not change enforcement.</p></div></div>
             <div class="preference-list">
               <label class="preference-row"><span><strong>Restore last selected page</strong><small>Open the page you were using when the GUI was last closed.</small></span><input type="checkbox" checked={applicationUiPreferences.restoreLastSelectedPage} onchange={updateRestoreLastSelectedPage} /></label>
-              <label class="preference-row"><span><strong>Dashboard and status refresh</strong><small>How often the GUI reloads live daemon status.</small></span><select value={applicationUiPreferences.refreshIntervalSeconds} onchange={updateRefreshInterval}><option value="5">Every 5 seconds</option><option value="15">Every 15 seconds</option><option value="30">Every 30 seconds</option><option value="60">Every minute</option></select></label>
+              <label class="preference-row"><span><strong>Dashboard and status refresh</strong><small>How often the GUI reloads live daemon status.</small></span><select bind:value={refreshIntervalSelection} onchange={updateRefreshInterval}><option value="5">Every 5 seconds</option><option value="15">Every 15 seconds</option><option value="30">Every 30 seconds</option><option value="60">Every minute</option></select></label>
             </div>
-            <div class="status-list"><div class="status-row"><span>Build</span><code>{buildNumber ?? "Unavailable"}</code></div></div>
-            <div class="button-row compact-row settings-action-row"><button class="secondary" onclick={onShowFirstRunOverview}>Show first-run overview</button></div>
+            <div class="status-list"><div class="status-row"><span>Installation serial</span><code>{installationSerial ?? "Unavailable"}</code></div><div class="status-row"><span>Build</span><code>{buildNumber ?? "Unavailable"}</code></div></div>
+            <div class="button-row compact-row settings-action-row"><button class="secondary" onclick={onCopyInstallationSerial} disabled={!installationSerial}><Clipboard size={17} aria-hidden="true" /><span>Copy serial</span></button><button class="secondary" onclick={onShowFirstRunOverview}>Show first-run overview</button></div>
             <p class="settings-note">Starting on login, tray-close behaviour, and desktop notifications need reviewed native-runtime support and are not configurable yet.</p>
           </section>
         {:else if activeSection === "logging"}

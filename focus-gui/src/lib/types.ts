@@ -274,7 +274,8 @@ export interface UninstallConfirmation {
   phrase: string;
 }
 
-export interface BuildInfo {
+export interface InstallationInfo {
+  installation_serial: string | null;
   build_number: string;
 }
 

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Local, Timelike, Utc, Weekday};
-use focus_core::{emergency_uninstall_code_is_valid, BUILD_NUMBER};
+use focus_core::{emergency_uninstall_code_is_valid, installation_serial_is_valid};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -66,7 +66,16 @@ const UNSUPPORTED_BROWSER_RULE_ID: &str = "unsupported-browsers-hard";
 const UNINSTALL_PHRASE_FILE: &str = "uninstall-confirmation.txt";
 const SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE: &str = "/etc/blockuntu/uninstall-recovery.txt";
 const TIER1_EDIT_KEY_FILE: &str = "/etc/blockuntu/tier1-edit-key.txt";
+const INSTALLATION_SERIAL_FILE: &str = "/etc/blockuntu/installation-id";
+const BUILD_NUMBER: &str = match option_env!("BLOCKUNTU_BUILD_NUMBER") {
+    Some(value) => value,
+    None => env!("CARGO_PKG_VERSION"),
+};
 const DEBIAN_PACKAGE_NAME: &str = "blockuntu";
+const CONFINED_FIREFOX_SETUP_COMMANDS: [&str; 2] = [
+    "/usr/bin/blockuntu-setup-confined-firefox",
+    "/bin/blockuntu-setup-confined-firefox",
+];
 const BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS: u64 = 6;
 const OPERATOR_WINDOW_START_MINUTE: u32 = 20 * 60;
 const OPERATOR_WINDOW_END_MINUTE: u32 = 23 * 60 + 59;
@@ -93,6 +102,8 @@ enum GuiError {
     HomeNotSet,
     #[error("uninstall confirmation phrase does not match")]
     InvalidUninstallPhrase,
+    #[error("BlocKuntu installation serial is missing or invalid")]
+    InvalidInstallationSerial,
     #[error("operator actions are only available during Sunday 20:00-23:59")]
     OperatorWindowClosed,
     #[error("GUI uninstall requires pkexec, but pkexec was not found")]
@@ -158,7 +169,8 @@ struct UninstallConfirmation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct BuildInfo {
+struct InstallationInfo {
+    installation_serial: Option<String>,
     build_number: String,
 }
 
@@ -310,8 +322,13 @@ fn uninstall_confirmation_phrase() -> Result<UninstallConfirmation, GuiError> {
 }
 
 #[tauri::command]
-fn build_info() -> BuildInfo {
-    BuildInfo {
+fn installation_info() -> InstallationInfo {
+    installation_info_from_path(Path::new(INSTALLATION_SERIAL_FILE))
+}
+
+fn installation_info_from_path(path: &Path) -> InstallationInfo {
+    InstallationInfo {
+        installation_serial: load_installation_serial_from_path(path).ok(),
         build_number: BUILD_NUMBER.to_string(),
     }
 }
@@ -336,7 +353,9 @@ fn tier1_edit_key() -> Result<Tier1EditKey, GuiError> {
 #[tauri::command]
 fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
     let candidate = phrase.trim();
-    let emergency_authorized = emergency_uninstall_code_is_valid(candidate);
+    let emergency_authorized = load_installation_serial()
+        .ok()
+        .is_some_and(|serial| emergency_uninstall_code_is_valid(candidate, &serial));
     if !emergency_authorized {
         if !operator_window_open_now() {
             return Err(GuiError::OperatorWindowClosed);
@@ -352,9 +371,8 @@ fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
         ));
     }
 
-    if notify_browser_extensions_before_uninstall(emergency_authorized.then_some(candidate)) {
-        std::thread::sleep(Duration::from_secs(BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS));
-    }
+    let package_removal_lease = prepare_package_removal(emergency_authorized.then_some(candidate))?;
+    std::thread::sleep(Duration::from_secs(BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS));
 
     let pkexec =
         command_path(&["/usr/bin/pkexec", "/bin/pkexec"]).ok_or(GuiError::MissingPkexec)?;
@@ -362,6 +380,10 @@ fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
         GuiError::UninstallCommand("dpkg was not found on this system".to_string())
     })?;
     let output = Command::new(pkexec)
+        .arg("/usr/bin/env")
+        .arg(format!(
+            "BLOCKUNTU_PACKAGE_REMOVAL_LEASE={package_removal_lease}"
+        ))
         .arg(dpkg)
         .args(["--purge", DEBIAN_PACKAGE_NAME])
         .output()?;
@@ -475,17 +497,44 @@ fn resolve_socket_path(socket_path: Option<&str>) -> String {
     }
 }
 
-fn notify_browser_extensions_before_uninstall(emergency_code: Option<&str>) -> bool {
+fn prepare_package_removal(emergency_code: Option<&str>) -> Result<String, GuiError> {
     let socket = resolve_socket_path(None);
-    call_daemon(
+    let result = call_daemon(
         &socket,
         "prepare_uninstall",
         json!({
             "now": Utc::now().to_rfc3339(),
             "emergency_code": emergency_code
         }),
-    )
-    .is_ok()
+    )?;
+    result
+        .get("package_removal_lease")
+        .and_then(Value::as_str)
+        .filter(|lease| !lease.trim().is_empty())
+        .map(str::to_string)
+        .ok_or(GuiError::InvalidRpcResponse)
+}
+
+fn start_confined_firefox_setup() {
+    let Some(helper) = command_path(&CONFINED_FIREFOX_SETUP_COMMANDS) else {
+        return;
+    };
+
+    if let Err(error) = Command::new(helper).args(["--targets", "auto"]).spawn() {
+        eprintln!("BlocKuntu confined Firefox setup could not start: {error}");
+    }
+}
+
+fn load_installation_serial() -> Result<String, GuiError> {
+    load_installation_serial_from_path(Path::new(INSTALLATION_SERIAL_FILE))
+}
+
+fn load_installation_serial_from_path(path: &Path) -> Result<String, GuiError> {
+    let serial = fs::read_to_string(path)?.trim().to_string();
+    if !installation_serial_is_valid(&serial) {
+        return Err(GuiError::InvalidInstallationSerial);
+    }
+    Ok(serial)
 }
 
 fn load_or_create_uninstall_phrase() -> Result<String, GuiError> {
@@ -1015,7 +1064,7 @@ fn confined_firefox_native_host_checks() -> Vec<HealthCheck> {
             "firefox_flatpak_native_host_manifest",
             "Firefox Flatpak browser integration",
             &home.join(FLATPAK_FIREFOX_NATIVE_HOST_MANIFEST),
-            "To fix this, open a terminal and run `blockuntu-setup-confined-firefox`, then restart Firefox Flatpak.",
+            "BlocKuntu automatically prepares this when the GUI starts. Restart Firefox Flatpak; if it remains unavailable, run `blockuntu-setup-confined-firefox` manually.",
         ));
     }
     if home.join(SNAP_FIREFOX_APP_ROOT).exists() {
@@ -1023,7 +1072,7 @@ fn confined_firefox_native_host_checks() -> Vec<HealthCheck> {
             "firefox_snap_native_host_manifest",
             "Firefox Snap browser integration",
             &home.join(SNAP_FIREFOX_NATIVE_HOST_MANIFEST),
-            "To fix this, open a terminal and run `blockuntu-setup-confined-firefox`, then restart Firefox Snap.",
+            "BlocKuntu automatically prepares this when the GUI starts. Restart Firefox Snap; if it remains unavailable, run `blockuntu-setup-confined-firefox` manually.",
         ));
     }
 
@@ -1085,7 +1134,7 @@ fn firefox_flatpak_policy_check(home: &Path) -> HealthCheck {
             label: "Firefox Flatpak policy".to_string(),
             state: HealthState::Warn,
             detail: format!(
-                "{}: {err}; to fix this, open a terminal and run `blockuntu-setup-confined-firefox`, then restart Firefox Flatpak.",
+                "{}: {err}; BlocKuntu automatically prepares this when the GUI starts. Restart Firefox Flatpak; if it remains unavailable, run `blockuntu-setup-confined-firefox` manually.",
                 candidate.display()
             ),
         },
@@ -1569,6 +1618,7 @@ pub fn run() {
                 Ok(_) => tray_available_for_setup.store(true, Ordering::SeqCst),
                 Err(err) => eprintln!("BlocKuntu tray setup failed: {err}"),
             }
+            start_confined_firefox_setup();
             Ok(())
         })
         .on_window_event(move |window, event| {
@@ -1589,7 +1639,7 @@ pub fn run() {
             import_policy_toml,
             evaluate_url,
             request_unlock,
-            build_info,
+            installation_info,
             uninstall_confirmation_phrase,
             tier1_edit_key,
             uninstall_blockuntu,
@@ -1619,6 +1669,40 @@ mod tests {
             .expect("phrase check should succeed");
 
         assert!(result);
+    }
+
+    #[test]
+    fn installation_serial_loader_accepts_the_packaged_format() {
+        let path = temp_recovery_path("installation-serial");
+        fs::write(&path, "BKI-7A91C246-398AF072-5E70DA11-D9B4C83F\n")
+            .expect("write installation serial");
+
+        let serial = load_installation_serial_from_path(&path)
+            .expect("installation serial should be accepted");
+
+        let _ = fs::remove_file(&path);
+        assert_eq!(serial, "BKI-7A91C246-398AF072-5E70DA11-D9B4C83F");
+    }
+
+    #[test]
+    fn installation_serial_loader_rejects_malformed_content() {
+        let path = temp_recovery_path("invalid-installation-serial");
+        fs::write(&path, "BKI-not-valid\n").expect("write installation serial");
+
+        let result = load_installation_serial_from_path(&path);
+
+        let _ = fs::remove_file(&path);
+        assert!(matches!(result, Err(GuiError::InvalidInstallationSerial)));
+    }
+
+    #[test]
+    fn installation_info_keeps_build_number_when_serial_is_unavailable() {
+        let path = temp_recovery_path("missing-installation-serial");
+
+        let info = installation_info_from_path(&path);
+
+        assert_eq!(info.installation_serial, None);
+        assert!(!info.build_number.trim().is_empty());
     }
 
     #[test]

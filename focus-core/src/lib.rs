@@ -20,7 +20,7 @@ pub use config::{
 };
 pub use core::FocusCore;
 pub use db::{migrate_database, Database, HeartbeatState, ScheduleActivityTotal};
-pub use emergency_uninstall::{emergency_uninstall_code_is_valid, BUILD_NUMBER};
+pub use emergency_uninstall::{emergency_uninstall_code_is_valid, installation_serial_is_valid};
 pub use error::{ConfigError, Error, UnlockError};
 pub use policy::{
     evaluate_app, evaluate_url, metered_app_rule_ids_for_process, record_visit_end,

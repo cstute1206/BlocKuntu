@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  BuildInfo,
+  InstallationInfo,
   ConfigSnapshot,
   ConfigMutationResponse,
   DaemonStatus,
@@ -218,8 +218,8 @@ export function uninstallConfirmationPhrase(): Promise<UninstallConfirmation> {
   return invoke("uninstall_confirmation_phrase");
 }
 
-export function buildInfo(): Promise<BuildInfo> {
-  return invoke("build_info");
+export function installationInfo(): Promise<InstallationInfo> {
+  return invoke("installation_info");
 }
 
 export function uninstallBlockuntu(phrase: string): Promise<UninstallResult> {

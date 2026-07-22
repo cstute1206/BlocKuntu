@@ -23,7 +23,7 @@
   import SiteListsView from "./components/views/SiteListsView.svelte";
   import StatisticsView from "./components/views/StatisticsView.svelte";
   import {
-    buildInfo,
+    installationInfo,
     cancelDetox,
     configSnapshot,
     daemonStatus,
@@ -177,6 +177,7 @@
   let detoxMessage: string | null = $state(null);
 
   let uninstallPhrase: string | null = $state(null);
+  let installationSerial: string | null = $state(null);
   let buildNumber: string | null = $state(null);
   let uninstallPhraseLoading = $state(false);
   let uninstallPhraseError: string | null = $state(null);
@@ -239,7 +240,7 @@
     configureRuntimeRefresh(uiPreferences.refreshIntervalSeconds);
     showFirstRunOverview = !firstRunOverviewDismissed();
     void loadUninstallPhrase();
-    void loadBuildInfo();
+    void loadInstallationInfo();
     void loadTier1EditKey();
     void refreshAll();
     let disposed = false;
@@ -796,10 +797,13 @@
     }
   }
 
-  async function loadBuildInfo(): Promise<void> {
+  async function loadInstallationInfo(): Promise<void> {
     try {
-      buildNumber = (await buildInfo()).build_number;
+      const info = await installationInfo();
+      installationSerial = info.installation_serial;
+      buildNumber = info.build_number;
     } catch {
+      installationSerial = null;
       buildNumber = null;
     }
   }
@@ -1208,6 +1212,15 @@
     }
   }
 
+  async function copyInstallationSerial(): Promise<void> {
+    if (!installationSerial) return;
+    try {
+      await copyText(installationSerial);
+    } catch (error) {
+      lastError = formatError(error);
+    }
+  }
+
   async function copyText(value: string): Promise<void> {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(value);
@@ -1400,6 +1413,7 @@
         {enforcement}
         runningAppsWindowDetection={runningAppsWindowDetection}
         applicationUiPreferences={uiPreferences}
+        {installationSerial}
         {buildNumber}
         {uninstallPhraseLoading}
         bind:uninstallPhraseInput
@@ -1419,6 +1433,7 @@
         {policyTransferError}
         onRefreshHealth={() => refreshAll()}
         onCopyDiagnostics={copyDiagnostics}
+        onCopyInstallationSerial={copyInstallationSerial}
         onRunUninstallBlockuntu={runUninstallBlockuntu}
         onUnlockTier1Edit={runUnlockTier1Edit}
         onExportPolicyToml={runExportPolicyToml}

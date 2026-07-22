@@ -17,13 +17,15 @@ The GUI validates the phrase locally, then runs:
 pkexec dpkg --purge blockuntu
 ```
 
-The terminal equivalent is:
+Direct package-manager removal is deliberately refused. Do not run `dpkg -r`,
+`dpkg --purge`, `apt remove`, or `apt purge` for BlocKuntu. Open BlocKuntu
+Settings and use its uninstall action instead; it is available only on Sunday
+between 20:00 and 23:59 local time.
 
-```bash
-sudo dpkg --purge blockuntu
-```
-
-The GUI path therefore has the same cleanup behavior as a Debian package purge.
+Settings asks the daemon to prepare a short-lived, one-time package-removal
+lease before it invokes `dpkg --purge`. The package `prerm` accepts only that
+Settings-authorized invocation, so a direct terminal call cannot stop
+enforcement or remove package files.
 
 ## Uninstall Phrases
 
@@ -56,16 +58,17 @@ also work without `sudo`:
 cat /etc/blockuntu/uninstall-recovery.txt
 ```
 
-## Phrase Validation
+## Normal Phrase Validation
 
-The frontend only checks that the uninstall input is non-empty. The Tauri backend
-is the authority:
+For the ordinary uninstall path, the frontend only checks that the uninstall
+input is non-empty. The Tauri backend is the authority:
 
 1. It trims the input.
 2. It compares the input with the per-user first-run phrase.
 3. If that does not match, it reads `/etc/blockuntu/uninstall-recovery.txt`.
 4. It accepts the input if it exactly matches any non-empty line in that file.
-5. If neither phrase matches, uninstall is rejected before `pkexec` is invoked.
+5. If neither phrase matches, ordinary phrase authorization fails before
+   `pkexec` is invoked.
 
 If the recovery phrase file is missing or unreadable to the GUI process, the GUI
 still works with the first-run phrase. Permission errors for the recovery phrase

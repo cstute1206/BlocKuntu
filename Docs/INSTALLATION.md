@@ -33,24 +33,24 @@ The GUI build goes through `npm run tauri -- build --no-bundle`, which embeds
 the current frontend assets. That is what prevents a packaged GUI from opening
 the development URL at `http://localhost:1420`.
 
-The current default Debian package version is `0.1.0-10`, and the artifact is:
+The current default Debian package version is `0.1.0-14`, and the artifact is:
 
 ```bash
-target/debian/blockuntu_0.1.0-10_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
 ```
 
 Inspect the package before copying it to a target machine:
 
 ```bash
-dpkg-deb -I target/debian/blockuntu_0.1.0-10_$(dpkg --print-architecture).deb
-dpkg-deb -c target/debian/blockuntu_0.1.0-10_$(dpkg --print-architecture).deb | less
+dpkg-deb -I target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
+dpkg-deb -c target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb | less
 ```
 
 Install the package on the target Ubuntu/Debian machine with `apt`, not raw
 `dpkg -i`:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-10_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
 sudo usermod -aG blockuntu "$USER"
 ```
 
@@ -87,6 +87,11 @@ The Debian package also creates a Tier 1 edit key at
 `/etc/blockuntu/tier1-edit-key.txt` with `root:blockuntu` ownership and `0640`
 permissions. The GUI shows this key in the first-run panel. Enter it in the
 Settings page to unlock currently active Tier 1 site-list edits for five minutes.
+
+The package creates a random installation serial at
+`/etc/blockuntu/installation-id`. Settings displays it under Application UI.
+Package upgrades preserve the serial, while removal or purge deletes it so a
+later reinstall receives a new identity.
 
 The runtime layout table below describes the scripted/manual production install
 under `/usr/local`. The Debian package uses Debian package paths instead,
@@ -163,11 +168,12 @@ normal system Firefox install, creating it is fine:
 sudo install -d -m 0755 /etc/firefox/policies
 ```
 
-For Flatpak or Snap Firefox, run the confined-browser helper after installing
-the native host. It copies `blockuntu-native` into the browser's writable app
-area and writes the matching per-user manifest. For Firefox Flatpak it also
-copies the signed Firefox XPI and writes the `org.mozilla.firefox.systemconfig`
-managed policy that force-installs and locks the extension:
+When the BlocKuntu GUI starts, it automatically runs the confined-browser
+helper for the logged-in user. It copies `blockuntu-native` into the browser's
+writable app area and writes the matching per-user manifest. For Firefox
+Flatpak it also copies the signed Firefox XPI and writes the
+`org.mozilla.firefox.systemconfig` managed policy that force-installs and locks
+the extension. For a manual production installation, run the helper explicitly:
 
 ```bash
 ./scripts/setup-confined-firefox-native-host.sh --native-host /usr/local/bin/blockuntu-native
@@ -330,13 +336,13 @@ Build a complete Debian package from the repository root:
 The package is written to `target/debian`, for example:
 
 ```bash
-target/debian/blockuntu_0.1.0-10_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
 ```
 
 On a target Ubuntu/Debian machine, install it with:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-10_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
 ```
 
 Use `apt install ./...deb`, not `dpkg -i`, for normal installs. `dpkg -i`
@@ -360,6 +366,7 @@ The `.deb` installs:
 - a minimal config with only strict browser enforcement enabled
 - a system recovery uninstall phrase at `/etc/blockuntu/uninstall-recovery.txt`
 - a Tier 1 edit key at `/etc/blockuntu/tier1-edit-key.txt`
+- a random installation serial at `/etc/blockuntu/installation-id`
 - local extension artifacts used later as managed-policy install sources
 
 It does not install or enable browser extensions inside Firefox or Chrome, and
@@ -644,9 +651,8 @@ Most failures are one of:
 
 - The user has not logged out and back in after being added to `blockuntu`.
 - The Native Messaging manifest path is wrong for the installed browser build.
-- Firefox Snap/Flatpak was installed after BlocKuntu and
-  `blockuntu-setup-confined-firefox` or
-  `scripts/setup-confined-firefox-native-host.sh` has not been run yet.
+- Firefox Snap/Flatpak was installed after BlocKuntu and BlocKuntu has not been
+  started since; open it once to run the automatic setup, then restart Firefox.
 - The signed Firefox XPI is missing or rejected.
 - Chrome cannot reach the configured CRX URL from the update manifest.
 

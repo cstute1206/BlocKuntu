@@ -5,12 +5,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-11"
+VERSION="0.1.0-14"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
 WORK_DIR=""
-BUILD_NUMBER_STAMP="${REPO_ROOT}/target/.blockuntu-build-number"
+PACKAGE_VERSION_STAMP="${REPO_ROOT}/target/.blockuntu-package-version"
 
 usage() {
   cat <<'USAGE'
@@ -23,7 +23,7 @@ time; policy repair is deferred until the first browser-extension heartbeat.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-11.
+  --version VERSION   Package version, default 0.1.0-14.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -79,7 +79,7 @@ if [[ "${BUILD}" -eq 1 ]]; then
   require_cmd npm
 
   log "building release daemon"
-  BLOCKUNTU_BUILD_NUMBER="${VERSION}" cargo build --manifest-path focusd/Cargo.toml --release --locked
+  cargo build --manifest-path focusd/Cargo.toml --release --locked
 
   log "building release native host"
   cargo build --manifest-path native-host/Cargo.toml --release --locked
@@ -91,13 +91,13 @@ if [[ "${BUILD}" -eq 1 ]]; then
     export BLOCKUNTU_BUILD_NUMBER="${VERSION}"
     npm run tauri -- build --no-bundle
   )
-  install -d "$(dirname -- "${BUILD_NUMBER_STAMP}")"
-  printf '%s\n' "${VERSION}" >"${BUILD_NUMBER_STAMP}"
+  install -d "$(dirname -- "${PACKAGE_VERSION_STAMP}")"
+  printf '%s\n' "${VERSION}" >"${PACKAGE_VERSION_STAMP}"
 else
   log "skipping builds"
-  [[ -f "${BUILD_NUMBER_STAMP}" ]] || die "missing build-number stamp; run without --no-build first"
-  [[ "$(tr -d '[:space:]' <"${BUILD_NUMBER_STAMP}")" == "${VERSION}" ]] || \
-    die "release artifacts were built for a different build number; run without --no-build"
+  [[ -f "${PACKAGE_VERSION_STAMP}" ]] || die "missing package-version stamp; run without --no-build first"
+  [[ "$(tr -d '[:space:]' <"${PACKAGE_VERSION_STAMP}")" == "${VERSION}" ]] || \
+    die "release artifacts were built for a different package version; run without --no-build"
 fi
 
 [[ -x focusd/target/release/blockuntud ]] || die "missing focusd/target/release/blockuntud"
@@ -217,6 +217,32 @@ if ! getent group blockuntu >/dev/null 2>&1; then
   groupadd --system blockuntu
 fi
 
+create_installation_serial() {
+  serial_file="/etc/blockuntu/installation-id"
+  legacy_serial_file="/var/lib/blockuntu/installation-id"
+  if [ -s "${serial_file}" ] && \
+    grep -Eq '^BKI-[0-9A-F]{8}-[0-9A-F]{8}-[0-9A-F]{8}-[0-9A-F]{8}$' "${serial_file}"; then
+    rm -f "${legacy_serial_file}"
+    return 0
+  fi
+
+  install -d -o root -g root -m 0755 /etc/blockuntu
+  if [ -s "${legacy_serial_file}" ] && \
+    grep -Eq '^BKI-[0-9A-F]{8}-[0-9A-F]{8}-[0-9A-F]{8}-[0-9A-F]{8}$' "${legacy_serial_file}"; then
+    install -o root -g root -m 0644 "${legacy_serial_file}" "${serial_file}"
+    rm -f "${legacy_serial_file}"
+    return 0
+  fi
+
+  random_hex="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
+  temp_file="$(mktemp)"
+  printf 'BKI-%s\n' "${chunks}" >"${temp_file}"
+  install -o root -g root -m 0644 "${temp_file}" "${serial_file}"
+  rm -f "${temp_file}"
+  rm -f "${legacy_serial_file}"
+}
+
 create_recovery_phrase() {
   recovery_file="/etc/blockuntu/uninstall-recovery.txt"
   if [ -s "${recovery_file}" ]; then
@@ -247,6 +273,7 @@ create_tier1_edit_key() {
   rm -f "${temp_file}"
 }
 
+create_installation_serial
 create_recovery_phrase
 create_tier1_edit_key
 
@@ -271,9 +298,9 @@ Add the desktop user to the socket group, then log out and back in:
 System Firefox, Firefox Snap, and Chrome policies are deferred. Install and
 enable the BlocKuntu browser extension manually; the daemon writes managed
 policy after the first heartbeat.
-If you use Firefox Snap or Flatpak, run this as the desktop user and then
-restart that Firefox build:
-  blockuntu-setup-confined-firefox
+If you use Firefox Snap or Flatpak, BlocKuntu configures its per-user browser
+integration automatically when the GUI starts. Restart that Firefox build
+after opening BlocKuntu.
 
 Open the GUI once after the first login and store the uninstall phrase shown
 in the First Run panel. The Admin uninstall action accepts that phrase or the
@@ -291,6 +318,42 @@ POSTINST
 cat >"${DEBIAN_DIR}/prerm" <<'PRERM'
 #!/bin/sh
 set -e
+unset TZ
+
+reject_package_uninstall() {
+  cat >&2 <<'MSG'
+BlocKuntu refuses direct package-manager removal.
+
+Open BlocKuntu Settings and use its uninstall action instead. That action is
+available only on Sunday between 20:00 and 23:59 local time and prepares this
+package removal safely before it invokes dpkg.
+MSG
+  exit 1
+}
+
+authorize_settings_uninstall() {
+  lease_path="/run/blockuntu/package-removal-lease"
+  lease_token="${BLOCKUNTU_PACKAGE_REMOVAL_LEASE:-}"
+
+  [ -n "${lease_token}" ] || reject_package_uninstall
+  [ -r "${lease_path}" ] || reject_package_uninstall
+
+  IFS=' ' read -r expected_token expires_at <"${lease_path}" || reject_package_uninstall
+  case "${expires_at}" in
+    ''|*[!0-9]*) reject_package_uninstall ;;
+  esac
+  now="$(/bin/date -u +%s)"
+  [ "${now}" -le "${expires_at}" ] || reject_package_uninstall
+  [ "${lease_token}" = "${expected_token}" ] || reject_package_uninstall
+
+  rm -f "${lease_path}"
+}
+
+case "$1" in
+  remove)
+    authorize_settings_uninstall
+    ;;
+esac
 
 policy_recovery="/etc/blockuntu/policy-recovery.toml"
 if [ -e "${policy_recovery}" ] && command -v chattr >/dev/null 2>&1; then
@@ -382,6 +445,13 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl reset-failed blockuntu-hosts.path blockuntu-hosts.service blockuntu-watchdog.service blockuntu.service blockuntu.socket >/dev/null 2>&1 || true
 fi
+
+case "$1" in
+  remove|purge)
+    rm -f /etc/blockuntu/installation-id
+    rm -f /var/lib/blockuntu/installation-id
+    ;;
+esac
 
 if [ "$1" = "purge" ]; then
   rm -rf /etc/blockuntu /var/lib/blockuntu /run/blockuntu

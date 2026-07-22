@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelike, Utc};
 use focus_core::{
-    emergency_uninstall_code_is_valid, evaluate_app, evaluate_url, record_visit_end,
-    record_visit_heartbeat, record_visit_start, request_unlock, site_usage_is_metered,
-    AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision,
-    DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState, RuleConfig,
-    RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
+    emergency_uninstall_code_is_valid, evaluate_app, evaluate_url, installation_serial_is_valid,
+    record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
+    site_usage_is_metered, AllowanceConfig, AppRuleConfig, BlockReason, Config,
+    ControlledBlockReason, Decision, DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore,
+    HeartbeatState, RuleConfig, RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -41,7 +43,9 @@ const BROWSER_EXTENSION_UNINSTALLING_UNTIL_KEY: &str = "browser_extension_uninst
 const BROWSER_EXTENSION_MODE_ACTIVE: &str = "active";
 const BROWSER_EXTENSION_MODE_UNINSTALLING: &str = "uninstalling";
 const UNINSTALL_HANDOFF_SECONDS: i64 = 30;
+const PACKAGE_REMOVAL_LEASE_PATH: &str = "/run/blockuntu/package-removal-lease";
 const TIER1_EDIT_KEY_PATH: &str = "/etc/blockuntu/tier1-edit-key.txt";
+const INSTALLATION_SERIAL_PATH: &str = "/etc/blockuntu/installation-id";
 const TIER1_EDIT_UNLOCK_UNTIL_KEY: &str = "tier1_edit_unlocked_until";
 const TIER1_EDIT_UNLOCK_MINUTES: i64 = 5;
 const OPERATOR_WINDOW_START_MINUTE: u16 = 20 * 60;
@@ -60,6 +64,8 @@ pub struct RpcContext {
     defer_firefox_policy_repair_until_heartbeat: bool,
     defer_chrome_policy_repair_until_heartbeat: bool,
     tier1_edit_key_path: PathBuf,
+    installation_serial_path: PathBuf,
+    package_removal_lease_path: PathBuf,
     event_log_path: PathBuf,
     policy_recovery: Option<PolicyRecoveryManager>,
     trust_client_time: bool,
@@ -78,6 +84,8 @@ impl RpcContext {
             defer_firefox_policy_repair_until_heartbeat: false,
             defer_chrome_policy_repair_until_heartbeat: false,
             tier1_edit_key_path: PathBuf::from(TIER1_EDIT_KEY_PATH),
+            installation_serial_path: PathBuf::from(INSTALLATION_SERIAL_PATH),
+            package_removal_lease_path: PathBuf::from(PACKAGE_REMOVAL_LEASE_PATH),
             event_log_path: PathBuf::from(DEFAULT_EVENT_LOG_PATH),
             policy_recovery: None,
             trust_client_time: false,
@@ -125,6 +133,17 @@ impl RpcContext {
 
     pub fn with_tier1_edit_key_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.tier1_edit_key_path = path.into();
+        self
+    }
+
+    pub fn with_installation_serial_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.installation_serial_path = path.into();
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_package_removal_lease_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.package_removal_lease_path = path.into();
         self
     }
 
@@ -603,7 +622,7 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
     let emergency_authorized = params
         .emergency_code
         .as_deref()
-        .is_some_and(emergency_uninstall_code_is_valid);
+        .is_some_and(|code| emergency_uninstall_code_matches(context, code));
     if !emergency_authorized {
         reject_if_clock_tampered(context)?;
         if !operator_window_open(operator_now) {
@@ -612,6 +631,8 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
     }
     let now = Utc::now();
     let uninstalling_until = now + Duration::seconds(UNINSTALL_HANDOFF_SECONDS);
+    let package_removal_lease =
+        write_package_removal_lease(&context.package_removal_lease_path, uninstalling_until)?;
 
     {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -650,8 +671,48 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
         "status": "ok",
         "browser_extension_mode": BROWSER_EXTENSION_MODE_UNINSTALLING,
         "uninstalling_until": uninstalling_until,
+        "package_removal_lease": package_removal_lease,
         "enforcement": enforcement
     }))
+}
+
+fn write_package_removal_lease(path: &Path, expires_at: DateTime<Utc>) -> Result<String> {
+    let mut bytes = [0_u8; 32];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let token = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let contents = format!("{token} {}\n", expires_at.timestamp());
+    let temporary_path = path.with_extension("tmp");
+
+    let mut temporary_file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temporary_path)?;
+    temporary_file.write_all(contents.as_bytes())?;
+    temporary_file.sync_all()?;
+    fs::set_permissions(&temporary_path, fs::Permissions::from_mode(0o600))?;
+    fs::rename(&temporary_path, path)?;
+    Ok(token)
+}
+
+fn emergency_uninstall_code_matches(context: &RpcContext, candidate: &str) -> bool {
+    load_installation_serial(&context.installation_serial_path)
+        .ok()
+        .is_some_and(|serial| emergency_uninstall_code_is_valid(candidate, &serial))
+}
+
+fn load_installation_serial(path: &Path) -> Result<String> {
+    let serial = fs::read_to_string(path)?.trim().to_string();
+    if !installation_serial_is_valid(&serial) {
+        return Err(DaemonError::InvalidRequest(
+            "BlocKuntu installation serial is missing or invalid".to_string(),
+        ));
+    }
+    Ok(serial)
 }
 
 fn firefox_policy_status_json(context: &RpcContext) -> Result<Value> {
@@ -2838,6 +2899,8 @@ fn schedule_is_active_at(schedule: &ScheduleConfig, now: DateTime<FixedOffset>) 
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
 
     use chrono::{Duration, Local, TimeZone, Utc};
@@ -4891,7 +4954,9 @@ mod tests {
 
     #[test]
     fn prepare_uninstall_marks_browser_extension_mode() {
-        let (_temp, context) = rpc_context_with_enforcement_managers(true);
+        let (temp, context) = rpc_context_with_enforcement_managers(true);
+        let lease_path = temp.path().join("package-removal-lease");
+        let context = context.with_package_removal_lease_path(&lease_path);
         let prepare = json!({
             "jsonrpc": "2.0",
             "id": 142,
@@ -4909,6 +4974,19 @@ mod tests {
         assert!(response.get("error").is_none(), "{response}");
         assert_eq!(response["result"]["status"], "ok");
         assert_eq!(response["result"]["browser_extension_mode"], "uninstalling");
+        let lease = fs::read_to_string(&lease_path).expect("package removal lease should exist");
+        let lease_token = response["result"]["package_removal_lease"]
+            .as_str()
+            .expect("package removal lease token should be returned");
+        assert!(lease.starts_with(lease_token));
+        assert_eq!(
+            fs::metadata(&lease_path)
+                .expect("lease metadata should exist")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
 
         let heartbeat = json!({
             "jsonrpc": "2.0",
@@ -4954,6 +5032,36 @@ mod tests {
             .as_str()
             .expect("error data should be a string")
             .contains("Sunday 20:00-23:59"));
+    }
+
+    #[test]
+    fn prepare_uninstall_accepts_a_code_for_its_own_installation_serial() {
+        let (_enforcement_temp, context) = rpc_context_with_enforcement_managers(true);
+        let serial_temp = tempfile::tempdir().expect("serial temp dir should be created");
+        let serial_path = serial_temp.path().join("installation-id");
+        std::fs::write(&serial_path, "BKI-00000000-00000000-00000000-00000001\n")
+            .expect("installation serial should write");
+        let context = context
+            .with_installation_serial_path(serial_path)
+            .with_package_removal_lease_path(serial_temp.path().join("package-removal-lease"));
+        let prepare = json!({
+            "jsonrpc": "2.0",
+            "id": 145,
+            "method": "prepare_uninstall",
+            "params": {
+                "now": "2026-05-25T20:00:00+02:00",
+                "emergency_code": "BLOCKUNTU-EU2-spbREObNCff7ly9mJiKTfl25QchAAOKMtknbC-6r9EWdgxGnrNsMrrp0hNgsfEENlbkzhHJYkwTnIpwtYixnAg"
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&prepare).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["status"], "ok");
+        assert_eq!(response["result"]["browser_extension_mode"], "uninstalling");
     }
 
     #[test]
