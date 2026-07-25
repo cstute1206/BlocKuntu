@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Local, Timelike, Utc, Weekday};
 use focus_core::{emergency_uninstall_code_is_valid, installation_serial_is_valid};
+use notify_rust::{Hint, Urgency};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -87,6 +88,8 @@ const TRAY_MENU_OPEN_DETOX: &str = "open_detox";
 const TRAY_MENU_OPEN_ADMIN: &str = "open_admin";
 const TRAY_MENU_REFRESH: &str = "refresh";
 const TRAY_MENU_QUIT: &str = "quit";
+const DESKTOP_ENTRY_ID: &str = "local.blockuntu.gui";
+const NOTIFICATION_TIMEOUT_SECONDS: u64 = 10;
 
 #[derive(Debug, Error)]
 enum GuiError {
@@ -1489,7 +1492,7 @@ fn setup_tray(app: &mut App<Wry>) -> tauri::Result<TrayMenuState> {
                 emit_runtime_refresh(app);
             }
             TRAY_MENU_REFRESH => {
-                refresh_tray_menu_async(app.clone(), menu_state_for_events.clone());
+                refresh_tray_menu_async(menu_state_for_events.clone());
             }
             TRAY_MENU_QUIT => app.exit(0),
             _ => {}
@@ -1511,27 +1514,26 @@ fn setup_tray(app: &mut App<Wry>) -> tauri::Result<TrayMenuState> {
     }
     tray.build(app)?;
 
-    let app_handle = app.handle().clone();
-    refresh_tray_menu_async(app_handle.clone(), menu_state.clone());
-    start_tray_refresh_loop(app_handle, menu_state.clone());
+    refresh_tray_menu_async(menu_state.clone());
+    start_tray_refresh_loop(menu_state.clone());
 
     Ok(menu_state)
 }
 
-fn start_tray_refresh_loop(app: AppHandle<Wry>, menu: TrayMenuState) {
+fn start_tray_refresh_loop(menu: TrayMenuState) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(TRAY_REFRESH_INTERVAL_SECONDS));
-        refresh_tray_menu(&app, &menu);
+        refresh_tray_menu(&menu);
     });
 }
 
-fn refresh_tray_menu_async(app: AppHandle<Wry>, menu: TrayMenuState) {
+fn refresh_tray_menu_async(menu: TrayMenuState) {
     std::thread::spawn(move || {
-        refresh_tray_menu(&app, &menu);
+        refresh_tray_menu(&menu);
     });
 }
 
-fn refresh_tray_menu(_app: &AppHandle<Wry>, menu: &TrayMenuState) {
+fn refresh_tray_menu(menu: &TrayMenuState) {
     let socket = resolve_socket_path(None);
     match call_daemon(&socket, "status", json!({})) {
         Ok(status) => {
@@ -1545,6 +1547,7 @@ fn refresh_tray_menu(_app: &AppHandle<Wry>, menu: &TrayMenuState) {
                 format!("Enforcement: {}", tray_enforcement_label(enforcement_state)),
             );
             update_tray_detox_status(&socket, menu);
+            deliver_pending_notifications(&socket);
         }
         Err(_) => {
             set_menu_text(&menu.daemon_status, "Daemon: Offline");
@@ -1552,6 +1555,64 @@ fn refresh_tray_menu(_app: &AppHandle<Wry>, menu: &TrayMenuState) {
             set_menu_text(&menu.detox_status, "Detox: Unknown");
         }
     }
+}
+
+fn deliver_pending_notifications(socket: &str) {
+    let Ok(value) = call_daemon(socket, "pending_notifications", json!({ "limit": 20 })) else {
+        return;
+    };
+    let Some(notifications) = value.get("notifications").and_then(Value::as_array) else {
+        return;
+    };
+    for notification in notifications {
+        let Some(id) = notification.get("id").and_then(Value::as_i64) else {
+            continue;
+        };
+        let Some(title) = notification.get("title").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(body) = notification.get("body").and_then(Value::as_str) else {
+            continue;
+        };
+        let delivery = notify_rust::Notification::new()
+            .appname("BlocKuntu")
+            .summary(title)
+            .body(body)
+            .icon("blockuntu-gui")
+            .hint(Hint::DesktopEntry(DESKTOP_ENTRY_ID.to_string()))
+            .hint(Hint::Transient(false))
+            .urgency(Urgency::Normal)
+            .timeout(Duration::from_secs(NOTIFICATION_TIMEOUT_SECONDS))
+            .show();
+        let (accepted, detail) = match delivery {
+            Ok(handle) => {
+                retain_notification_handle(handle);
+                (
+                    true,
+                    "accepted by org.freedesktop.Notifications; D-Bus handle retained until close"
+                        .to_string(),
+                )
+            }
+            Err(error) => (false, error.to_string()),
+        };
+        if let Err(error) = call_daemon(
+            socket,
+            "record_notification_delivery",
+            json!({
+                "id": id,
+                "delivered": accepted,
+                "detail": detail
+            }),
+        ) {
+            eprintln!("could not record notification delivery result: {error}");
+        }
+    }
+}
+
+fn retain_notification_handle(handle: notify_rust::NotificationHandle) {
+    tauri::async_runtime::spawn(async move {
+        handle.wait_for_action_async(|_| {}).await;
+    });
 }
 
 fn update_tray_detox_status(socket: &str, menu: &TrayMenuState) {

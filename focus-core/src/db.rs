@@ -5,8 +5,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use chrono::{DateTime, Datelike, FixedOffset, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, FixedOffset, SecondsFormat, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     AllowanceConfig, AppMatcherConfig, AppMatcherKind, AppRuleConfig, Config, ConfigError,
@@ -30,6 +31,45 @@ pub struct HeartbeatState {
 pub struct ScheduleActivityTotal {
     pub schedule_id: String,
     pub total_active_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationPreferences {
+    pub enabled: bool,
+    pub website_blocked: bool,
+    pub application_blocked: bool,
+    pub allowance_warnings: bool,
+    pub allowance_warning_minutes: Vec<u32>,
+    pub schedule_started: bool,
+    pub schedule_ended: bool,
+    pub detox_started: bool,
+    pub detox_ended: bool,
+}
+
+impl Default for NotificationPreferences {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            website_blocked: true,
+            application_blocked: true,
+            allowance_warnings: true,
+            allowance_warning_minutes: vec![5, 1],
+            schedule_started: true,
+            schedule_ended: true,
+            detox_started: true,
+            detox_ended: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationEvent {
+    pub id: i64,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +139,504 @@ impl Database {
         }
 
         Ok(id)
+    }
+
+    pub fn notification_preferences(&self) -> Result<NotificationPreferences, Error> {
+        let stored = self
+            .conn
+            .query_row(
+                r#"
+                SELECT
+                    enabled,
+                    website_blocked,
+                    application_blocked,
+                    allowance_warnings,
+                    allowance_warning_minutes,
+                    schedule_started,
+                    schedule_ended,
+                    detox_started,
+                    detox_ended
+                FROM notification_preferences
+                WHERE id = 1
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)? != 0,
+                        row.get::<_, i64>(1)? != 0,
+                        row.get::<_, i64>(2)? != 0,
+                        row.get::<_, i64>(3)? != 0,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)? != 0,
+                        row.get::<_, i64>(6)? != 0,
+                        row.get::<_, i64>(7)? != 0,
+                        row.get::<_, i64>(8)? != 0,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((
+            enabled,
+            website_blocked,
+            application_blocked,
+            allowance_warnings,
+            thresholds,
+            schedule_started,
+            schedule_ended,
+            detox_started,
+            detox_ended,
+        )) = stored
+        else {
+            return Ok(NotificationPreferences::default());
+        };
+        let allowance_warning_minutes = thresholds
+            .split(',')
+            .filter_map(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+            .collect::<Vec<_>>();
+
+        Ok(NotificationPreferences {
+            enabled,
+            website_blocked,
+            application_blocked,
+            allowance_warnings,
+            allowance_warning_minutes,
+            schedule_started,
+            schedule_ended,
+            detox_started,
+            detox_ended,
+        })
+    }
+
+    pub fn set_notification_preferences(
+        &self,
+        preferences: &NotificationPreferences,
+    ) -> Result<(), Error> {
+        let thresholds = preferences
+            .allowance_warning_minutes
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        self.conn.execute(
+            r#"
+            INSERT INTO notification_preferences (
+                id,
+                enabled,
+                website_blocked,
+                application_blocked,
+                allowance_warnings,
+                allowance_warning_minutes,
+                schedule_started,
+                schedule_ended,
+                detox_started,
+                detox_ended
+            )
+            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(id) DO UPDATE SET
+                enabled = excluded.enabled,
+                website_blocked = excluded.website_blocked,
+                application_blocked = excluded.application_blocked,
+                allowance_warnings = excluded.allowance_warnings,
+                allowance_warning_minutes = excluded.allowance_warning_minutes,
+                schedule_started = excluded.schedule_started,
+                schedule_ended = excluded.schedule_ended,
+                detox_started = excluded.detox_started,
+                detox_ended = excluded.detox_ended
+            "#,
+            params![
+                preferences.enabled,
+                preferences.website_blocked,
+                preferences.application_blocked,
+                preferences.allowance_warnings,
+                thresholds,
+                preferences.schedule_started,
+                preferences.schedule_ended,
+                preferences.detox_started,
+                preferences.detox_ended,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn discard_disabled_notifications(
+        &self,
+        preferences: &NotificationPreferences,
+        now: DateTime<Utc>,
+    ) -> Result<(), Error> {
+        let delivered_at = format_time(now);
+        if !preferences.enabled {
+            self.conn.execute(
+                r#"
+                UPDATE notification_outbox
+                SET delivered_at = ?1
+                WHERE delivered_at IS NULL
+                "#,
+                params![delivered_at],
+            )?;
+            return Ok(());
+        }
+
+        let disabled_kinds = [
+            (!preferences.website_blocked).then_some("website_blocked"),
+            (!preferences.application_blocked).then_some("application_blocked"),
+            (!preferences.allowance_warnings).then_some("allowance_warning"),
+            (!preferences.schedule_started).then_some("schedule_started"),
+            (!preferences.schedule_ended).then_some("schedule_ended"),
+            (!preferences.detox_started).then_some("detox_started"),
+            (!preferences.detox_ended).then_some("detox_ended"),
+        ];
+        for kind in disabled_kinds.into_iter().flatten() {
+            self.conn.execute(
+                r#"
+                UPDATE notification_outbox
+                SET delivered_at = ?2
+                WHERE delivered_at IS NULL AND kind = ?1
+                "#,
+                params![kind, delivered_at],
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn enqueue_notification(
+        &self,
+        kind: &str,
+        title: &str,
+        body: &str,
+        dedupe_key: &str,
+        now: DateTime<Utc>,
+        cooldown: Duration,
+        time_to_live: Duration,
+    ) -> Result<Option<i64>, Error> {
+        let existing = self
+            .conn
+            .query_row(
+                r#"
+                SELECT id
+                FROM notification_outbox
+                WHERE dedupe_key = ?1 AND created_at >= ?2
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+                params![dedupe_key, format_time(now - cooldown)],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if existing.is_some() {
+            return Ok(None);
+        }
+
+        self.conn.execute(
+            r#"
+            INSERT INTO notification_outbox (
+                kind,
+                title,
+                body,
+                dedupe_key,
+                created_at,
+                expires_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            params![
+                kind,
+                title,
+                body,
+                dedupe_key,
+                format_time(now),
+                format_time(now + time_to_live)
+            ],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        self.record_event(
+            "notification_queued",
+            Some(&format!("{kind}:{id}")),
+            Some(&format!(
+                "title={title:?};body={body:?};expires_at={:?}",
+                format_time(now + time_to_live)
+            )),
+            now,
+        )?;
+        Ok(Some(id))
+    }
+
+    pub fn pending_notifications(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<NotificationEvent>, Error> {
+        self.conn.execute(
+            "DELETE FROM notification_outbox WHERE delivered_at IS NULL AND expires_at <= ?1",
+            params![format_time(now)],
+        )?;
+        self.conn.execute(
+            "DELETE FROM notification_outbox WHERE delivered_at IS NOT NULL AND delivered_at <= ?1",
+            params![format_time(now - Duration::days(7))],
+        )?;
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT
+                notification_outbox.id,
+                notification_outbox.kind,
+                notification_outbox.title,
+                notification_outbox.body,
+                notification_outbox.created_at,
+                notification_outbox.expires_at
+            FROM notification_outbox
+            LEFT JOIN notification_delivery_attempts
+                ON notification_delivery_attempts.notification_id = notification_outbox.id
+            WHERE
+                notification_outbox.delivered_at IS NULL
+                AND notification_outbox.expires_at > ?1
+                AND (
+                    notification_delivery_attempts.last_attempt_at IS NULL
+                    OR notification_delivery_attempts.last_attempt_at <= ?2
+                )
+            ORDER BY notification_outbox.id
+            LIMIT ?3
+            "#,
+        )?;
+        let rows = statement.query_map(
+            params![
+                format_time(now),
+                format_time(now - Duration::minutes(1)),
+                i64::from(limit)
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            let (id, kind, title, body, created_at, expires_at) = row?;
+            events.push(NotificationEvent {
+                id,
+                kind,
+                title,
+                body,
+                created_at: parse_time(&created_at)?,
+                expires_at: parse_time(&expires_at)?,
+            });
+        }
+        Ok(events)
+    }
+
+    pub fn acknowledge_notifications(&self, ids: &[i64], now: DateTime<Utc>) -> Result<(), Error> {
+        let transaction = self.conn.unchecked_transaction()?;
+        for id in ids {
+            transaction.execute(
+                r#"
+                UPDATE notification_outbox
+                SET delivered_at = ?2
+                WHERE id = ?1 AND delivered_at IS NULL
+                "#,
+                params![id, format_time(now)],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn record_notification_delivery_result(
+        &self,
+        id: i64,
+        delivered: bool,
+        detail: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, Error> {
+        let notification = self
+            .conn
+            .query_row(
+                r#"
+                SELECT kind, title, body
+                FROM notification_outbox
+                WHERE id = ?1
+                "#,
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((kind, title, body)) = notification else {
+            return Ok(false);
+        };
+
+        let attempt = if delivered {
+            let previous_attempts = self
+                .conn
+                .query_row(
+                    r#"
+                    SELECT attempt_count
+                    FROM notification_delivery_attempts
+                    WHERE notification_id = ?1
+                    "#,
+                    params![id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            self.acknowledge_notifications(&[id], now)?;
+            self.conn.execute(
+                "DELETE FROM notification_delivery_attempts WHERE notification_id = ?1",
+                params![id],
+            )?;
+            previous_attempts + 1
+        } else {
+            self.conn.execute(
+                r#"
+                INSERT INTO notification_delivery_attempts (
+                    notification_id,
+                    attempt_count,
+                    last_attempt_at,
+                    last_error
+                )
+                VALUES (?1, 1, ?2, ?3)
+                ON CONFLICT(notification_id) DO UPDATE SET
+                    attempt_count = notification_delivery_attempts.attempt_count + 1,
+                    last_attempt_at = excluded.last_attempt_at,
+                    last_error = excluded.last_error
+                "#,
+                params![id, format_time(now), detail],
+            )?;
+            self.conn.query_row(
+                r#"
+                SELECT attempt_count
+                FROM notification_delivery_attempts
+                WHERE notification_id = ?1
+                "#,
+                params![id],
+                |row| row.get::<_, i64>(0),
+            )?
+        };
+
+        self.record_event(
+            if delivered {
+                "notification_accepted"
+            } else {
+                "notification_delivery_failed"
+            },
+            Some(&format!("{kind}:{id}")),
+            Some(&format!(
+                "attempt={attempt};title={title:?};body={body:?};detail={:?}",
+                detail.unwrap_or(if delivered {
+                    "accepted by desktop notification service"
+                } else {
+                    "no error detail supplied"
+                })
+            )),
+            now,
+        )?;
+        Ok(true)
+    }
+
+    pub fn allowance_notification_state(
+        &self,
+        rule_id: &str,
+    ) -> Result<Option<(String, i64)>, Error> {
+        Ok(self
+            .conn
+            .query_row(
+                r#"
+                SELECT local_day, remaining_seconds
+                FROM notification_allowance_state
+                WHERE rule_id = ?1
+                "#,
+                params![rule_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn set_allowance_notification_state(
+        &self,
+        rule_id: &str,
+        local_day: &str,
+        remaining_seconds: i64,
+        now: DateTime<Utc>,
+    ) -> Result<(), Error> {
+        self.conn.execute(
+            r#"
+            INSERT INTO notification_allowance_state (
+                rule_id,
+                local_day,
+                remaining_seconds,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(rule_id) DO UPDATE SET
+                local_day = excluded.local_day,
+                remaining_seconds = excluded.remaining_seconds,
+                updated_at = excluded.updated_at
+            "#,
+            params![rule_id, local_day, remaining_seconds, format_time(now)],
+        )?;
+        Ok(())
+    }
+
+    pub fn notification_lifecycle_states(&self, kind: &str) -> Result<Vec<(String, bool)>, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT target_id, active
+            FROM notification_lifecycle_state
+            WHERE kind = ?1
+            "#,
+        )?;
+        let rows = statement.query_map(params![kind], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+        })?;
+        let mut states = Vec::new();
+        for row in rows {
+            states.push(row?);
+        }
+        Ok(states)
+    }
+
+    pub fn set_notification_lifecycle_state(
+        &self,
+        kind: &str,
+        target_id: &str,
+        active: bool,
+        now: DateTime<Utc>,
+    ) -> Result<(), Error> {
+        self.conn.execute(
+            r#"
+            INSERT INTO notification_lifecycle_state (kind, target_id, active, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(kind, target_id) DO UPDATE SET
+                active = excluded.active,
+                updated_at = excluded.updated_at
+            "#,
+            params![kind, target_id, active, format_time(now)],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_notification_lifecycle_state(
+        &self,
+        kind: &str,
+        target_id: &str,
+    ) -> Result<(), Error> {
+        self.conn.execute(
+            "DELETE FROM notification_lifecycle_state WHERE kind = ?1 AND target_id = ?2",
+            params![kind, target_id],
+        )?;
+        Ok(())
     }
 
     pub fn sync_schedule_activity_totals(
@@ -1467,6 +2005,60 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
         CREATE INDEX IF NOT EXISTS idx_events_kind_created
             ON events(kind, created_at);
 
+        CREATE TABLE IF NOT EXISTS notification_preferences (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            website_blocked INTEGER NOT NULL DEFAULT 1,
+            application_blocked INTEGER NOT NULL DEFAULT 1,
+            allowance_warnings INTEGER NOT NULL DEFAULT 1,
+            allowance_warning_minutes TEXT NOT NULL DEFAULT '5,1',
+            schedule_started INTEGER NOT NULL DEFAULT 1,
+            schedule_ended INTEGER NOT NULL DEFAULT 1,
+            detox_started INTEGER NOT NULL DEFAULT 1,
+            detox_ended INTEGER NOT NULL DEFAULT 1
+        );
+
+        INSERT OR IGNORE INTO notification_preferences (id) VALUES (1);
+
+        CREATE TABLE IF NOT EXISTS notification_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            delivered_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending
+            ON notification_outbox(delivered_at, expires_at, id);
+        CREATE INDEX IF NOT EXISTS idx_notification_outbox_dedupe
+            ON notification_outbox(dedupe_key, created_at);
+
+        CREATE TABLE IF NOT EXISTS notification_delivery_attempts (
+            notification_id INTEGER PRIMARY KEY,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TEXT NOT NULL,
+            last_error TEXT,
+            FOREIGN KEY(notification_id) REFERENCES notification_outbox(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS notification_allowance_state (
+            rule_id TEXT PRIMARY KEY,
+            local_day TEXT NOT NULL,
+            remaining_seconds INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS notification_lifecycle_state (
+            kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            active INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(kind, target_id)
+        );
+
         CREATE TABLE IF NOT EXISTS schedule_activity_totals (
             schedule_id TEXT PRIMARY KEY,
             total_active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (total_active_seconds >= 0),
@@ -2214,6 +2806,213 @@ mod tests {
         assert!(contents.contains("kind=\"website_blocked\""));
         assert!(contents.contains("target=Some(\"https://example.com\")"));
         assert!(contents.contains("details=Some(\"line one\\nline two\")"));
+    }
+
+    #[test]
+    fn notification_preferences_default_and_roundtrip() {
+        let database = Database::in_memory().expect("in-memory database");
+        assert_eq!(
+            database
+                .notification_preferences()
+                .expect("default preferences"),
+            NotificationPreferences::default()
+        );
+
+        let preferences = NotificationPreferences {
+            enabled: true,
+            website_blocked: false,
+            application_blocked: true,
+            allowance_warnings: true,
+            allowance_warning_minutes: vec![10, 5, 1],
+            schedule_started: false,
+            schedule_ended: true,
+            detox_started: true,
+            detox_ended: false,
+        };
+        database
+            .set_notification_preferences(&preferences)
+            .expect("preferences should save");
+
+        assert_eq!(
+            database
+                .notification_preferences()
+                .expect("saved preferences"),
+            preferences
+        );
+    }
+
+    #[test]
+    fn notification_outbox_deduplicates_acknowledges_and_expires() {
+        let database = Database::in_memory().expect("in-memory database");
+        let now = Utc
+            .with_ymd_and_hms(2026, 7, 24, 10, 0, 0)
+            .single()
+            .expect("timestamp");
+        let first = database
+            .enqueue_notification(
+                "website_blocked",
+                "Website blocked",
+                "example.com was blocked.",
+                "website:example.com",
+                now,
+                Duration::minutes(1),
+                Duration::minutes(2),
+            )
+            .expect("notification should enqueue");
+        assert!(first.is_some());
+        assert_eq!(
+            database
+                .enqueue_notification(
+                    "website_blocked",
+                    "Website blocked",
+                    "example.com was blocked.",
+                    "website:example.com",
+                    now + Duration::seconds(30),
+                    Duration::minutes(1),
+                    Duration::minutes(2),
+                )
+                .expect("duplicate should be handled"),
+            None
+        );
+
+        let pending = database
+            .pending_notifications(now, 20)
+            .expect("pending notifications");
+        assert_eq!(pending.len(), 1);
+        database
+            .acknowledge_notifications(&[pending[0].id], now)
+            .expect("notification should acknowledge");
+        assert!(database
+            .pending_notifications(now, 20)
+            .expect("pending notifications")
+            .is_empty());
+
+        database
+            .enqueue_notification(
+                "schedule_started",
+                "Schedule started",
+                "Work is active.",
+                "schedule:work",
+                now,
+                Duration::seconds(0),
+                Duration::minutes(1),
+            )
+            .expect("expiring notification should enqueue");
+        assert!(database
+            .pending_notifications(now + Duration::minutes(2), 20)
+            .expect("expired notifications should clean up")
+            .is_empty());
+    }
+
+    #[test]
+    fn notification_delivery_results_are_logged_and_failures_retry_later() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let log_path = directory.path().join("blockuntu.log");
+        let mut database = Database::in_memory().expect("in-memory database");
+        database
+            .set_event_log_path(&log_path)
+            .expect("event log setup");
+        let now = Utc
+            .with_ymd_and_hms(2026, 7, 25, 10, 0, 0)
+            .single()
+            .expect("timestamp");
+        let id = database
+            .enqueue_notification(
+                "website_blocked",
+                "Website blocked",
+                "example.com was blocked.",
+                "website:example.com",
+                now,
+                Duration::minutes(1),
+                Duration::minutes(5),
+            )
+            .expect("notification should enqueue")
+            .expect("notification id");
+
+        assert!(database
+            .record_notification_delivery_result(
+                id,
+                false,
+                Some("org.freedesktop.Notifications is unavailable"),
+                now,
+            )
+            .expect("failed delivery should record"));
+        assert!(database
+            .pending_notifications(now + Duration::seconds(30), 20)
+            .expect("retry should be delayed")
+            .is_empty());
+        assert_eq!(
+            database
+                .pending_notifications(now + Duration::seconds(61), 20)
+                .expect("retry should become available")
+                .len(),
+            1
+        );
+
+        assert!(database
+            .record_notification_delivery_result(
+                id,
+                true,
+                Some("accepted by desktop notification service"),
+                now + Duration::seconds(61),
+            )
+            .expect("successful delivery should record"));
+        assert!(database
+            .pending_notifications(now + Duration::seconds(62), 20)
+            .expect("delivered notification should be acknowledged")
+            .is_empty());
+
+        let contents = std::fs::read_to_string(log_path).expect("event log contents");
+        assert!(contents.contains("kind=\"notification_queued\""));
+        assert!(contents.contains("kind=\"notification_delivery_failed\""));
+        assert!(contents.contains("org.freedesktop.Notifications is unavailable"));
+        assert!(contents.contains("kind=\"notification_accepted\""));
+        assert!(contents.contains("attempt=2"));
+    }
+
+    #[test]
+    fn disabling_notification_categories_discards_pending_events() {
+        let database = Database::in_memory().expect("in-memory database");
+        let now = Utc
+            .with_ymd_and_hms(2026, 7, 24, 10, 0, 0)
+            .single()
+            .expect("timestamp");
+        database
+            .enqueue_notification(
+                "website_blocked",
+                "Website blocked",
+                "example.com was blocked.",
+                "website:example.com",
+                now,
+                Duration::seconds(0),
+                Duration::minutes(2),
+            )
+            .expect("website notification should enqueue");
+        database
+            .enqueue_notification(
+                "schedule_started",
+                "Schedule started",
+                "Work is active.",
+                "schedule:work",
+                now,
+                Duration::seconds(0),
+                Duration::minutes(2),
+            )
+            .expect("schedule notification should enqueue");
+
+        let preferences = NotificationPreferences {
+            website_blocked: false,
+            ..NotificationPreferences::default()
+        };
+        database
+            .discard_disabled_notifications(&preferences, now)
+            .expect("disabled notifications should discard");
+        let pending = database
+            .pending_notifications(now, 20)
+            .expect("pending notifications");
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, "schedule_started");
     }
 
     #[test]

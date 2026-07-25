@@ -152,6 +152,18 @@ export interface LogSummary {
   event_counts: Record<string, number>;
 }
 
+export interface NotificationPreferences {
+  enabled: boolean;
+  website_blocked: boolean;
+  application_blocked: boolean;
+  allowance_warnings: boolean;
+  allowance_warning_minutes: number[];
+  schedule_started: boolean;
+  schedule_ended: boolean;
+  detox_started: boolean;
+  detox_ended: boolean;
+}
+
 export interface ScheduleActivityTotal {
   id: string;
   name?: string | null;

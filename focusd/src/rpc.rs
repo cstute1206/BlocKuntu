@@ -11,7 +11,8 @@ use focus_core::{
     record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
     site_usage_is_metered, AllowanceConfig, AppRuleConfig, BlockReason, Config,
     ControlledBlockReason, Decision, DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore,
-    HeartbeatState, RuleConfig, RuleTier, ScheduleConfig, UnlockState, VisitState, Weekday,
+    HeartbeatState, NotificationPreferences, RuleConfig, RuleTier, ScheduleConfig, UnlockState,
+    VisitState, Weekday,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -51,6 +52,13 @@ const TIER1_EDIT_UNLOCK_MINUTES: i64 = 5;
 const OPERATOR_WINDOW_START_MINUTE: u16 = 20 * 60;
 const OPERATOR_WINDOW_END_MINUTE: u16 = 23 * 60 + 59;
 const MAX_DETOX_DURATION_MINUTES: u32 = 12 * 7 * 24 * 60;
+const MAX_NOTIFICATION_THRESHOLD_MINUTES: u32 = 24 * 60;
+const MAX_NOTIFICATION_THRESHOLDS: usize = 10;
+const MAX_PENDING_NOTIFICATIONS: u32 = 50;
+const MAX_NOTIFICATION_DELIVERY_DETAIL_LENGTH: usize = 2_000;
+const BLOCK_NOTIFICATION_COOLDOWN_SECONDS: i64 = 60;
+const BLOCK_NOTIFICATION_TTL_MINUTES: i64 = 2;
+const LIFECYCLE_NOTIFICATION_TTL_MINUTES: i64 = 10;
 
 #[derive(Clone)]
 pub struct RpcContext {
@@ -395,6 +403,29 @@ struct ScheduleActivitySummaryParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct SetNotificationPreferencesParams {
+    preferences: NotificationPreferences,
+}
+
+#[derive(Debug, Deserialize)]
+struct PendingNotificationsParams {
+    #[serde(default = "default_pending_notifications_limit")]
+    limit: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcknowledgeNotificationsParams {
+    ids: Vec<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecordNotificationDeliveryParams {
+    id: i64,
+    delivered: bool,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ImportPolicyTomlParams {
     toml: String,
     #[serde(default)]
@@ -513,6 +544,23 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
         "schedule_activity_summary" => {
             let params = parse_params::<ScheduleActivitySummaryParams>(params)?;
             schedule_activity_summary(context, params)
+        }
+        "notification_preferences" => notification_preferences_method(context),
+        "set_notification_preferences" => {
+            let params = parse_params::<SetNotificationPreferencesParams>(params)?;
+            set_notification_preferences_method(context, params)
+        }
+        "pending_notifications" => {
+            let params = parse_params::<PendingNotificationsParams>(params)?;
+            pending_notifications_method(context, params)
+        }
+        "acknowledge_notifications" => {
+            let params = parse_params::<AcknowledgeNotificationsParams>(params)?;
+            acknowledge_notifications_method(context, params)
+        }
+        "record_notification_delivery" => {
+            let params = parse_params::<RecordNotificationDeliveryParams>(params)?;
+            record_notification_delivery_method(context, params)
         }
         "running_apps" => {
             let params = parse_params::<ListRunningAppsParams>(params)?;
@@ -854,6 +902,250 @@ fn schedule_activity_summary(
     }))
 }
 
+fn notification_preferences_method(context: &RpcContext) -> Result<Value> {
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    Ok(serde_json::to_value(
+        core.database().notification_preferences()?,
+    )?)
+}
+
+fn set_notification_preferences_method(
+    context: &RpcContext,
+    params: SetNotificationPreferencesParams,
+) -> Result<Value> {
+    let preferences = normalize_notification_preferences(params.preferences)?;
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    core.database().set_notification_preferences(&preferences)?;
+    core.database()
+        .discard_disabled_notifications(&preferences, Utc::now())?;
+    core.database().record_event(
+        "notification_preferences_updated",
+        Some("notifications"),
+        None,
+        Utc::now(),
+    )?;
+    Ok(serde_json::to_value(preferences)?)
+}
+
+fn pending_notifications_method(
+    context: &RpcContext,
+    params: PendingNotificationsParams,
+) -> Result<Value> {
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let notifications = core
+        .database()
+        .pending_notifications(Utc::now(), params.limit.clamp(1, MAX_PENDING_NOTIFICATIONS))?;
+    Ok(json!({ "notifications": notifications }))
+}
+
+fn acknowledge_notifications_method(
+    context: &RpcContext,
+    params: AcknowledgeNotificationsParams,
+) -> Result<Value> {
+    if params.ids.len() > MAX_PENDING_NOTIFICATIONS as usize {
+        return Err(DaemonError::InvalidRequest(format!(
+            "cannot acknowledge more than {MAX_PENDING_NOTIFICATIONS} notifications at once"
+        )));
+    }
+    if params.ids.iter().any(|id| *id <= 0) {
+        return Err(DaemonError::InvalidRequest(
+            "notification ids must be positive".to_string(),
+        ));
+    }
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    core.database()
+        .acknowledge_notifications(&params.ids, Utc::now())?;
+    Ok(json!({ "status": "ok", "acknowledged": params.ids.len() }))
+}
+
+fn record_notification_delivery_method(
+    context: &RpcContext,
+    params: RecordNotificationDeliveryParams,
+) -> Result<Value> {
+    if params.id <= 0 {
+        return Err(DaemonError::InvalidRequest(
+            "notification id must be positive".to_string(),
+        ));
+    }
+    if params
+        .detail
+        .as_ref()
+        .is_some_and(|detail| detail.len() > MAX_NOTIFICATION_DELIVERY_DETAIL_LENGTH)
+    {
+        return Err(DaemonError::InvalidRequest(format!(
+            "notification delivery detail cannot exceed {MAX_NOTIFICATION_DELIVERY_DETAIL_LENGTH} bytes"
+        )));
+    }
+
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let recorded = core.database().record_notification_delivery_result(
+        params.id,
+        params.delivered,
+        params.detail.as_deref(),
+        Utc::now(),
+    )?;
+    if !recorded {
+        return Err(DaemonError::InvalidRequest(format!(
+            "notification {} does not exist",
+            params.id
+        )));
+    }
+    Ok(json!({
+        "status": if params.delivered { "accepted" } else { "failed" },
+        "id": params.id
+    }))
+}
+
+fn normalize_notification_preferences(
+    mut preferences: NotificationPreferences,
+) -> Result<NotificationPreferences> {
+    if preferences.allowance_warning_minutes.len() > MAX_NOTIFICATION_THRESHOLDS {
+        return Err(DaemonError::InvalidRequest(format!(
+            "no more than {MAX_NOTIFICATION_THRESHOLDS} allowance warning thresholds are allowed"
+        )));
+    }
+    if preferences
+        .allowance_warning_minutes
+        .iter()
+        .any(|minutes| *minutes == 0 || *minutes > MAX_NOTIFICATION_THRESHOLD_MINUTES)
+    {
+        return Err(DaemonError::InvalidRequest(format!(
+            "allowance warning thresholds must be between 1 and {MAX_NOTIFICATION_THRESHOLD_MINUTES} minutes"
+        )));
+    }
+    preferences
+        .allowance_warning_minutes
+        .sort_unstable_by(|left, right| right.cmp(left));
+    preferences.allowance_warning_minutes.dedup();
+    Ok(preferences)
+}
+
+fn enqueue_website_block_notification(
+    core: &FocusCore,
+    url: &str,
+    decision: &Decision,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let preferences = core.database().notification_preferences()?;
+    if !preferences.enabled || !preferences.website_blocked {
+        return Ok(());
+    }
+    let Decision::Block(reason) = decision else {
+        return Ok(());
+    };
+    let Some((rule_id, rule_name)) = notification_rule(reason) else {
+        return Ok(());
+    };
+    let target = url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_else(|| url.to_string());
+    core.database().enqueue_notification(
+        "website_blocked",
+        "Website blocked",
+        &format!("{target} was blocked by \"{rule_name}\"."),
+        &format!("website_blocked:{rule_id}:{}", target.to_ascii_lowercase()),
+        now,
+        Duration::seconds(BLOCK_NOTIFICATION_COOLDOWN_SECONDS),
+        Duration::minutes(BLOCK_NOTIFICATION_TTL_MINUTES),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn enqueue_application_block_notification(
+    core: &FocusCore,
+    rule_id: &str,
+    application_name: &str,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let preferences = core.database().notification_preferences()?;
+    if !preferences.enabled || !preferences.application_blocked {
+        return Ok(());
+    }
+    let rule_name = core
+        .config()
+        .app_rules
+        .iter()
+        .find(|rule| rule.id == rule_id)
+        .map(|rule| rule.name.as_str())
+        .unwrap_or(rule_id);
+    core.database().enqueue_notification(
+        "application_blocked",
+        "Application blocked",
+        &format!("{application_name} was blocked by \"{rule_name}\"."),
+        &format!(
+            "application_blocked:{rule_id}:{}",
+            application_name.to_ascii_lowercase()
+        ),
+        now,
+        Duration::seconds(BLOCK_NOTIFICATION_COOLDOWN_SECONDS),
+        Duration::minutes(BLOCK_NOTIFICATION_TTL_MINUTES),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn enqueue_detox_notification(
+    core: &FocusCore,
+    session: &DetoxSession,
+    active: bool,
+    ended_early: bool,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    core.database()
+        .set_notification_lifecycle_state("detox", &session.id, active, now)?;
+    let preferences = core.database().notification_preferences()?;
+    if !preferences.enabled
+        || (active && !preferences.detox_started)
+        || (!active && !preferences.detox_ended)
+    {
+        return Ok(());
+    }
+    let name = session.name.as_deref().unwrap_or(&session.id);
+    let (kind, title, body) = if active {
+        (
+            "detox_started",
+            "Detox started",
+            format!("\"{name}\" is now active."),
+        )
+    } else if ended_early {
+        (
+            "detox_ended",
+            "Detox ended",
+            format!("\"{name}\" was ended early."),
+        )
+    } else {
+        (
+            "detox_ended",
+            "Detox ended",
+            format!("\"{name}\" has finished."),
+        )
+    };
+    core.database().enqueue_notification(
+        kind,
+        title,
+        &body,
+        &format!("{kind}:{}", session.id),
+        now,
+        Duration::minutes(1),
+        Duration::minutes(LIFECYCLE_NOTIFICATION_TTL_MINUTES),
+    )?;
+    Ok(())
+}
+
+fn notification_rule(reason: &BlockReason) -> Option<(&str, &str)> {
+    match reason {
+        BlockReason::Detox {
+            rule_id, rule_name, ..
+        }
+        | BlockReason::HardBlock { rule_id, rule_name }
+        | BlockReason::ScheduledBlock { rule_id, rule_name }
+        | BlockReason::ControlledAccess {
+            rule_id, rule_name, ..
+        } => Some((rule_id, rule_name)),
+        BlockReason::InvalidUrl { .. } | BlockReason::RuntimeError { .. } => None,
+    }
+}
+
 fn export_policy_toml_method(context: &RpcContext) -> Result<Value> {
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let toml = core.config().to_toml_string()?;
@@ -933,6 +1225,37 @@ fn persist_policy_config(context: &RpcContext, core: &mut FocusCore, next: Confi
     core.replace_config(next)?;
     core.database()
         .sync_schedule_activity_totals(&core.config().schedules, now)?;
+    rebaseline_schedule_notification_states(core, now)?;
+    Ok(())
+}
+
+fn rebaseline_schedule_notification_states(
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+) -> Result<()> {
+    let now_utc = now.with_timezone(&Utc);
+    let existing = core.database().notification_lifecycle_states("schedule")?;
+    for schedule in &core.config().schedules {
+        let active =
+            schedule_ids_are_active_at(std::slice::from_ref(&schedule.id), core.config(), now);
+        core.database().set_notification_lifecycle_state(
+            "schedule",
+            &schedule.id,
+            active,
+            now_utc,
+        )?;
+    }
+    for (schedule_id, _) in existing {
+        if !core
+            .config()
+            .schedules
+            .iter()
+            .any(|schedule| schedule.id == schedule_id)
+        {
+            core.database()
+                .delete_notification_lifecycle_state("schedule", &schedule_id)?;
+        }
+    }
     Ok(())
 }
 
@@ -1439,6 +1762,9 @@ fn start_detox_method(context: &RpcContext, params: StartDetoxParams) -> Result<
         )),
         now_utc,
     )?;
+    if let Err(error) = enqueue_detox_notification(&core, &session, true, false, now_utc) {
+        eprintln!("could not queue Detox start notification: {error}");
+    }
     let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
 
     Ok(json!({
@@ -1489,6 +1815,9 @@ fn cancel_detox_method(context: &RpcContext, params: CancelDetoxParams) -> Resul
         Some("cancelled through privileged Tier 1 edit unlock"),
         now_utc,
     )?;
+    if let Err(error) = enqueue_detox_notification(&core, &session, false, true, now_utc) {
+        eprintln!("could not queue Detox end notification: {error}");
+    }
     let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
 
     Ok(json!({
@@ -1672,6 +2001,14 @@ fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Resul
             Some(&format!("{decision:?}")),
             now.with_timezone(&Utc),
         )?;
+        if let Err(error) = enqueue_website_block_notification(
+            &core,
+            &params.url,
+            &decision,
+            now.with_timezone(&Utc),
+        ) {
+            eprintln!("could not queue website block notification: {error}");
+        }
     }
 
     let metering_active = decision.is_allow() && site_usage_is_metered(&params.url, &eval_context);
@@ -2493,6 +2830,10 @@ fn default_detox_sessions_limit() -> u32 {
     50
 }
 
+fn default_pending_notifications_limit() -> u32 {
+    20
+}
+
 fn normalized_unique_ids(ids: Vec<String>) -> Vec<String> {
     let mut unique = Vec::new();
     for id in ids {
@@ -3094,6 +3435,176 @@ mod tests {
         assert_eq!(response["id"], 7);
         assert_eq!(response["result"]["decision"], "block");
         assert_eq!(response["result"]["reason"]["kind"], "hard_block");
+    }
+
+    #[test]
+    fn notification_preferences_rpc_normalizes_and_roundtrips_thresholds() {
+        let context = rpc_context();
+        let update = json!({
+            "jsonrpc": "2.0",
+            "id": 701,
+            "method": "set_notification_preferences",
+            "params": {
+                "preferences": {
+                    "enabled": true,
+                    "website_blocked": false,
+                    "application_blocked": true,
+                    "allowance_warnings": true,
+                    "allowance_warning_minutes": [1, 10, 5, 10],
+                    "schedule_started": true,
+                    "schedule_ended": false,
+                    "detox_started": true,
+                    "detox_ended": false
+                }
+            }
+        });
+        let updated: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&update).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(
+            updated["result"]["allowance_warning_minutes"],
+            json!([10, 5, 1])
+        );
+
+        let get = json!({
+            "jsonrpc": "2.0",
+            "id": 702,
+            "method": "notification_preferences",
+            "params": {}
+        });
+        let loaded: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&get).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(loaded["result"], updated["result"]);
+    }
+
+    #[test]
+    fn blocked_website_notifications_are_deduplicated_and_acknowledged() {
+        let context = rpc_context();
+        let now = Local::now().to_rfc3339();
+        let evaluate = json!({
+            "jsonrpc": "2.0",
+            "id": 703,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://blocked.example/watch",
+                "now": now
+            }
+        });
+        for _ in 0..2 {
+            let response: Value = serde_json::from_slice(&handle_payload(
+                &context,
+                &serde_json::to_vec(&evaluate).unwrap(),
+            ))
+            .expect("response should parse");
+            assert_eq!(response["result"]["decision"], "block");
+        }
+
+        let pending = json!({
+            "jsonrpc": "2.0",
+            "id": 704,
+            "method": "pending_notifications",
+            "params": { "limit": 20 }
+        });
+        let pending_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&pending).unwrap(),
+        ))
+        .expect("response should parse");
+        let notifications = pending_response["result"]["notifications"]
+            .as_array()
+            .expect("notifications should be an array");
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0]["kind"], "website_blocked");
+        let id = notifications[0]["id"].as_i64().expect("id should exist");
+
+        let acknowledge = json!({
+            "jsonrpc": "2.0",
+            "id": 705,
+            "method": "acknowledge_notifications",
+            "params": { "ids": [id] }
+        });
+        let acknowledged: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&acknowledge).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(acknowledged["result"]["acknowledged"], 1);
+
+        let after_ack: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&pending).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(after_ack["result"]["notifications"]
+            .as_array()
+            .expect("notifications should be an array")
+            .is_empty());
+    }
+
+    #[test]
+    fn notification_delivery_result_rpc_records_success() {
+        let context = rpc_context();
+        let now = Local::now().to_rfc3339();
+        let evaluate = json!({
+            "jsonrpc": "2.0",
+            "id": 706,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://blocked.example/delivery",
+                "now": now
+            }
+        });
+        let _: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&evaluate).unwrap(),
+        ))
+        .expect("evaluation response should parse");
+        let pending = json!({
+            "jsonrpc": "2.0",
+            "id": 707,
+            "method": "pending_notifications",
+            "params": { "limit": 20 }
+        });
+        let pending_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&pending).unwrap(),
+        ))
+        .expect("pending response should parse");
+        let id = pending_response["result"]["notifications"][0]["id"]
+            .as_i64()
+            .expect("notification id");
+
+        let delivery = json!({
+            "jsonrpc": "2.0",
+            "id": 708,
+            "method": "record_notification_delivery",
+            "params": {
+                "id": id,
+                "delivered": true,
+                "detail": "accepted by desktop notification service"
+            }
+        });
+        let delivery_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&delivery).unwrap(),
+        ))
+        .expect("delivery response should parse");
+        assert_eq!(delivery_response["result"]["status"], "accepted");
+
+        let after_delivery: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&pending).unwrap(),
+        ))
+        .expect("pending response should parse");
+        assert!(after_delivery["result"]["notifications"]
+            .as_array()
+            .expect("notifications should be an array")
+            .is_empty());
     }
 
     #[test]

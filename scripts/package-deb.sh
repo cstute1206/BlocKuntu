@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-14"
+VERSION="0.1.0-18"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
@@ -23,7 +23,7 @@ time; policy repair is deferred until the first browser-extension heartbeat.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-14.
+  --version VERSION   Package version, default 0.1.0-18.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -147,7 +147,7 @@ install -Dm644 focus-gui/src-tauri/icons/128x128.png \
   "${PKG_ROOT}/usr/share/icons/hicolor/128x128/apps/blockuntu-gui.png"
 
 install -d "${PKG_ROOT}/usr/share/applications"
-cat >"${PKG_ROOT}/usr/share/applications/blockuntu.desktop" <<'DESKTOP'
+cat >"${PKG_ROOT}/usr/share/applications/local.blockuntu.gui.desktop" <<'DESKTOP'
 [Desktop Entry]
 Type=Application
 Name=BlocKuntu
@@ -158,8 +158,9 @@ StartupWMClass=blockuntu-gui
 StartupNotify=true
 Terminal=false
 Categories=Utility;
+X-GNOME-UsesNotifications=true
 DESKTOP
-chmod 0644 "${PKG_ROOT}/usr/share/applications/blockuntu.desktop"
+chmod 0644 "${PKG_ROOT}/usr/share/applications/local.blockuntu.gui.desktop"
 
 install -Dm644 packaging/systemd/blockuntu.socket "${PKG_ROOT}/lib/systemd/system/blockuntu.socket"
 install -Dm644 packaging/systemd/blockuntu.service "${PKG_ROOT}/lib/systemd/system/blockuntu.service"

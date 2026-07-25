@@ -129,6 +129,13 @@ pub struct VisitState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowanceStatus {
+    pub rule_id: String,
+    pub rule_name: String,
+    pub remaining_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessIdentity {
     pub pid: Option<u32>,
     pub executable_path: Option<String>,

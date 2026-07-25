@@ -2,6 +2,7 @@
   import {
     Activity,
     AlertTriangle,
+    Bell,
     CircleMinus,
     CheckCircle2,
     Clipboard,
@@ -24,6 +25,7 @@
   import type {
     EnforcementStatus,
     HealthCheck,
+    NotificationPreferences,
     SystemHealth,
     UninstallResult,
     WindowDetectionStatus
@@ -37,6 +39,7 @@
     | "policy"
     | "protected"
     | "application"
+    | "notifications"
     | "logging"
     | "maintenance";
 
@@ -45,6 +48,9 @@
     enforcement: EnforcementStatus | null;
     runningAppsWindowDetection: WindowDetectionStatus | null;
     applicationUiPreferences: ApplicationUiPreferences;
+    notificationPreferences: NotificationPreferences | null;
+    notificationPreferencesSaving: boolean;
+    notificationPreferencesError: string | null;
     installationSerial: string | null;
     buildNumber: string | null;
     uninstallPhraseLoading: boolean;
@@ -71,6 +77,9 @@
     onExportPolicyToml: () => void | Promise<void>;
     onImportPolicyToml: () => void | Promise<void>;
     onUpdateApplicationUiPreferences: (preferences: ApplicationUiPreferences) => void;
+    onUpdateNotificationPreferences: (
+      preferences: NotificationPreferences
+    ) => void | Promise<void>;
     onShowFirstRunOverview: () => void;
     onClose: () => void;
   }
@@ -82,6 +91,7 @@
     { id: "policy", label: "Policy and recovery", icon: Download },
     { id: "protected", label: "Protected changes", icon: KeyRound },
     { id: "application", label: "Application UI", icon: Settings },
+    { id: "notifications", label: "Notifications", icon: Bell },
     { id: "logging", label: "Logging", icon: FileText },
     { id: "maintenance", label: "Maintenance", icon: Trash2 }
   ];
@@ -91,6 +101,9 @@
     enforcement,
     runningAppsWindowDetection,
     applicationUiPreferences,
+    notificationPreferences,
+    notificationPreferencesSaving,
+    notificationPreferencesError,
     installationSerial,
     buildNumber,
     uninstallPhraseLoading,
@@ -117,14 +130,23 @@
     onExportPolicyToml,
     onImportPolicyToml,
     onUpdateApplicationUiPreferences,
+    onUpdateNotificationPreferences,
     onShowFirstRunOverview,
     onClose
   }: Props = $props();
 
   let activeSection: SettingsSection = $state("health");
   let refreshIntervalSelection = $state("");
+  let customAllowanceThreshold = $state("");
   $effect(() => {
     refreshIntervalSelection = String(applicationUiPreferences.refreshIntervalSeconds);
+  });
+  $effect(() => {
+    customAllowanceThreshold = String(
+      notificationPreferences?.allowance_warning_minutes.find(
+        (minutes) => minutes !== 5 && minutes !== 1
+      ) ?? ""
+    );
   });
   let healthChecks = $derived(health?.checks ?? []);
   let browserIntegrationChecks = $derived(
@@ -179,6 +201,54 @@
     onUpdateApplicationUiPreferences({
       ...applicationUiPreferences,
       refreshIntervalSeconds: value as ApplicationUiPreferences["refreshIntervalSeconds"]
+    });
+  }
+
+  function updateNotificationPreferences(
+    patch: Partial<NotificationPreferences>
+  ): void {
+    if (!notificationPreferences || notificationPreferencesSaving) return;
+    void onUpdateNotificationPreferences({
+      ...notificationPreferences,
+      ...patch
+    });
+  }
+
+  function updateNotificationBoolean(
+    key: keyof NotificationPreferences,
+    event: Event
+  ): void {
+    updateNotificationPreferences({
+      [key]: (event.currentTarget as HTMLInputElement).checked
+    });
+  }
+
+  function updateAllowanceThreshold(minutes: number, event: Event): void {
+    if (!notificationPreferences) return;
+    const thresholds = new Set(notificationPreferences.allowance_warning_minutes);
+    if ((event.currentTarget as HTMLInputElement).checked) {
+      thresholds.add(minutes);
+    } else {
+      thresholds.delete(minutes);
+    }
+    updateNotificationPreferences({
+      allowance_warning_minutes: [...thresholds]
+    });
+  }
+
+  function updateCustomAllowanceThreshold(): void {
+    if (!notificationPreferences) return;
+    const thresholds: number[] = notificationPreferences.allowance_warning_minutes.filter(
+      (minutes) => minutes === 5 || minutes === 1
+    );
+    const custom = Number(customAllowanceThreshold);
+    if (Number.isInteger(custom) && custom >= 1 && custom <= 1440) {
+      thresholds.push(custom);
+    } else if (customAllowanceThreshold.trim()) {
+      return;
+    }
+    updateNotificationPreferences({
+      allowance_warning_minutes: [...new Set(thresholds)]
     });
   }
 
@@ -332,14 +402,37 @@
             </div>
             <div class="status-list"><div class="status-row"><span>Installation serial</span><code>{installationSerial ?? "Unavailable"}</code></div><div class="status-row"><span>Build</span><code>{buildNumber ?? "Unavailable"}</code></div></div>
             <div class="button-row compact-row settings-action-row"><button class="secondary" onclick={onCopyInstallationSerial} disabled={!installationSerial}><Clipboard size={17} aria-hidden="true" /><span>Copy serial</span></button><button class="secondary" onclick={onShowFirstRunOverview}>Show first-run overview</button></div>
-            <p class="settings-note">Starting on login, tray-close behaviour, and desktop notifications need reviewed native-runtime support and are not configurable yet.</p>
+            <p class="settings-note">Starting on login and tray-close behaviour are not configurable yet.</p>
+          </section>
+        {:else if activeSection === "notifications"}
+          <section class="settings-panel">
+            <div class="settings-panel-header"><div><h3>Notifications</h3><p>Choose which enforcement events BlocKuntu sends to the desktop.</p></div></div>
+            {#if notificationPreferences}
+              <div class="preference-list">
+                <label class="preference-row"><span><strong>Desktop notifications</strong><small>Master switch for every notification below.</small></span><input type="checkbox" checked={notificationPreferences.enabled} disabled={notificationPreferencesSaving} onchange={(event) => updateNotificationBoolean("enabled", event)} /></label>
+                <label class="preference-row"><span><strong>Website blocked</strong><small>Notify when the browser integration blocks a website.</small></span><input type="checkbox" checked={notificationPreferences.website_blocked} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("website_blocked", event)} /></label>
+                <label class="preference-row"><span><strong>Application blocked</strong><small>Notify after BlocKuntu successfully closes a blocked application.</small></span><input type="checkbox" checked={notificationPreferences.application_blocked} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("application_blocked", event)} /></label>
+                <label class="preference-row"><span><strong>Allowance warnings</strong><small>Notify once when an allowance crosses an enabled threshold.</small></span><input type="checkbox" checked={notificationPreferences.allowance_warnings} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("allowance_warnings", event)} /></label>
+                <label class="preference-row"><span><strong>Below 5 minutes</strong><small>Standard early allowance warning.</small></span><input type="checkbox" checked={notificationPreferences.allowance_warning_minutes.includes(5)} disabled={notificationPreferencesSaving || !notificationPreferences.enabled || !notificationPreferences.allowance_warnings} onchange={(event) => updateAllowanceThreshold(5, event)} /></label>
+                <label class="preference-row"><span><strong>Below 1 minute</strong><small>Final allowance warning before the limit is exhausted.</small></span><input type="checkbox" checked={notificationPreferences.allowance_warning_minutes.includes(1)} disabled={notificationPreferencesSaving || !notificationPreferences.enabled || !notificationPreferences.allowance_warnings} onchange={(event) => updateAllowanceThreshold(1, event)} /></label>
+                <label class="preference-row"><span><strong>Additional threshold</strong><small>Optional custom warning from 1 to 1440 minutes.</small></span><input type="number" min="1" max="1440" step="1" placeholder="Minutes" bind:value={customAllowanceThreshold} disabled={notificationPreferencesSaving || !notificationPreferences.enabled || !notificationPreferences.allowance_warnings} onchange={updateCustomAllowanceThreshold} /></label>
+                <label class="preference-row"><span><strong>Schedule started</strong><small>Notify when a configured schedule becomes active.</small></span><input type="checkbox" checked={notificationPreferences.schedule_started} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("schedule_started", event)} /></label>
+                <label class="preference-row"><span><strong>Schedule ended</strong><small>Notify when a configured schedule becomes inactive.</small></span><input type="checkbox" checked={notificationPreferences.schedule_ended} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("schedule_ended", event)} /></label>
+                <label class="preference-row"><span><strong>Detox started</strong><small>Notify when a Detox session starts.</small></span><input type="checkbox" checked={notificationPreferences.detox_started} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("detox_started", event)} /></label>
+                <label class="preference-row"><span><strong>Detox ended</strong><small>Notify when a Detox expires or is ended early.</small></span><input type="checkbox" checked={notificationPreferences.detox_ended} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("detox_ended", event)} /></label>
+              </div>
+              <p class="settings-note">Notifications are delivered only while the BlocKuntu GUI or tray process is running. Repeated block events are automatically deduplicated.</p>
+            {:else}
+              <p class="empty-state">Notification settings are unavailable while the daemon is offline.</p>
+            {/if}
+            {#if notificationPreferencesError}<p class="result-text danger-text">{notificationPreferencesError}</p>{/if}
           </section>
         {:else if activeSection === "logging"}
           <section class="settings-panel">
-            <div class="settings-panel-header"><div><h3>Logging</h3><p>BlocKuntu writes plain local event entries; there is no GUI log viewer.</p></div></div>
+            <div class="settings-panel-header"><div><h3>Logging</h3><p>BlocKuntu writes plain local event and notification-delivery entries; there is no GUI log viewer.</p></div></div>
             <div class="log-file-note">
               <FileText size={18} aria-hidden="true" />
-              <div><strong>Event log</strong><code>/etc/blockuntu/blockuntu.log</code><small>The daemon appends every recorded event here. Use a terminal to inspect it.</small></div>
+              <div><strong>Event log</strong><code>/etc/blockuntu/blockuntu.log</code><small>The daemon appends queued, accepted, and failed notification details here. Use a terminal to inspect it.</small></div>
             </div>
             <div class="log-command-list"><code>sudo tail -f /etc/blockuntu/blockuntu.log</code><code>sudo less /etc/blockuntu/blockuntu.log</code></div>
           </section>

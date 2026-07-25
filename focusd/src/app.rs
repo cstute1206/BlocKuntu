@@ -4,10 +4,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Days, FixedOffset, Local, TimeZone, Utc};
+use chrono::{
+    DateTime, Datelike, Days, Duration as ChronoDuration, FixedOffset, Local, TimeZone, Utc,
+};
 use focus_core::{
-    AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Database, Decision, DetoxSession,
-    EvaluationContext, FocusCore, ProcessIdentity, RuleTier, StrictModeConfig, Weekday,
+    allowance_statuses, schedule_ids_are_active_at, AppMatcherConfig, AppMatcherKind,
+    AppRuleConfig, BlockReason, Database, Decision, DetoxSession, EvaluationContext, FocusCore,
+    ProcessIdentity, RuleTier, StrictModeConfig, Weekday,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -37,6 +40,9 @@ const STRICT_FIREFOX_BROWSER_SESSION_STARTED_AT_KEY: &str =
 const STRICT_CHROME_BROWSER_SESSION_STARTED_AT_KEY: &str =
     "strict_mode.chrome_browser_session_started_at";
 const MIN_BROWSER_STARTUP_HEARTBEAT_GRACE_SECONDS: i64 = 60;
+const NOTIFICATION_STATE_INTERVAL_SECONDS: u64 = 5;
+const ALLOWANCE_NOTIFICATION_TTL_MINUTES: i64 = 5;
+const LIFECYCLE_NOTIFICATION_TTL_MINUTES: i64 = 10;
 
 #[derive(Clone)]
 pub struct DaemonApp {
@@ -201,6 +207,7 @@ impl DaemonApp {
         self.repair_hosts()?;
         self.spawn_repair_loop();
         self.spawn_process_scan_loop();
+        self.spawn_notification_loop();
 
         let listener = listener_from_systemd_or_path(&args.socket, args.dev_bind_socket)?;
         self.accept_loop(listener).await
@@ -253,6 +260,32 @@ impl DaemonApp {
         });
     }
 
+    fn spawn_notification_loop(&self) {
+        let app = self.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(NOTIFICATION_STATE_INTERVAL_SECONDS));
+            loop {
+                interval.tick().await;
+                if let Err(err) = app.sync_notification_state_once() {
+                    eprintln!("notification state sync failed: {err}");
+                }
+            }
+        });
+    }
+
+    fn sync_notification_state_once(&self) -> Result<()> {
+        let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        let guarded = clock_guard::guarded_now(core.database(), None, false)?;
+        if guarded.integrity.state == "tampered" {
+            return Ok(());
+        }
+        sync_schedule_notifications(&core, guarded.now)?;
+        sync_detox_notifications(&core, guarded.now)?;
+        sync_allowance_notifications(&core, guarded.now)?;
+        Ok(())
+    }
+
     fn scan_processes_once(&self) -> Result<()> {
         if !self.enforcement_is_active()? {
             self.end_open_app_usage_sessions()?;
@@ -275,6 +308,7 @@ impl DaemonApp {
         let mut blocked_pids = Vec::new();
         let mut kill_details_by_pid = HashMap::new();
         let mut kill_event_kind_by_pid = HashMap::new();
+        let mut blocked_rule_id_by_pid = HashMap::new();
 
         {
             let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -299,6 +333,7 @@ impl DaemonApp {
                     if let Some(rule_id) = blocked_rule_id(&reason) {
                         kill_details_by_pid.insert(process.pid, format!("rule_id={rule_id}"));
                         kill_event_kind_by_pid.insert(process.pid, "app_killed");
+                        blocked_rule_id_by_pid.insert(process.pid, rule_id.to_string());
                     }
                 }
             }
@@ -351,13 +386,15 @@ impl DaemonApp {
                 .get(&event.pid)
                 .copied()
                 .unwrap_or("app_killed");
+            let application_name = event
+                .command_name
+                .as_deref()
+                .or(event.executable_basename.as_deref())
+                .or(event.desktop_id.as_deref())
+                .unwrap_or("Application");
             core.database().record_event(
                 event_kind,
-                event
-                    .command_name
-                    .as_deref()
-                    .or(event.executable_basename.as_deref())
-                    .or(event.desktop_id.as_deref()),
+                Some(application_name),
                 Some(&format!(
                     "pid={};{};exe={};basename={};command={};desktop_id={};window_titles={}",
                     event.pid,
@@ -378,6 +415,16 @@ impl DaemonApp {
                 )),
                 now,
             )?;
+            if let Some(rule_id) = blocked_rule_id_by_pid.get(&event.pid) {
+                if let Err(error) = crate::rpc::enqueue_application_block_notification(
+                    &core,
+                    rule_id,
+                    application_name,
+                    now,
+                ) {
+                    eprintln!("could not queue application block notification: {error}");
+                }
+            }
         }
         Ok(())
     }
@@ -919,6 +966,201 @@ fn unsupported_browser_matchers() -> Vec<(AppMatcherKind, &'static str)> {
     ]
 }
 
+fn sync_schedule_notifications(core: &FocusCore, now: DateTime<FixedOffset>) -> Result<()> {
+    let now_utc = now.with_timezone(&Utc);
+    let preferences = core.database().notification_preferences()?;
+    let previous = core
+        .database()
+        .notification_lifecycle_states("schedule")?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let mut current_ids = HashSet::new();
+
+    for schedule in &core.config().schedules {
+        current_ids.insert(schedule.id.clone());
+        let active = schedule_ids_are_active_at(
+            std::slice::from_ref(&schedule.id),
+            core.config(),
+            now,
+            false,
+        );
+        if let Some(was_active) = previous.get(&schedule.id).copied() {
+            if was_active != active {
+                let name = schedule.name.as_deref().unwrap_or(&schedule.id);
+                let (kind, title, detail, enabled) = if active {
+                    (
+                        "schedule_started",
+                        "Schedule started",
+                        format!("\"{name}\" is now active."),
+                        preferences.schedule_started,
+                    )
+                } else {
+                    (
+                        "schedule_ended",
+                        "Schedule ended",
+                        format!("\"{name}\" is no longer active."),
+                        preferences.schedule_ended,
+                    )
+                };
+                core.database()
+                    .record_event(kind, Some(&schedule.id), Some(&detail), now_utc)?;
+                if preferences.enabled && enabled {
+                    core.database().enqueue_notification(
+                        kind,
+                        title,
+                        &detail,
+                        &format!("{kind}:{}", schedule.id),
+                        now_utc,
+                        ChronoDuration::minutes(1),
+                        ChronoDuration::minutes(LIFECYCLE_NOTIFICATION_TTL_MINUTES),
+                    )?;
+                }
+            }
+        }
+        core.database().set_notification_lifecycle_state(
+            "schedule",
+            &schedule.id,
+            active,
+            now_utc,
+        )?;
+    }
+
+    for schedule_id in previous.keys() {
+        if !current_ids.contains(schedule_id) {
+            core.database()
+                .delete_notification_lifecycle_state("schedule", schedule_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_detox_notifications(core: &FocusCore, now: DateTime<FixedOffset>) -> Result<()> {
+    let now_utc = now.with_timezone(&Utc);
+    let previous = core
+        .database()
+        .notification_lifecycle_states("detox")?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let sessions = core.database().detox_sessions(200)?;
+    let mut current_ids = HashSet::new();
+
+    for session in &sessions {
+        current_ids.insert(session.id.clone());
+        let active = session.cancelled_at.is_none()
+            && session.starts_at <= now_utc
+            && session.ends_at > now_utc;
+        if let Some(was_active) = previous.get(&session.id).copied() {
+            if was_active != active {
+                let kind = if active {
+                    "detox_started"
+                } else {
+                    "detox_ended"
+                };
+                core.database().record_event(
+                    kind,
+                    Some(&session.id),
+                    Some(if active {
+                        "Detox became active"
+                    } else {
+                        "Detox reached its end time"
+                    }),
+                    now_utc,
+                )?;
+                crate::rpc::enqueue_detox_notification(
+                    core,
+                    session,
+                    active,
+                    session.cancelled_at.is_some(),
+                    now_utc,
+                )?;
+            }
+        }
+        core.database()
+            .set_notification_lifecycle_state("detox", &session.id, active, now_utc)?;
+    }
+
+    for session_id in previous.keys() {
+        if !current_ids.contains(session_id) {
+            core.database()
+                .delete_notification_lifecycle_state("detox", session_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_allowance_notifications(core: &FocusCore, now: DateTime<FixedOffset>) -> Result<()> {
+    let now_utc = now.with_timezone(&Utc);
+    let local_day = now.date_naive().to_string();
+    let preferences = core.database().notification_preferences()?;
+    let context = EvaluationContext::new(core.config(), core.database(), now);
+
+    for status in allowance_statuses(&context)? {
+        let previous = core
+            .database()
+            .allowance_notification_state(&status.rule_id)?;
+        let crossed_threshold = previous
+            .filter(|(previous_day, _)| previous_day == &local_day)
+            .and_then(|(_, previous_remaining)| {
+                preferences
+                    .allowance_warning_minutes
+                    .iter()
+                    .copied()
+                    .filter(|minutes| {
+                        let threshold_seconds = i64::from(*minutes) * 60;
+                        previous_remaining > threshold_seconds
+                            && status.remaining_seconds <= threshold_seconds
+                    })
+                    .min()
+            });
+
+        if preferences.enabled && preferences.allowance_warnings {
+            if let Some(threshold_minutes) = crossed_threshold {
+                let body = allowance_notification_body(&status.rule_name, status.remaining_seconds);
+                let inserted = core.database().enqueue_notification(
+                    "allowance_warning",
+                    "Allowance running low",
+                    &body,
+                    &format!(
+                        "allowance_warning:{}:{local_day}:{threshold_minutes}",
+                        status.rule_id
+                    ),
+                    now_utc,
+                    ChronoDuration::days(2),
+                    ChronoDuration::minutes(ALLOWANCE_NOTIFICATION_TTL_MINUTES),
+                )?;
+                if inserted.is_some() {
+                    core.database().record_event(
+                        "allowance_warning",
+                        Some(&status.rule_id),
+                        Some(&format!(
+                            "threshold_minutes={threshold_minutes};remaining_seconds={}",
+                            status.remaining_seconds
+                        )),
+                        now_utc,
+                    )?;
+                }
+            }
+        }
+
+        core.database().set_allowance_notification_state(
+            &status.rule_id,
+            &local_day,
+            status.remaining_seconds,
+            now_utc,
+        )?;
+    }
+    Ok(())
+}
+
+fn allowance_notification_body(rule_name: &str, remaining_seconds: i64) -> String {
+    if remaining_seconds < 60 {
+        format!("Less than 1 minute remains for \"{rule_name}\".")
+    } else {
+        let remaining_minutes = (remaining_seconds + 59) / 60;
+        format!("{remaining_minutes} minutes remain for \"{rule_name}\".")
+    }
+}
+
 fn blocked_rule_id(reason: &BlockReason) -> Option<&str> {
     match reason {
         BlockReason::Detox { rule_id, .. }
@@ -952,7 +1194,8 @@ mod tests {
     use super::{
         ensure_mandatory_app_rules, is_blockuntu_process, load_startup_policy,
         next_tier2_site_schedule_boundary, strict_browser_kill_details,
-        sync_metered_app_usage_sessions, UNSUPPORTED_BROWSER_RULE_ID,
+        sync_allowance_notifications, sync_metered_app_usage_sessions, sync_schedule_notifications,
+        UNSUPPORTED_BROWSER_RULE_ID,
     };
     use crate::error::DaemonError;
     use crate::policy_recovery::PolicyRecoveryManager;
@@ -986,6 +1229,132 @@ mod tests {
             next_tier2_site_schedule_boundary(&config, now),
             Some(std::time::Duration::from_secs(60))
         );
+    }
+
+    #[test]
+    fn schedule_notifications_fire_once_for_each_clock_boundary() {
+        let config = Config::from_toml_str(
+            r#"
+            [[schedules]]
+            id = "work"
+            name = "Work"
+
+            [[schedules.windows]]
+            weekday = "mon"
+            start = "09:00"
+            end = "10:00"
+            "#,
+        )
+        .expect("config should parse");
+        let database = Database::in_memory().expect("database should initialize");
+        let core = focus_core::FocusCore::new(config, database).expect("core should initialize");
+        let before =
+            chrono::DateTime::parse_from_rfc3339("2026-05-18T08:59:00+00:00").expect("timestamp");
+        let started =
+            chrono::DateTime::parse_from_rfc3339("2026-05-18T09:00:00+00:00").expect("timestamp");
+        let ended =
+            chrono::DateTime::parse_from_rfc3339("2026-05-18T10:00:00+00:00").expect("timestamp");
+
+        sync_schedule_notifications(&core, before).expect("baseline should sync");
+        assert!(core
+            .database()
+            .pending_notifications(before.with_timezone(&Utc), 20)
+            .expect("pending notifications")
+            .is_empty());
+
+        sync_schedule_notifications(&core, started).expect("start should sync");
+        let pending = core
+            .database()
+            .pending_notifications(started.with_timezone(&Utc), 20)
+            .expect("start notification");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, "schedule_started");
+        core.database()
+            .acknowledge_notifications(&[pending[0].id], started.with_timezone(&Utc))
+            .expect("start should acknowledge");
+
+        sync_schedule_notifications(&core, started + Duration::minutes(1))
+            .expect("unchanged state should sync");
+        assert!(core
+            .database()
+            .pending_notifications((started + Duration::minutes(1)).with_timezone(&Utc), 20)
+            .expect("no duplicate")
+            .is_empty());
+
+        sync_schedule_notifications(&core, ended).expect("end should sync");
+        let pending = core
+            .database()
+            .pending_notifications(ended.with_timezone(&Utc), 20)
+            .expect("end notification");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, "schedule_ended");
+    }
+
+    #[test]
+    fn allowance_notifications_fire_only_when_thresholds_are_crossed() {
+        let config = Config::from_toml_str(
+            r#"
+            [[allowances]]
+            id = "app-daily"
+            daily_minutes = 6
+
+            [[app_rules]]
+            id = "app-controlled"
+            name = "Example App"
+            tier = "controlled_access"
+            allowance_id = "app-daily"
+            matchers = [{ kind = "command_name", value = "example" }]
+            "#,
+        )
+        .expect("config should parse");
+        let database = Database::in_memory().expect("database should initialize");
+        let core = focus_core::FocusCore::new(config, database).expect("core should initialize");
+        let baseline =
+            chrono::DateTime::parse_from_rfc3339("2026-05-18T09:00:00+00:00").expect("timestamp");
+        sync_allowance_notifications(&core, baseline).expect("baseline should sync");
+
+        core.database()
+            .insert_app_usage_interval(
+                "app-controlled",
+                baseline.with_timezone(&Utc),
+                (baseline + Duration::seconds(61)).with_timezone(&Utc),
+            )
+            .expect("usage should insert");
+        let below_five = baseline + Duration::minutes(2);
+        sync_allowance_notifications(&core, below_five).expect("five-minute crossing should sync");
+        let pending = core
+            .database()
+            .pending_notifications(below_five.with_timezone(&Utc), 20)
+            .expect("five-minute notification");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, "allowance_warning");
+        core.database()
+            .acknowledge_notifications(&[pending[0].id], below_five.with_timezone(&Utc))
+            .expect("warning should acknowledge");
+
+        sync_allowance_notifications(&core, below_five + Duration::seconds(5))
+            .expect("unchanged usage should sync");
+        assert!(core
+            .database()
+            .pending_notifications((below_five + Duration::seconds(5)).with_timezone(&Utc), 20)
+            .expect("no duplicate")
+            .is_empty());
+
+        core.database()
+            .insert_app_usage_interval(
+                "app-controlled",
+                (baseline + Duration::minutes(2)).with_timezone(&Utc),
+                (baseline + Duration::minutes(6)).with_timezone(&Utc),
+            )
+            .expect("more usage should insert");
+        let below_one = baseline + Duration::minutes(7);
+        sync_allowance_notifications(&core, below_one).expect("one-minute crossing should sync");
+        let pending = core
+            .database()
+            .pending_notifications(below_one.with_timezone(&Utc), 20)
+            .expect("one-minute notification");
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].body.contains("Less than 1 minute"));
     }
 
     #[test]

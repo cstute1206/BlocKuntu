@@ -25,10 +25,11 @@ BlocKuntu offers the following features:
 - Three tiers of Block levels:
   - **Tier 1:** Hard Block, which is blocked 24/7
   - **Tier 2: **Block by schedule or duration with no option for a short unlock
-  - **Tier 3: **Block by schedule or duration with a short option to unblock once every 1 hour
+  - **Tier 3:** Block by schedule or duration with a short option to unblock once every 1 hour
 - Create Lists of websites or applications for your blocks
 - Locked uninstall and Tier 1 edit every Sunday from 8pm to 11:59pm
 - Import and export your settings
+- Configurable desktop notifications for blocks, allowance warnings, schedules, and Detox
 
 ## Documentation
 
@@ -119,16 +120,16 @@ Build the current Debian package from the repository root:
 ./scripts/package-deb.sh
 ```
 
-The default package version is currently `0.1.0-14`, and the artifact path is:
+The default package version is currently `0.1.0-18`, and the artifact path is:
 
 ```bash
-target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-18_$(dpkg --print-architecture).deb
 ```
 
 Install it on the target Ubuntu/Debian machine with `apt`, not raw `dpkg -i`:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-18_$(dpkg --print-architecture).deb
 sudo usermod -aG blockuntu "$USER"
 ```
 

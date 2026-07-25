@@ -473,8 +473,11 @@ StartupWMClass=blockuntu-gui
 StartupNotify=true
 Terminal=false
 Categories=Utility;
+X-GNOME-UsesNotifications=true
 DESKTOP
-  sudo install -Dm644 "${desktop_file}" /usr/share/applications/blockuntu.desktop
+  sudo install -Dm644 "${desktop_file}" \
+    /usr/share/applications/local.blockuntu.gui.desktop
+  sudo rm -f /usr/share/applications/blockuntu.desktop
 
   if command -v update-desktop-database >/dev/null 2>&1; then
     sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true

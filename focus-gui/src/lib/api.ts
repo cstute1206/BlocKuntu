@@ -9,6 +9,7 @@ import type {
   DetoxSessionsResponse,
   EnforcementStatus,
   LogSummary,
+  NotificationPreferences,
   ScheduleActivitySummary,
   PolicyFileResult,
   RunningAppsResponse,
@@ -166,6 +167,21 @@ export function scheduleActivitySummary(socketPath?: string): Promise<ScheduleAc
     { now: clientNow() },
     socketPath
   ) as Promise<ScheduleActivitySummary>;
+}
+
+export function notificationPreferences(socketPath?: string): Promise<NotificationPreferences> {
+  return daemonRpc("notification_preferences", {}, socketPath) as Promise<NotificationPreferences>;
+}
+
+export function setNotificationPreferences(
+  preferences: NotificationPreferences,
+  socketPath?: string
+): Promise<NotificationPreferences> {
+  return daemonRpc(
+    "set_notification_preferences",
+    { preferences },
+    socketPath
+  ) as Promise<NotificationPreferences>;
 }
 
 export function runningApps(socketPath?: string): Promise<RunningAppsResponse> {

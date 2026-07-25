@@ -306,6 +306,13 @@ flags.
 - Settings Tier 1 edit key display and unlock form.
 - Settings policy TOML import/export and uninstall action.
 - Local Settings preferences for refresh interval and restoring the last selected page.
+- Daemon-persisted desktop notification controls for website/application blocks,
+  allowance thresholds, schedule boundaries, and Detox lifecycle events.
+- Native desktop notification delivery while the GUI or tray process is running,
+  with block-event deduplication, expiring queued events, and delivery outcomes
+  recorded in `/etc/blockuntu/blockuntu.log`. GNOME receives the matching
+  desktop-entry identity and a ten-second banner timeout request, while the GUI
+  retains each D-Bus notification handle until the desktop reports it closed.
 - GUI-level error formatting.
 - Tray icon support.
 - Closing the window hides it to the tray instead of quitting.

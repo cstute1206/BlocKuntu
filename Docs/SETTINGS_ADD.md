@@ -31,7 +31,8 @@ it does not invent configuration that the daemon cannot persist or enforce.
 | Browser Integration | Existing Firefox/Chrome/Snap/Flatpak/Native Messaging health checks, extension IDs, managed paths supplied by the checks, and the confined-Firefox repair command. | A reviewed GUI action to run a repair helper, plus any additional daemon API needed for richer per-browser state. |
 | Policy and Recovery | TOML export and append/import, including the current result message. | Policy database and snapshot paths, recovery-snapshot creation, recovery-snapshot restore, and persistent transfer/snapshot history. |
 | Protected Changes | Sunday operator-window state, five-minute Tier 1 edit unlock, current unlock status, and expiry. | Nothing in this Settings scope. |
-| Application UI | Persistent local preferences for restoring the last selected page and the GUI refresh interval, plus restoring the first-run overview. | Start-on-login, configurable tray-close behaviour, and desktop/tray notifications through reviewed native-runtime support. |
+| Application UI | Persistent local preferences for restoring the last selected page and the GUI refresh interval, plus restoring the first-run overview. | Start-on-login and configurable tray-close behaviour. |
+| Notifications | Daemon-persisted master and per-event toggles for website/application blocks, allowance thresholds, schedule start/end, and Detox start/end. The tray process delivers expiring, deduplicated desktop notifications and records delivery outcomes in the event log. | Start-on-login if notifications must work before the GUI has been launched. |
 | Logging and statistics | The daemon appends each recorded event to `/etc/blockuntu/blockuntu.log`; Settings shows the path and terminal commands to inspect it, while Statistics gets its total and event-kind counts by parsing that file. | Nothing for this simplified scope. |
 | Maintenance | Reset first-run state and the existing restricted uninstall workflow. | Nothing for this simplified scope. |
 
@@ -50,8 +51,9 @@ Settings is a single control-center page with these sections, in order:
 4. Policy And Recovery
 5. Protected Changes
 6. Application UI
-7. Logging
-8. Maintenance
+7. Notifications
+8. Logging
+9. Maintenance
 
 Settings opens as a fixed-size modal control centre over the current page. Its
 own sidebar selects one section at a time, so the user does not need to scroll
@@ -167,13 +169,43 @@ Application UI contains preferences that do not weaken enforcement.
 
 Settings:
 
-- Start the GUI on login
-- Minimize to tray on close
 - Restore the last selected page on startup
 - Dashboard refresh interval
 - Show the first-run overview again
-- Desktop or tray notifications for blocked websites, blocked applications,
-  Detox state, degraded browser integration, and health-check failures
+
+Start-on-login and configurable tray-close behaviour remain future work.
+
+## Notifications
+
+Notification preferences are persisted by the daemon rather than in WebView
+local storage. The master switch and each event type can be changed separately:
+
+- blocked websites
+- blocked applications after a successful process kill
+- allowance warnings below five minutes, one minute, and one optional custom
+  threshold
+- schedule start and end
+- Detox start and end, including early cancellation
+
+Allowance warnings fire only when remaining time crosses a threshold. Repeated
+website and application block events are deduplicated, and queued notifications
+expire rather than appearing long after the event. Delivery uses the Linux
+desktop notification service through the tray process, so the GUI does not have
+to be visible, but the GUI/tray process must be running.
+
+The packaged desktop launcher matches the Tauri application identifier and
+advertises notification support to GNOME. Notifications carry that desktop-entry
+identity, explicitly opt into non-transient persistence, and request a
+ten-second banner duration. The desktop notification service may still apply
+its own timeout policy. The GUI retains the notification's D-Bus handle until
+the desktop reports it closed; dropping that handle immediately can cause some
+desktops to flash and remove the notification instead of retaining it.
+
+Every newly queued notification adds a `notification_queued` entry to the event
+log. The tray then records either `notification_accepted` or
+`notification_delivery_failed`, including the error returned by the desktop
+notification service. Failed deliveries remain pending and retry no more than
+once per minute until the queued event expires.
 
 ## Logging
 
@@ -185,6 +217,7 @@ Use a terminal to inspect it:
 ```bash
 sudo tail -f /etc/blockuntu/blockuntu.log
 sudo less /etc/blockuntu/blockuntu.log
+sudo cat /etc/blockuntu/blockuntu.log > ~/blockuntu.log
 ```
 
 No GUI viewer, filters, export, privacy mode, or log-redaction mode is part of
@@ -226,14 +259,16 @@ Completed:
 6. Keep the Settings modal dimensions stable across sections, place the
    Settings launcher at the bottom of the main sidebar, and derive Statistics
    from the plain event log.
+7. Add daemon-owned notification preferences and outbox state, threshold and
+   lifecycle producers, and native Tauri tray delivery.
 
 Next:
 
 1. Add daemon-owned policy recovery snapshots, including creation, restore,
    paths, status, and protected-change checks for policy-changing actions.
 2. Add reviewed GUI entry points for supported browser-repair helpers.
-3. Add reviewed native-runtime support for login startup, tray-close behaviour,
-   and notifications.
+3. Add reviewed native-runtime support for login startup and configurable
+   tray-close behaviour.
 
 Each step should preserve the daemon as the authority for policy and protected
 actions. The GUI presents status and requests actions; it must not duplicate or

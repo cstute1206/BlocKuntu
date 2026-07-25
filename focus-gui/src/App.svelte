@@ -36,9 +36,11 @@
     exportPolicyToml,
     importPolicyToml,
     logSummary,
+    notificationPreferences as fetchNotificationPreferences,
     runningApps as fetchRunningApps,
     requestUnlock,
     scheduleActivitySummary,
+    setNotificationPreferences,
     startDetox,
     systemHealth,
     tier1EditKey,
@@ -88,6 +90,7 @@
     DetoxSession,
     EnforcementStatus,
     LogSummary,
+    NotificationPreferences,
     PolicyFileResult,
     RunningApp,
     ScheduleActivitySummary,
@@ -140,6 +143,9 @@
   let refreshInFlight = false;
   let runtimeRefreshTimerId: number | null = null;
   let uiPreferences = $state<ApplicationUiPreferences>({ ...defaultApplicationUiPreferences });
+  let notificationPreferenceState = $state<NotificationPreferences | null>(null);
+  let notificationPreferencesSaving = $state(false);
+  let notificationPreferencesError: string | null = $state(null);
 
   let testUrl = $state("https://youtube.com/");
   let urlDecision = $state<DecisionResult | null>(null);
@@ -242,6 +248,7 @@
     void loadUninstallPhrase();
     void loadInstallationInfo();
     void loadTier1EditKey();
+    void loadNotificationPreferences();
     void refreshAll();
     let disposed = false;
     let removeOpenViewListener: (() => void) | null = null;
@@ -293,6 +300,7 @@
   function setActiveView(view: ViewId): void {
     if (view === "admin") {
       settingsOpen = true;
+      void loadNotificationPreferences();
       return;
     }
     activeView = view;
@@ -1180,6 +1188,30 @@
     configureRuntimeRefresh(preferences.refreshIntervalSeconds);
   }
 
+  async function loadNotificationPreferences(): Promise<void> {
+    notificationPreferencesError = null;
+    try {
+      notificationPreferenceState = await fetchNotificationPreferences(socketArg());
+    } catch (error) {
+      notificationPreferenceState = null;
+      notificationPreferencesError = formatError(error);
+    }
+  }
+
+  async function updateNotificationPreferences(
+    preferences: NotificationPreferences
+  ): Promise<void> {
+    notificationPreferencesSaving = true;
+    notificationPreferencesError = null;
+    try {
+      notificationPreferenceState = await setNotificationPreferences(preferences, socketArg());
+    } catch (error) {
+      notificationPreferencesError = formatError(error);
+    } finally {
+      notificationPreferencesSaving = false;
+    }
+  }
+
   function showFirstRunOverviewAgain(): void {
     clearFirstRunOverviewDismissed();
     showFirstRunOverview = true;
@@ -1413,6 +1445,9 @@
         {enforcement}
         runningAppsWindowDetection={runningAppsWindowDetection}
         applicationUiPreferences={uiPreferences}
+        notificationPreferences={notificationPreferenceState}
+        {notificationPreferencesSaving}
+        {notificationPreferencesError}
         {installationSerial}
         {buildNumber}
         {uninstallPhraseLoading}
@@ -1439,6 +1474,7 @@
         onExportPolicyToml={runExportPolicyToml}
         onImportPolicyToml={runImportPolicyToml}
         onUpdateApplicationUiPreferences={updateApplicationUiPreferences}
+        onUpdateNotificationPreferences={updateNotificationPreferences}
         onShowFirstRunOverview={showFirstRunOverviewAgain}
         onClose={closeSettings}
     />

@@ -33,24 +33,24 @@ The GUI build goes through `npm run tauri -- build --no-bundle`, which embeds
 the current frontend assets. That is what prevents a packaged GUI from opening
 the development URL at `http://localhost:1420`.
 
-The current default Debian package version is `0.1.0-14`, and the artifact is:
+The current default Debian package version is `0.1.0-18`, and the artifact is:
 
 ```bash
-target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-18_$(dpkg --print-architecture).deb
 ```
 
 Inspect the package before copying it to a target machine:
 
 ```bash
-dpkg-deb -I target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
-dpkg-deb -c target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb | less
+dpkg-deb -I target/debian/blockuntu_0.1.0-18_$(dpkg --print-architecture).deb
+dpkg-deb -c target/debian/blockuntu_0.1.0-18_$(dpkg --print-architecture).deb | less
 ```
 
 Install the package on the target Ubuntu/Debian machine with `apt`, not raw
 `dpkg -i`:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-18_$(dpkg --print-architecture).deb
 sudo usermod -aG blockuntu "$USER"
 ```
 
@@ -264,7 +264,9 @@ By default, the script:
 - Builds the Tauri GUI and installs it as `/usr/local/bin/blockuntu-gui`.
 - Installs missing build/runtime prerequisites through the system package
   manager.
-- Installs the GUI desktop launcher as `/usr/share/applications/blockuntu.desktop`.
+- Installs the GUI desktop launcher as
+  `/usr/share/applications/local.blockuntu.gui.desktop`, matching the Tauri
+  application identifier so GNOME can associate and retain notifications.
 - Installs a minimal `/etc/blockuntu/config.toml` if it does not already exist.
   It contains strict browser enforcement only; site lists, schedules,
   allowances, and user app rules start empty.
@@ -336,13 +338,13 @@ Build a complete Debian package from the repository root:
 The package is written to `target/debian`, for example:
 
 ```bash
-target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
+target/debian/blockuntu_0.1.0-18_$(dpkg --print-architecture).deb
 ```
 
 On a target Ubuntu/Debian machine, install it with:
 
 ```bash
-sudo apt install ./target/debian/blockuntu_0.1.0-14_$(dpkg --print-architecture).deb
+sudo apt install ./target/debian/blockuntu_0.1.0-18_$(dpkg --print-architecture).deb
 ```
 
 Use `apt install ./...deb`, not `dpkg -i`, for normal installs. `dpkg -i`

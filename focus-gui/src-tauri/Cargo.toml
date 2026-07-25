@@ -24,3 +24,4 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2.4.2"
 thiserror = "1"
 rfd = "0.15"
+notify-rust = "4.18"

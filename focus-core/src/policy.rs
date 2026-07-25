@@ -2,10 +2,10 @@ use chrono::{DateTime, Datelike, Duration, FixedOffset, TimeZone, Timelike, Utc}
 use url::Url;
 
 use crate::{
-    AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Config, ControlledBlockReason,
-    Database, Decision, DetoxSession, DetoxTargetKind, Error, EvaluationContext, ProcessIdentity,
-    RuleConfig, RulePatternConfig, RulePatternKind, RuleTier, ScheduleConfig, UnlockError,
-    UnlockState, VisitState, Weekday,
+    AllowanceStatus, AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Config,
+    ControlledBlockReason, Database, Decision, DetoxSession, DetoxTargetKind, Error,
+    EvaluationContext, ProcessIdentity, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
+    ScheduleConfig, UnlockError, UnlockState, VisitState, Weekday,
 };
 
 const TIER_3_UNLOCK_MINUTES: u32 = 2;
@@ -166,6 +166,49 @@ impl<'a> PolicyEngine<'a> {
         self.visit_rule_for_url(&parsed, context)
             .and_then(|rule| self.rule_allowance_minutes(rule))
             .is_some()
+    }
+
+    pub fn allowance_statuses(
+        &self,
+        context: &EvaluationContext<'_>,
+    ) -> Result<Vec<AllowanceStatus>, Error> {
+        let mut statuses = Vec::new();
+        let (day_start, day_end) = local_day_bounds(context.now);
+
+        for rule in self.config.rules.iter().filter(|rule| {
+            rule.enabled && rule.tier == RuleTier::ControlledAccess && rule.allowance_id.is_some()
+        }) {
+            let Some(total_minutes) = self.rule_allowance_minutes(rule) else {
+                continue;
+            };
+            let used_seconds = self.used_seconds_for_site_rule_on_day(rule, context)?;
+            statuses.push(AllowanceStatus {
+                rule_id: rule.id.clone(),
+                rule_name: rule.name.clone(),
+                remaining_seconds: (i64::from(total_minutes) * 60 - used_seconds).max(0),
+            });
+        }
+
+        for rule in self.config.app_rules.iter().filter(|rule| {
+            rule.enabled && rule.tier == RuleTier::ControlledAccess && rule.allowance_id.is_some()
+        }) {
+            let Some(total_minutes) = self.app_rule_allowance_minutes(rule) else {
+                continue;
+            };
+            let used_seconds = self.database.used_seconds_for_app_rule_between(
+                &rule.id,
+                day_start,
+                day_end,
+                context.now_utc(),
+            )?;
+            statuses.push(AllowanceStatus {
+                rule_id: rule.id.clone(),
+                rule_name: rule.name.clone(),
+                remaining_seconds: (i64::from(total_minutes) * 60 - used_seconds).max(0),
+            });
+        }
+
+        Ok(statuses)
     }
 
     pub fn request_unlock(
@@ -1035,6 +1078,10 @@ pub fn evaluate_app(process: &ProcessIdentity, context: &EvaluationContext<'_>) 
 
 pub fn site_usage_is_metered(url: &str, context: &EvaluationContext<'_>) -> bool {
     PolicyEngine::new(context.config, context.database).site_usage_is_metered(url, context)
+}
+
+pub fn allowance_statuses(context: &EvaluationContext<'_>) -> Result<Vec<AllowanceStatus>, Error> {
+    PolicyEngine::new(context.config, context.database).allowance_statuses(context)
 }
 
 pub fn metered_app_rule_ids_for_process(
