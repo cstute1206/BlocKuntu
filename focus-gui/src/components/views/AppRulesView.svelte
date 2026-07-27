@@ -252,7 +252,7 @@
           <section class="inline-warning">
             <AlertTriangle size={17} aria-hidden="true" />
             <span>
-              No schedule is attached. This {appRuleDraft.tier === "scheduled_block" ? "Tier 2" : "Tier 3"} application stays inactive unless you select it for Detox.
+              No schedule is attached. This {ruleDraft.tier === "scheduled_block" ? "Tier 2" : "Tier 3"} list of websites stays inactive unless you select it for Detox or add it to a schedule.
             </span>
           </section>
         {/if}

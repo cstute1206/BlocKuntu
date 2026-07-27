@@ -154,8 +154,8 @@
           <AlertTriangle size={17} aria-hidden="true" />
           <span>
             {ruleDraftDetoxLocked
-              ? "This website is covered by an active detox session. Existing settings are locked; you can append patterns."
-              : "This website is active right now. Existing settings are locked; you can append patterns."}
+              ? "This website list is covered by an active detox session. Existing settings are locked, but you can still append patterns."
+              : "This website list is active right now. Existing settings are locked, but you can still append patterns."}
           </span>
         </section>
       {/if}
@@ -207,7 +207,7 @@
           <section class="inline-warning">
             <AlertTriangle size={17} aria-hidden="true" />
             <span>
-              No schedule is attached. This {ruleDraft.tier === "scheduled_block" ? "Tier 2" : "Tier 3"} website stays inactive unless you select it for Detox.
+              No schedule is attached. This {ruleDraft.tier === "scheduled_block" ? "Tier 2" : "Tier 3"} list of websites stays inactive unless you select it for Detox or add it to a schedule.
             </span>
           </section>
         {/if}
