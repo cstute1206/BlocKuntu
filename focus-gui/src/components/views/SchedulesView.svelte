@@ -10,6 +10,7 @@
     scheduleAppRuleIds?: string[];
     scheduleSaving: boolean;
     scheduleMessage: string | null;
+    timeFormat: "12h" | "24h";
     onSelectSchedule: (schedule: Schedule) => void;
     onStartNewSchedule: () => void;
     onSaveScheduleDraft: () => void | Promise<void>;
@@ -23,6 +24,7 @@
     scheduleAppRuleIds = $bindable<string[]>([]),
     scheduleSaving,
     scheduleMessage,
+    timeFormat,
     onSelectSchedule,
     onStartNewSchedule,
     onSaveScheduleDraft,
@@ -41,8 +43,14 @@
   let schedulableAppRules = $derived(
     config?.app_rules.filter((rule) => rule.tier !== "hard") ?? []
   );
-  const timeInputPattern = "([01][0-9]|2[0-3]):[0-5][0-9]";
-  const timeInputTitle = "24-hour time, for example 09:00";
+  let timeInputPattern = $derived(
+    timeFormat === "12h"
+      ? "(1[0-2]|0?[1-9]):[0-5][0-9] ?([AaPp][Mm])"
+      : "([01][0-9]|2[0-3]):[0-5][0-9]"
+  );
+  let timeInputTitle = $derived(
+    timeFormat === "12h" ? "AM/PM time, for example 9:00 PM" : "24-hour time, for example 09:00"
+  );
   let scheduleDraftHasValidTimes = $derived(
     Boolean(
       scheduleDraft?.windows.every(
@@ -53,6 +61,31 @@
 
   function isTwentyFourHourTime(value: string): boolean {
     return /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(value);
+  }
+
+  function formatTimeForInput(value: string): string {
+    if (timeFormat === "24h" || !isTwentyFourHourTime(value)) return value;
+    const [hoursText, minutes] = value.split(":");
+    const hours = Number(hoursText);
+    const suffix = hours >= 12 ? "PM" : "AM";
+    const twelveHour = hours % 12 || 12;
+    return `${twelveHour}:${minutes} ${suffix}`;
+  }
+
+  function parseTimeInput(value: string): string | null {
+    if (timeFormat === "24h") return isTwentyFourHourTime(value) ? value : null;
+    const match = /^(1[0-2]|0?[1-9]):([0-5][0-9])\s*([AaPp][Mm])$/.exec(value.trim());
+    if (!match) return null;
+    let hours = Number(match[1]);
+    if (match[3].toUpperCase() === "AM") hours = hours === 12 ? 0 : hours;
+    else if (hours !== 12) hours += 12;
+    return `${String(hours).padStart(2, "0")}:${match[2]}`;
+  }
+
+  function updateWindowTime(index: number, field: "start" | "end", event: Event): void {
+    if (!scheduleDraft) return;
+    const value = parseTimeInput((event.currentTarget as HTMLInputElement).value);
+    if (value) scheduleDraft.windows[index][field] = value;
   }
 
   function addScheduleWindow(): void {
@@ -166,11 +199,12 @@
                     class="time-input"
                     type="text"
                     inputmode="text"
-                    maxlength="5"
+                    maxlength={timeFormat === "12h" ? 8 : 5}
                     pattern={timeInputPattern}
-                    placeholder="09:00"
+                    placeholder={timeFormat === "12h" ? "9:00 AM" : "09:00"}
                     title={timeInputTitle}
-                    bind:value={window.start}
+                    value={formatTimeForInput(window.start)}
+                    onchange={(event) => updateWindowTime(index, "start", event)}
                     disabled={windowEditLocked(index)}
                     aria-invalid={!isTwentyFourHourTime(window.start)}
                   />
@@ -180,11 +214,12 @@
                     class="time-input"
                     type="text"
                     inputmode="text"
-                    maxlength="5"
+                    maxlength={timeFormat === "12h" ? 8 : 5}
                     pattern={timeInputPattern}
-                    placeholder="17:00"
+                    placeholder={timeFormat === "12h" ? "5:00 PM" : "17:00"}
                     title={timeInputTitle}
-                    bind:value={window.end}
+                    value={formatTimeForInput(window.end)}
+                    onchange={(event) => updateWindowTime(index, "end", event)}
                     disabled={windowEditLocked(index)}
                     aria-invalid={!isTwentyFourHourTime(window.end)}
                   />

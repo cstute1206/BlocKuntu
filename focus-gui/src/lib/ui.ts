@@ -21,11 +21,13 @@ const lastSelectedViewKey = "blockuntu.lastSelectedView";
 export interface ApplicationUiPreferences {
   restoreLastSelectedPage: boolean;
   refreshIntervalSeconds: 5 | 15 | 30 | 60;
+  timeFormat: "12h" | "24h";
 }
 
 export const defaultApplicationUiPreferences: ApplicationUiPreferences = {
   restoreLastSelectedPage: false,
-  refreshIntervalSeconds: 5
+  refreshIntervalSeconds: 5,
+  timeFormat: "24h"
 };
 
 export const weekdays = [
@@ -335,7 +337,8 @@ export function applicationUiPreferences(): ApplicationUiPreferences {
 
     return {
       restoreLastSelectedPage: parsed.restoreLastSelectedPage === true,
-      refreshIntervalSeconds
+      refreshIntervalSeconds,
+      timeFormat: parsed.timeFormat === "12h" ? "12h" : "24h"
     };
   } catch {
     return { ...defaultApplicationUiPreferences };

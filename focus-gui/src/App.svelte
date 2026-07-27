@@ -77,6 +77,7 @@
     normalizeRuleDraft,
     normalizeScheduleDraft,
     ruleIsActive,
+    saveApplicationUiPreferences,
     saveLastSelectedView
   } from "./lib/ui";
   import type { ApplicationUiPreferences } from "./lib/ui";
@@ -328,6 +329,11 @@
     runtimeRefreshTimerId = window.setInterval(() => {
       void refreshRuntime({ silent: true });
     }, intervalSeconds * 1_000);
+  }
+
+  function updateTimeFormat(timeFormat: ApplicationUiPreferences["timeFormat"]): void {
+    uiPreferences = { ...uiPreferences, timeFormat };
+    saveApplicationUiPreferences(uiPreferences);
   }
 
   async function refreshRuntime(options: RefreshOptions = {}): Promise<void> {
@@ -1369,7 +1375,6 @@
         uninstallPhrase={recoveryUninstallPhrase}
         tier1EditKey={recoveryTier1Key}
         onDismissFirstRunOverview={dismissFirstRunOverview}
-        onHideRecoveryCredentials={hideDisplayedRecoveryCredentials}
         onRunUrlCheck={runUrlCheck}
         onRunUnlock={runUnlock}
       />
@@ -1428,6 +1433,7 @@
         bind:scheduleAppRuleIds
         {scheduleSaving}
         {scheduleMessage}
+        timeFormat={uiPreferences.timeFormat}
         onSelectSchedule={selectSchedule}
         onStartNewSchedule={startNewSchedule}
         onSaveScheduleDraft={saveScheduleDraft}
@@ -1467,6 +1473,7 @@
         {operatorWindowRestrictionEnabled}
         {tier1EditCredentialConfigured}
         {tier1EditMessage}
+        timeFormat={uiPreferences.timeFormat}
         {policyExportRunning}
         {policyImportRunning}
         {policyTransferMessage}
@@ -1479,6 +1486,9 @@
         onImportPolicyToml={runImportPolicyToml}
         onUpdateNotificationPreferences={updateNotificationPreferences}
         onShowFirstRunOverview={showFirstRunOverviewAgain}
+        onUpdateTimeFormat={updateTimeFormat}
+        recoveryCredentialsVisible={Boolean(recoveryUninstallPhrase && recoveryTier1Key)}
+        onHideRecoveryCredentials={hideDisplayedRecoveryCredentials}
         onClose={closeSettings}
     />
   {/if}

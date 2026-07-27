@@ -32,7 +32,6 @@
     uninstallPhrase: string | null;
     tier1EditKey: string | null;
     onDismissFirstRunOverview: () => void;
-    onHideRecoveryCredentials: () => void | Promise<void>;
     onRunUrlCheck: () => void | Promise<void>;
     onRunUnlock: () => void | Promise<void>;
   }
@@ -52,7 +51,6 @@
     uninstallPhrase,
     tier1EditKey,
     onDismissFirstRunOverview,
-    onHideRecoveryCredentials,
     onRunUrlCheck,
     onRunUnlock
   }: Props = $props();
@@ -130,7 +128,6 @@
             <code class="phrase-code">{uninstallPhrase}</code>
             <p><strong>Tier 1 edit key</strong> — required to unlock Tier 1 edits; store it somewhere secure.</p>
             <code class="phrase-code">{tier1EditKey}</code>
-            <button class="secondary danger-action" onclick={onHideRecoveryCredentials}>Hide and remove recovery credentials</button>
           {:else}
             <p>Recovery credentials have been hidden and removed from this device.</p>
           {/if}

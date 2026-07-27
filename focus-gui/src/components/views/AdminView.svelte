@@ -55,6 +55,7 @@
     operatorWindowRestrictionEnabled: boolean;
     tier1EditCredentialConfigured: boolean;
     tier1EditMessage: string | null;
+    timeFormat: "12h" | "24h";
     policyExportRunning: boolean;
     policyImportRunning: boolean;
     policyTransferMessage: string | null;
@@ -69,6 +70,9 @@
       preferences: NotificationPreferences
     ) => void | Promise<void>;
     onShowFirstRunOverview: () => void;
+    onUpdateTimeFormat: (format: "12h" | "24h") => void;
+    recoveryCredentialsVisible: boolean;
+    onHideRecoveryCredentials: () => void | Promise<void>;
     onClose: () => void;
   }
 
@@ -102,6 +106,7 @@
     operatorWindowRestrictionEnabled,
     tier1EditCredentialConfigured,
     tier1EditMessage,
+    timeFormat,
     policyExportRunning,
     policyImportRunning,
     policyTransferMessage,
@@ -114,6 +119,9 @@
     onImportPolicyToml,
     onUpdateNotificationPreferences,
     onShowFirstRunOverview,
+    onUpdateTimeFormat,
+    recoveryCredentialsVisible,
+    onHideRecoveryCredentials,
     onClose
   }: Props = $props();
 
@@ -337,7 +345,9 @@
               <button class="primary" onclick={onUnlockTier1Edit} disabled={tier1EditUnlocking || !canUnlockTier1Edit}><KeyRound size={17} aria-hidden="true" /><span>{tier1EditUnlocking ? "Unlocking" : "Unlock 5 min"}</span></button>
             </div>
             {#if tier1EditMessage}<p class="result-text">{tier1EditMessage}</p>{/if}
+            <label class="preference-row"><span><strong>Time format</strong><small>Choose how schedule times are entered and displayed.</small></span><select value={timeFormat} onchange={(event) => onUpdateTimeFormat((event.currentTarget as HTMLSelectElement).value as "12h" | "24h")}><option value="24h">24-hour (21:30)</option><option value="12h">AM/PM (9:30 PM)</option></select></label>
             <div class="button-row compact-row settings-action-row"><button class="secondary" onclick={onShowFirstRunOverview}>Show welcome modal</button></div>
+            {#if recoveryCredentialsVisible}<div class="button-row compact-row settings-action-row"><button class="secondary danger-action" onclick={onHideRecoveryCredentials}>Hide and remove recovery credentials</button></div>{/if}
             <div class="uninstall-form admin-action-form">
               <label><span>Recovery uninstall phrase</span><input type="password" bind:value={uninstallPhraseInput} autocomplete="current-password" placeholder="Enter the recovery uninstall phrase" spellcheck="false" /></label>
               <button class="secondary danger-action" onclick={onRunUninstallBlockuntu} disabled={uninstallRunning || !canRunUninstall}><Trash2 size={17} aria-hidden="true" /><span>{uninstallRunning ? "Removing" : "Uninstall BlocKuntu"}</span></button>

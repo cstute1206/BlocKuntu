@@ -65,7 +65,9 @@
   }
 
   function patternRemoveLocked(index: number): boolean {
-    return (ruleDraftDetoxLocked || ruleDraftActive) && patternIsSaved(index);
+    if (!patternIsSaved(index)) return false;
+    if (ruleDraftDetoxLocked) return true;
+    return ruleDraftActive && !(savedRule?.tier === "hard" && tier1EditUnlocked);
   }
 
   function ruleStatusIsActive(rule: Rule): boolean {
