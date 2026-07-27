@@ -16,6 +16,7 @@ import type {
   AppRule,
   Allowance,
   Rule,
+  RecoveryCredentials,
   Schedule,
   SystemHealth,
   Tier1EditStatus,
@@ -216,21 +217,12 @@ export function requestUnlock(
   });
 }
 
-export function configureTier1EditCredential(
-  phrase: string,
-  socketPath?: string
-): Promise<{ configured: boolean }> {
-  return daemonRpc("configure_tier1_edit_credential", { phrase }, socketPath) as Promise<{
-    configured: boolean;
-  }>;
+export function recoveryCredentials(): Promise<RecoveryCredentials> {
+  return invoke("recovery_credentials");
 }
 
-export function uninstallPhraseConfigured(): Promise<boolean> {
-  return invoke("uninstall_phrase_configured");
-}
-
-export function configureUninstallPhrase(phrase: string): Promise<void> {
-  return invoke("configure_uninstall_phrase", { phrase });
+export function hideRecoveryCredentials(socketPath?: string): Promise<{ hidden: boolean }> {
+  return daemonRpc("hide_recovery_credentials", {}, socketPath) as Promise<{ hidden: boolean }>;
 }
 
 export function setOperatorWindowRestriction(

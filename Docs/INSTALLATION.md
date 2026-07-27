@@ -66,7 +66,8 @@ Plasma, XFCE, Cinnamon, MATE, and Ubuntu-style GNOME sessions are typically the
 smoother path.
 
 For Debian-package installs, uninstall through the GUI Settings page when
-possible: type the saved per-user uninstall phrase and run the uninstall action.
+possible: type the package-generated recovery uninstall phrase and run the
+uninstall action.
 The GUI uses `pkexec` to execute the package purge. The equivalent terminal
 command is:
 
@@ -81,9 +82,10 @@ Package purge stops and disables the BlocKuntu services, removes the managed
 See [UNINSTALL.md](UNINSTALL.md) for the full uninstall phrase and cleanup
 behavior.
 
-Set a Tier 1 credential in **Protected Changes and Uninstall** before you need
-to edit an active Tier 1 list. The daemon stores only the credential verifier;
-the credential is never displayed by the GUI.
+The package creates a Tier 1 edit key in `/etc/blockuntu/tier1-edit-key.txt`.
+The welcome modal displays it alongside the recovery uninstall phrase so it can
+be stored safely. Choosing to hide the recovery credentials removes both files
+and keeps them hidden across package upgrades.
 
 The package creates a random installation serial at
 `/etc/blockuntu/installation-id`. Settings displays it in Health.
@@ -679,7 +681,7 @@ If policies or manifests changed, restart the affected browser.
 ## Uninstall
 
 For a Debian package install, use the GUI Settings uninstall action and type the
-saved per-user uninstall phrase. The GUI uses `pkexec` to run:
+package-generated recovery uninstall phrase. The GUI uses `pkexec` to run:
 
 ```bash
 dpkg --purge blockuntu

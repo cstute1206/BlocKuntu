@@ -14,6 +14,7 @@
     appRuleMessage: string | null;
     activeDetoxAppRuleIds?: string[];
     onSelectAppRule: (rule: AppRule) => void;
+    onStartNewAppRule: () => void;
     onAddDetectedMatchers: (app: RunningApp) => void;
     onSaveAppRuleDraft: () => void | Promise<void>;
     onRemoveAppRuleDraft: () => void | Promise<void>;
@@ -29,6 +30,7 @@
     appRuleMessage,
     activeDetoxAppRuleIds = [],
     onSelectAppRule,
+    onStartNewAppRule,
     onAddDetectedMatchers,
     onSaveAppRuleDraft,
     onRemoveAppRuleDraft
@@ -119,6 +121,10 @@
       <Gamepad2 size={18} aria-hidden="true" />
       <h2>Applications</h2>
     </div>
+    <button class="secondary wide-button" onclick={onStartNewAppRule}>
+      <Plus size={17} aria-hidden="true" />
+      <span>New application</span>
+    </button>
     <div class="rule-list">
       {#each config?.app_rules ?? [] as rule (rule.id)}
         <button

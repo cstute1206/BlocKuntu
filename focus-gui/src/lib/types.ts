@@ -285,6 +285,11 @@ export interface InstallationInfo {
   build_number: string;
 }
 
+export interface RecoveryCredentials {
+  uninstall_phrase: string;
+  tier1_edit_key: string;
+}
+
 export interface UninstallResult {
   status: string;
   detail: string;

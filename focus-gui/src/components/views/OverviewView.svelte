@@ -29,7 +29,10 @@
     unlockReason?: string;
     unlockResult: UnlockResult | null;
     unlocking: boolean;
+    uninstallPhrase: string | null;
+    tier1EditKey: string | null;
     onDismissFirstRunOverview: () => void;
+    onHideRecoveryCredentials: () => void | Promise<void>;
     onRunUrlCheck: () => void | Promise<void>;
     onRunUnlock: () => void | Promise<void>;
   }
@@ -46,7 +49,10 @@
     unlockReason = $bindable(""),
     unlockResult,
     unlocking,
+    uninstallPhrase,
+    tier1EditKey,
     onDismissFirstRunOverview,
+    onHideRecoveryCredentials,
     onRunUrlCheck,
     onRunUnlock
   }: Props = $props();
@@ -119,8 +125,15 @@
           <li>Install the Firefox and/or Chrome extension for browser blocking.</li>
         </ul>
         <div class="onboarding-credentials">
-          <p><strong>Protected changes</strong> — set a Tier 1 credential in Settings before you need to edit Tier 1 rules. It is never displayed again, so save it somewhere secure.</p>
-          <p><strong>Uninstall</strong> — create and save the uninstall phrase in Settings before you need the protected uninstall flow.</p>
+          {#if uninstallPhrase && tier1EditKey}
+            <p><strong>Recovery uninstall phrase</strong> — store this somewhere secure.</p>
+            <code class="phrase-code">{uninstallPhrase}</code>
+            <p><strong>Tier 1 edit key</strong> — required to unlock Tier 1 edits; store it somewhere secure.</p>
+            <code class="phrase-code">{tier1EditKey}</code>
+            <button class="secondary danger-action" onclick={onHideRecoveryCredentials}>Hide and remove recovery credentials</button>
+          {:else}
+            <p>Recovery credentials have been hidden and removed from this device.</p>
+          {/if}
         </div>
         <div class="button-row onboarding-actions">
           <button class="primary" onclick={onDismissFirstRunOverview}>Get started</button>

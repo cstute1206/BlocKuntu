@@ -136,7 +136,6 @@
       <Plus size={17} aria-hidden="true" />
       <span>New website</span>
     </button>
-    <p class="rule-status-legend">Status: red = active, yellow = inactive</p>
     <div class="rule-list">
       {#each config?.rules ?? [] as rule (rule.id)}
         <button class:active={ruleDraft?.id === rule.id} onclick={() => onSelectRule(rule)}>

@@ -25,8 +25,6 @@
   import {
     installationInfo,
     cancelDetox,
-    configureUninstallPhrase,
-    configureTier1EditCredential,
     configSnapshot,
     daemonStatus,
     deleteAppRule,
@@ -48,7 +46,8 @@
     systemHealth,
     tier1EditStatus,
     uninstallBlockuntu,
-    uninstallPhraseConfigured,
+    recoveryCredentials,
+    hideRecoveryCredentials,
     unlockTier1Edit,
     upsertAllowance,
     upsertAppRule,
@@ -186,18 +185,14 @@
   let installationSerial: string | null = $state(null);
   let buildNumber: string | null = $state(null);
   let uninstallPhraseLoading = $state(false);
-  let uninstallPhraseConfiguredState = $state(false);
-  let uninstallPhraseSetupInput = $state("");
-  let uninstallPhraseSetupConfirmation = $state("");
-  let uninstallPhraseConfiguring = $state(false);
+  let recoveryUninstallPhrase: string | null = $state(null);
+  let recoveryTier1Key: string | null = $state(null);
   let uninstallPhraseError: string | null = $state(null);
   let uninstallPhraseInput = $state("");
   let uninstallRunning = $state(false);
   let uninstallResult: UninstallResult | null = $state(null);
 
   let tier1EditPhraseInput = $state("");
-  let tier1EditCredentialSetupInput = $state("");
-  let tier1EditCredentialSetupConfirmation = $state("");
   let tier1EditCredentialConfigured = $state(false);
   let operatorWindowRestrictionEnabled = $state(false);
   let tier1EditUnlocking = $state(false);
@@ -820,32 +815,27 @@
     uninstallPhraseLoading = true;
     uninstallPhraseError = null;
     try {
-      uninstallPhraseConfiguredState = await uninstallPhraseConfigured();
+      const credentials = await recoveryCredentials();
+      recoveryUninstallPhrase = credentials.uninstall_phrase;
+      recoveryTier1Key = credentials.tier1_edit_key;
     } catch (error) {
+      recoveryUninstallPhrase = null;
+      recoveryTier1Key = null;
       uninstallPhraseError = formatError(error);
     } finally {
       uninstallPhraseLoading = false;
     }
   }
 
-  async function configureUninstallCredential(): Promise<void> {
-    if (
-      !uninstallPhraseSetupInput.trim() ||
-      uninstallPhraseSetupInput !== uninstallPhraseSetupConfirmation
-    ) {
-      return;
-    }
-    uninstallPhraseConfiguring = true;
-    uninstallPhraseError = null;
+  async function hideDisplayedRecoveryCredentials(): Promise<void> {
+    if (!window.confirm("Hide and permanently delete both recovery credentials from /etc/blockuntu? This cannot be undone.")) return;
     try {
-      await configureUninstallPhrase(uninstallPhraseSetupInput);
-      uninstallPhraseConfiguredState = true;
-      uninstallPhraseSetupInput = "";
-      uninstallPhraseSetupConfirmation = "";
+      await hideRecoveryCredentials(socketArg());
+      recoveryUninstallPhrase = null;
+      recoveryTier1Key = null;
+      tier1EditMessage = "Recovery credentials were removed.";
     } catch (error) {
-      uninstallPhraseError = formatError(error);
-    } finally {
-      uninstallPhraseConfiguring = false;
+      lastError = formatError(error);
     }
   }
 
@@ -874,29 +864,6 @@
       tier1EditPhraseInput = "";
     } catch (error) {
       tier1EditMessage = null;
-      lastError = formatError(error);
-    } finally {
-      tier1EditUnlocking = false;
-    }
-  }
-
-  async function configureTier1Credential(): Promise<void> {
-    if (
-      !tier1EditCredentialSetupInput.trim() ||
-      tier1EditCredentialSetupInput !== tier1EditCredentialSetupConfirmation
-    ) {
-      return;
-    }
-    tier1EditUnlocking = true;
-    tier1EditMessage = null;
-    lastError = null;
-    try {
-      await configureTier1EditCredential(tier1EditCredentialSetupInput, socketArg());
-      tier1EditCredentialConfigured = true;
-      tier1EditCredentialSetupInput = "";
-      tier1EditCredentialSetupConfirmation = "";
-      tier1EditMessage = "Tier 1 credential configured. Keep it somewhere secure.";
-    } catch (error) {
       lastError = formatError(error);
     } finally {
       tier1EditUnlocking = false;
@@ -1399,7 +1366,10 @@
         bind:unlockReason
         {unlockResult}
         {unlocking}
+        uninstallPhrase={recoveryUninstallPhrase}
+        tier1EditKey={recoveryTier1Key}
         onDismissFirstRunOverview={dismissFirstRunOverview}
+        onHideRecoveryCredentials={hideDisplayedRecoveryCredentials}
         onRunUrlCheck={runUrlCheck}
         onRunUnlock={runUnlock}
       />
@@ -1428,6 +1398,7 @@
         {appRuleMessage}
         {activeDetoxAppRuleIds}
         onSelectAppRule={selectAppRule}
+        onStartNewAppRule={startNewAppRule}
         onAddDetectedMatchers={addDetectedMatchersToDraft}
         onSaveAppRuleDraft={saveAppRuleDraft}
         onRemoveAppRuleDraft={removeAppRuleDraft}
@@ -1484,24 +1455,17 @@
         {installationSerial}
         {buildNumber}
         {uninstallPhraseLoading}
-        {uninstallPhraseConfiguredState}
-        bind:uninstallPhraseSetupInput
-        bind:uninstallPhraseSetupConfirmation
-        {uninstallPhraseConfiguring}
         bind:uninstallPhraseInput
         {uninstallRunning}
         {uninstallResult}
         {uninstallPhraseError}
         bind:tier1EditPhraseInput
         {tier1EditUnlocking}
-        {tier1EditUnlocked}
         tier1EditUnlockedUntil={tier1EditUnlockedUntil}
         {operatorWindowOpen}
         {operatorWindowLabel}
         {operatorWindowRestrictionEnabled}
         {tier1EditCredentialConfigured}
-        bind:tier1EditCredentialSetupInput
-        bind:tier1EditCredentialSetupConfirmation
         {tier1EditMessage}
         {policyExportRunning}
         {policyImportRunning}
@@ -1509,9 +1473,7 @@
         {policyTransferError}
         onRefreshHealth={() => refreshAll()}
         onRunUninstallBlockuntu={runUninstallBlockuntu}
-        onConfigureUninstallPhrase={configureUninstallCredential}
         onUnlockTier1Edit={runUnlockTier1Edit}
-        onConfigureTier1Credential={configureTier1Credential}
         onUpdateOperatorWindowRestriction={updateOperatorWindowRestriction}
         onExportPolicyToml={runExportPolicyToml}
         onImportPolicyToml={runImportPolicyToml}

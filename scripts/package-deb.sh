@@ -244,8 +244,26 @@ create_installation_serial() {
   rm -f "${legacy_serial_file}"
 }
 
+create_recovery_credential() {
+  credential_file="$1"
+  prefix="$2"
+  if [ -s "${credential_file}" ]; then
+    return 0
+  fi
+  random_hex="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
+  temp_file="$(mktemp)"
+  printf '%s-%s\n' "${prefix}" "${chunks}" >"${temp_file}"
+  install -d -o root -g root -m 0755 /etc/blockuntu
+  install -o root -g blockuntu -m 0640 "${temp_file}" "${credential_file}"
+  rm -f "${temp_file}"
+}
+
 create_installation_serial
-rm -f /etc/blockuntu/uninstall-recovery.txt /etc/blockuntu/tier1-edit-key.txt
+if [ ! -e /var/lib/blockuntu/recovery-credentials-hidden ]; then
+  create_recovery_credential /etc/blockuntu/uninstall-recovery.txt BLOCKUNTU-UNINSTALL-RECOVERY
+  create_recovery_credential /etc/blockuntu/tier1-edit-key.txt BLOCKUNTU-TIER1-EDIT
+fi
 
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
@@ -272,8 +290,8 @@ If you use Firefox Snap or Flatpak, BlocKuntu configures its per-user browser
 integration automatically when the GUI starts. Restart that Firefox build
 after opening BlocKuntu.
 
-Open the GUI once after the first login and configure protected changes before
-editing Tier 1 rules. Keep your uninstall phrase and Tier 1 credential secure.
+Open the GUI once after the first login and store the recovery credentials shown
+in the welcome modal. You can hide and remove them permanently from Settings.
 Closing the GUI window keeps BlocKuntu available from the tray icon. On vanilla
 GNOME, install or enable AppIndicator/KStatusNotifierItem support if the tray
 icon is not visible.

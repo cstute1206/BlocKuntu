@@ -351,8 +351,26 @@ log "creating blockuntu socket group and adding ${TARGET_USER}"
 sudo groupadd --system blockuntu 2>/dev/null || true
 sudo usermod -aG blockuntu "${TARGET_USER}"
 
-log "removing legacy /etc/blockuntu recovery credentials"
-sudo rm -f /etc/blockuntu/uninstall-recovery.txt /etc/blockuntu/tier1-edit-key.txt
+if [[ ! -e /var/lib/blockuntu/recovery-credentials-hidden && ! -s /etc/blockuntu/tier1-edit-key.txt ]]; then
+  log "creating Tier 1 recovery credential"
+  random_hex="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
+  temp_key="$(mktemp)"
+  printf 'BLOCKUNTU-TIER1-EDIT-%s\n' "${chunks}" >"${temp_key}"
+  sudo install -d -o root -g root -m 0755 /etc/blockuntu
+  sudo install -o root -g blockuntu -m 0640 "${temp_key}" /etc/blockuntu/tier1-edit-key.txt
+  rm -f "${temp_key}"
+fi
+if [[ ! -e /var/lib/blockuntu/recovery-credentials-hidden && ! -s /etc/blockuntu/uninstall-recovery.txt ]]; then
+  log "creating uninstall recovery credential"
+  random_hex="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
+  temp_phrase="$(mktemp)"
+  printf 'BLOCKUNTU-UNINSTALL-RECOVERY-%s\n' "${chunks}" >"${temp_phrase}"
+  sudo install -d -o root -g root -m 0755 /etc/blockuntu
+  sudo install -o root -g blockuntu -m 0640 "${temp_phrase}" /etc/blockuntu/uninstall-recovery.txt
+  rm -f "${temp_phrase}"
+fi
 
 log "installing daemon and native host binaries"
 sudo install -Dm755 focusd/target/release/blockuntud /usr/local/bin/blockuntud

@@ -331,7 +331,8 @@ flags.
 - Additive edits to active hard rules are allowed where they do not weaken the  
 rule.
 - Removing or weakening active Tier 1 site rules requires a Tier 1 edit unlock.
-- Daemon-owned Tier 1 credential; its value is never exposed by the GUI.
+- Package-generated Tier 1 edit key shown in the welcome modal until the user
+  hides and removes recovery credentials.
 - Optional operator window restriction for Tier 1 editing and uninstall:
   Sunday 20:00-23:59 (disabled by default).
 - Tier 1 edit unlock lasts 5 minutes.
@@ -381,7 +382,7 @@ Detox, URL blocks, and uninstall preparation.
 - Uninstall workflow through GUI with `pkexec`.
 - Package purge cleanup for services, runtime paths, browser policies, hosts  
 state, config, and database.
-- Per-user uninstall phrase support.
+- Package-generated recovery uninstall phrase support.
 
 ## Tests And Verification Assets
 

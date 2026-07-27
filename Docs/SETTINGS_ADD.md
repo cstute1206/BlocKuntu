@@ -28,7 +28,7 @@ it does not invent configuration that the daemon cannot persist or enforce.
 | Health | Live health rows including browser integration, refresh, build, and installation serial. | A dedicated structured last-successful-heartbeat value only if the daemon needs to expose more than the current health detail. |
 | Enforcement | Read-only live state for enforcement, hosts immutability, and unsupported-browser rule. | Daemon-backed settings for heartbeat grace period, stale-browser handling, scan interval, and any other enforcement behaviour. These must preserve the existing protected-change rules. |
 | Export and Import Rules | TOML export and append/import, including an explanation of append behavior. | Policy database and snapshot paths, recovery-snapshot creation, recovery-snapshot restore, and persistent transfer/snapshot history. |
-| Protected Changes and Uninstall | Daemon-owned Tier 1 credential setup, optional Sunday restriction, five-minute unlock, welcome-modal reset, and uninstall. | Nothing in this Settings scope. |
+| Protected Changes and Uninstall | Package-generated recovery credentials, optional Sunday restriction, five-minute unlock, welcome-modal reset, and uninstall. | Nothing in this Settings scope. |
 | Notifications | Daemon-persisted master and per-event toggles for website/application blocks, allowance thresholds, schedule start/end, and Detox start/end. The tray process delivers expiring, deduplicated desktop notifications and records delivery outcomes in the event log. | Start-on-login if notifications must work before the GUI has been launched. |
 | Logging and statistics | The daemon appends each recorded event to `/etc/blockuntu/blockuntu.log`; Settings shows the path and terminal commands to inspect it, while Statistics gets its total and event-kind counts by parsing that file. | Nothing for this simplified scope. |
 
@@ -143,7 +143,7 @@ active policy must use the existing protected-change rules.
 ## Protected Changes
 
 This section is named **Protected Changes and Uninstall**. It retains the Tier
-1 edit-unlock behavior, adds one-time daemon-owned credential setup, and holds
+1 edit-unlock behavior, shows package-generated recovery credentials, and holds
 the welcome-modal and uninstall actions.
 
 Show:
@@ -154,13 +154,13 @@ Show:
 
 Action:
 
-- Unlock protected edits for five minutes using the saved Tier 1 credential
+- Unlock protected edits for five minutes using the Tier 1 edit key
 - Enable or disable the Sunday 20:00-23:59 restriction after unlocking Tier 1
 - Show the welcome modal and run the protected uninstall action
 
-The credential is never displayed after setup. The Sunday restriction is
-disabled by default, so the credential remains required but protected actions
-are otherwise available at any time.
+The recovery credentials are shown in the welcome modal until the user hides
+them; hiding removes their `/etc/blockuntu` files. The Sunday restriction is
+disabled by default and can be turned off only during the Sunday window.
 
 ## Notifications
 

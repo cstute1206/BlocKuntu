@@ -522,7 +522,7 @@ button:disabled {
 .duration-input-row {
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.7fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr);
 }
 
 .duration-input-row input,
@@ -834,12 +834,6 @@ button:disabled {
 
 .tier-dot.hard {
   background: #c94f4f;
-}
-
-.rule-status-legend {
-  color: #65746d;
-  font-size: 0.78rem;
-  margin: 10px 0 6px;
 }
 
 .rule-status-dot {
@@ -1462,6 +1456,10 @@ pre {
   margin-top: 14px;
 }
 
+.notification-selection-actions {
+  margin-bottom: 14px;
+}
+
 .repair-note,
 .log-file-note {
   align-items: flex-start;
@@ -1624,4 +1622,10 @@ pre {
     justify-self: start;
   }
 
+}
+
+@media (max-width: 420px) {
+  .duration-input-row {
+    grid-template-columns: 1fr;
+  }
 }

@@ -29,11 +29,11 @@ enforcement or remove package files.
 
 ## Uninstall Phrases
 
-The GUI uses one per-user uninstall phrase at
-`$XDG_DATA_HOME/blockuntu/uninstall-confirmation.txt` (or
-`~/.local/share/blockuntu/uninstall-confirmation.txt`). The user sets it once
-in Settings, it is stored with mode `0600`, and it is never displayed again. No
-system recovery credential is stored in `/etc/blockuntu`.
+The GUI uses the package-generated recovery uninstall phrase at
+`/etc/blockuntu/uninstall-recovery.txt`. It is shown in the welcome modal along
+with the Tier 1 edit key and is stored with `root:blockuntu` ownership and mode
+`0640`. Choosing to hide recovery credentials removes both files and persists
+that choice across upgrades.
 
 ## Normal Phrase Validation
 
@@ -41,7 +41,7 @@ For the ordinary uninstall path, the frontend only checks that the uninstall
 input is non-empty. The Tauri backend is the authority:
 
 1. It trims the input.
-2. It compares the input with the saved per-user phrase.
+2. It compares the input with the recovery phrase.
 3. It accepts the input only if it exactly matches that phrase.
 4. If it does not match, ordinary phrase authorization fails before `pkexec` is
    invoked.
@@ -81,7 +81,7 @@ policy state.
 ## What Package Purge Does Not Remove
 
 Package purge does not remove user-owned GUI state outside the package, including
-the per-user uninstall phrase under `~/.local/share/blockuntu` or
+the welcome-modal dismissal state under `~/.local/share/blockuntu` or
 `$XDG_DATA_HOME/blockuntu`.
 
 Package purge also does not remove stale development Native Messaging manifests

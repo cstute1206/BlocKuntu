@@ -47,6 +47,10 @@ const BROWSER_EXTENSION_MODE_UNINSTALLING: &str = "uninstalling";
 const UNINSTALL_HANDOFF_SECONDS: i64 = 30;
 const PACKAGE_REMOVAL_LEASE_PATH: &str = "/run/blockuntu/package-removal-lease";
 const INSTALLATION_SERIAL_PATH: &str = "/etc/blockuntu/installation-id";
+const TIER1_EDIT_KEY_PATH: &str = "/etc/blockuntu/tier1-edit-key.txt";
+const SYSTEM_UNINSTALL_RECOVERY_PHRASE_PATH: &str = "/etc/blockuntu/uninstall-recovery.txt";
+const RECOVERY_CREDENTIALS_HIDDEN_MARKER_PATH: &str =
+    "/var/lib/blockuntu/recovery-credentials-hidden";
 const TIER1_EDIT_UNLOCK_UNTIL_KEY: &str = "tier1_edit_unlocked_until";
 const TIER1_EDIT_CREDENTIAL_SALT_KEY: &str = "tier1_edit_credential_salt";
 const TIER1_EDIT_CREDENTIAL_HASH_KEY: &str = "tier1_edit_credential_hash";
@@ -240,6 +244,9 @@ struct ConfigureTier1EditCredentialParams {
 struct SetOperatorWindowRestrictionParams {
     enabled: bool,
 }
+
+#[derive(Debug, Deserialize)]
+struct HideRecoveryCredentialsParams {}
 
 #[derive(Debug, Deserialize)]
 struct Tier1EditStatusParams {
@@ -597,6 +604,10 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
         "set_operator_window_restriction" => {
             let params = parse_params::<SetOperatorWindowRestrictionParams>(params)?;
             set_operator_window_restriction_method(context, params)
+        }
+        "hide_recovery_credentials" => {
+            let params = parse_params::<HideRecoveryCredentialsParams>(params)?;
+            hide_recovery_credentials_method(context, params)
         }
         "tier1_edit_status" => {
             let params = parse_params::<Tier1EditStatusParams>(params)?;
@@ -2221,11 +2232,9 @@ fn set_operator_window_restriction_method(
 ) -> Result<Value> {
     let now = Utc::now();
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    if tier1_edit_credential_configured(&core)?
-        && !tier1_edit_window_active(&core, now.fixed_offset())?
-    {
-        return Err(DaemonError::InvalidRequest(
-            "Unlock Tier 1 edits before changing the Sunday restriction".to_string(),
+    if !params.enabled && !operator_window_open(now.fixed_offset()) {
+        return Err(operator_window_closed_error(
+            "Deactivating the Sunday restriction",
         ));
     }
     core.database().set_service_state(
@@ -2244,6 +2253,34 @@ fn set_operator_window_restriction_method(
         now,
     )?;
     Ok(json!({ "enabled": params.enabled }))
+}
+
+fn hide_recovery_credentials_method(
+    context: &RpcContext,
+    _params: HideRecoveryCredentialsParams,
+) -> Result<Value> {
+    for path in [TIER1_EDIT_KEY_PATH, SYSTEM_UNINSTALL_RECOVERY_PHRASE_PATH] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    fs::create_dir_all("/var/lib/blockuntu")?;
+    fs::write(RECOVERY_CREDENTIALS_HIDDEN_MARKER_PATH, b"hidden\n")?;
+    let now = Utc::now();
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    core.database()
+        .set_service_state(TIER1_EDIT_CREDENTIAL_SALT_KEY, "", now)?;
+    core.database()
+        .set_service_state(TIER1_EDIT_CREDENTIAL_HASH_KEY, "", now)?;
+    core.database().record_event(
+        "recovery_credentials_hidden",
+        Some("protected_changes"),
+        Some("Removed /etc/blockuntu recovery credentials at the user's request"),
+        now,
+    )?;
+    Ok(json!({ "hidden": true }))
 }
 
 fn tier1_edit_status_method(context: &RpcContext, params: Tier1EditStatusParams) -> Result<Value> {
@@ -3131,34 +3168,48 @@ fn operator_window_restriction_enabled(core: &FocusCore) -> Result<bool> {
 }
 
 fn tier1_edit_credential_configured(core: &FocusCore) -> Result<bool> {
-    Ok(core
+    if core
         .database()
         .service_state(TIER1_EDIT_CREDENTIAL_SALT_KEY)?
-        .is_some()
+        .is_some_and(|value| !value.is_empty())
         && core
             .database()
             .service_state(TIER1_EDIT_CREDENTIAL_HASH_KEY)?
-            .is_some())
+            .is_some_and(|value| !value.is_empty())
+    {
+        return Ok(true);
+    }
+    Ok(read_tier1_edit_key()?.is_some())
 }
 
 fn tier1_edit_credential_matches(core: &FocusCore, candidate: &str) -> Result<bool> {
     let Some(salt) = core
         .database()
         .service_state(TIER1_EDIT_CREDENTIAL_SALT_KEY)?
+        .filter(|value| !value.is_empty())
     else {
-        return Err(DaemonError::InvalidRequest(
-            "Tier 1 credential has not been configured".to_string(),
-        ));
+        return Ok(read_tier1_edit_key()?.is_some_and(|key| key == candidate));
     };
     let Some(expected_hash) = core
         .database()
         .service_state(TIER1_EDIT_CREDENTIAL_HASH_KEY)?
+        .filter(|value| !value.is_empty())
     else {
-        return Err(DaemonError::InvalidRequest(
-            "Tier 1 credential has not been configured".to_string(),
-        ));
+        return Ok(read_tier1_edit_key()?.is_some_and(|key| key == candidate));
     };
     Ok(tier1_edit_credential_hash(&salt, candidate) == expected_hash)
+}
+
+fn read_tier1_edit_key() -> Result<Option<String>> {
+    match fs::read_to_string(TIER1_EDIT_KEY_PATH) {
+        Ok(contents) => Ok(contents
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn random_credential_salt() -> Result<String> {
@@ -5193,47 +5244,6 @@ mod tests {
             "Sunday 20:00-23:59"
         );
         assert_eq!(status_response["result"]["operator_window_open"], true);
-    }
-
-    #[test]
-    fn daemon_owned_tier1_credential_is_configured_once_and_allows_any_time_by_default() {
-        let context = rpc_context();
-        let configure = json!({
-            "jsonrpc": "2.0",
-            "id": 129,
-            "method": "configure_tier1_edit_credential",
-            "params": { "phrase": "a secure tier one credential" }
-        });
-        let configure_response: Value = serde_json::from_slice(&handle_payload(
-            &context,
-            &serde_json::to_vec(&configure).unwrap(),
-        ))
-        .expect("response should parse");
-        assert_eq!(configure_response["result"]["configured"], true);
-
-        let unlock = json!({
-            "jsonrpc": "2.0",
-            "id": 130,
-            "method": "unlock_tier1_edit",
-            "params": {
-                "phrase": "a secure tier one credential",
-                "now": "2026-05-22T10:00:00+02:00"
-            }
-        });
-        let unlock_response: Value = serde_json::from_slice(&handle_payload(
-            &context,
-            &serde_json::to_vec(&unlock).unwrap(),
-        ))
-        .expect("response should parse");
-        assert_eq!(unlock_response["result"]["active"], true);
-        assert_eq!(
-            unlock_response["result"]["operator_window_restriction_enabled"],
-            false
-        );
-        assert_eq!(
-            unlock_response["result"]["operator_window_label"],
-            "Any time"
-        );
     }
 
     #[test]

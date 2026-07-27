@@ -43,34 +43,25 @@
     installationSerial: string | null;
     buildNumber: string | null;
     uninstallPhraseLoading: boolean;
-    uninstallPhraseConfiguredState: boolean;
-    uninstallPhraseSetupInput?: string;
-    uninstallPhraseSetupConfirmation?: string;
-    uninstallPhraseConfiguring: boolean;
     uninstallPhraseInput?: string;
     uninstallRunning: boolean;
     uninstallResult: UninstallResult | null;
     uninstallPhraseError: string | null;
     tier1EditPhraseInput?: string;
     tier1EditUnlocking: boolean;
-    tier1EditUnlocked: boolean;
     tier1EditUnlockedUntil: string | null;
     operatorWindowOpen: boolean;
     operatorWindowLabel: string;
     operatorWindowRestrictionEnabled: boolean;
     tier1EditCredentialConfigured: boolean;
     tier1EditMessage: string | null;
-    tier1EditCredentialSetupInput?: string;
-    tier1EditCredentialSetupConfirmation?: string;
     policyExportRunning: boolean;
     policyImportRunning: boolean;
     policyTransferMessage: string | null;
     policyTransferError: string | null;
     onRefreshHealth: () => void | Promise<void>;
     onRunUninstallBlockuntu: () => void | Promise<void>;
-    onConfigureUninstallPhrase: () => void | Promise<void>;
     onUnlockTier1Edit: () => void | Promise<void>;
-    onConfigureTier1Credential: () => void | Promise<void>;
     onUpdateOperatorWindowRestriction: (enabled: boolean) => void | Promise<void>;
     onExportPolicyToml: () => void | Promise<void>;
     onImportPolicyToml: () => void | Promise<void>;
@@ -99,34 +90,25 @@
     installationSerial,
     buildNumber,
     uninstallPhraseLoading,
-    uninstallPhraseConfiguredState,
-    uninstallPhraseSetupInput = $bindable(""),
-    uninstallPhraseSetupConfirmation = $bindable(""),
-    uninstallPhraseConfiguring,
     uninstallPhraseInput = $bindable(""),
     uninstallRunning,
     uninstallResult,
     uninstallPhraseError,
     tier1EditPhraseInput = $bindable(""),
     tier1EditUnlocking,
-    tier1EditUnlocked,
     tier1EditUnlockedUntil,
     operatorWindowOpen,
     operatorWindowLabel,
     operatorWindowRestrictionEnabled,
     tier1EditCredentialConfigured,
     tier1EditMessage,
-    tier1EditCredentialSetupInput = $bindable(""),
-    tier1EditCredentialSetupConfirmation = $bindable(""),
     policyExportRunning,
     policyImportRunning,
     policyTransferMessage,
     policyTransferError,
     onRefreshHealth,
     onRunUninstallBlockuntu,
-    onConfigureUninstallPhrase,
     onUnlockTier1Edit,
-    onConfigureTier1Credential,
     onUpdateOperatorWindowRestriction,
     onExportPolicyToml,
     onImportPolicyToml,
@@ -149,24 +131,10 @@
   let warnHealthCount = $derived(healthChecks.filter((check) => check.state === "warn").length);
   let errorHealthCount = $derived(healthChecks.filter((check) => check.state === "error").length);
   let canRunUninstall = $derived(
-    Boolean(uninstallPhraseConfiguredState && uninstallPhraseInput.trim() && !uninstallPhraseLoading)
-  );
-  let canConfigureUninstallPhrase = $derived(
-    Boolean(
-      !uninstallPhraseConfiguredState &&
-        uninstallPhraseSetupInput.trim().length >= 16 &&
-        uninstallPhraseSetupInput === uninstallPhraseSetupConfirmation
-    )
+    Boolean(uninstallPhraseInput.trim() && !uninstallPhraseLoading)
   );
   let canUnlockTier1Edit = $derived(
     Boolean(tier1EditCredentialConfigured && operatorWindowOpen && tier1EditPhraseInput.trim())
-  );
-  let canConfigureTier1Edit = $derived(
-    Boolean(
-      !tier1EditCredentialConfigured &&
-        tier1EditCredentialSetupInput.trim().length >= 16 &&
-        tier1EditCredentialSetupInput === tier1EditCredentialSetupConfirmation
-    )
   );
   let policyActionRunning = $derived(policyExportRunning || policyImportRunning);
   let protectionState = $derived(
@@ -317,10 +285,6 @@
               <span class="health-count" data-state="warn"><AlertTriangle size={15} aria-hidden="true" />{warnHealthCount}</span>
               <span class="health-count" data-state="error"><XCircle size={15} aria-hidden="true" />{errorHealthCount}</span>
             </div>
-            <div class="status-list installation-info">
-              <div class="status-row"><span>Build</span><small>{buildNumber ?? "Unavailable"}</small></div>
-              <div class="status-row"><span>Installation serial</span><small>{installationSerial ?? "Unavailable"}</small></div>
-            </div>
             <div class="health-grid">
               {#each healthChecks as check (check.key)}
                 {@const HealthIcon = checkIcon(check)}
@@ -332,6 +296,10 @@
               {:else}
                 <p class="empty-state">No health checks available. Refresh after the daemon starts.</p>
               {/each}
+            </div>
+            <div class="status-list installation-info">
+              <div class="status-row"><span>Build</span><small>{buildNumber ?? "Unavailable"}</small></div>
+              <div class="status-row"><span>Installation serial</span><small>{installationSerial ?? "Unavailable"}</small></div>
             </div>
           </section>
         {:else if activeSection === "enforcement"}
@@ -363,35 +331,17 @@
               <div class="status-row"><span>Allowed time</span><small>{operatorWindowLabel}</small></div>
               <div class="status-row"><span>Edit unlock</span><small>{protectionState}</small></div>
             </div>
-            <label class="preference-row"><span><strong>Sunday restriction</strong><small>Restrict Tier 1 edits and uninstall to Sundays from 20:00 to 23:59.</small></span><input type="checkbox" checked={operatorWindowRestrictionEnabled} disabled={tier1EditCredentialConfigured && !tier1EditUnlocked} onchange={(event) => onUpdateOperatorWindowRestriction((event.currentTarget as HTMLInputElement).checked)} /></label>
-            {#if !tier1EditCredentialConfigured}
-              <div class="tier1-edit-form admin-action-form">
-                <label><span>Set Tier 1 credential</span><input type="password" bind:value={tier1EditCredentialSetupInput} autocomplete="new-password" placeholder="At least 16 characters" spellcheck="false" /></label>
-                <label><span>Confirm credential</span><input type="password" bind:value={tier1EditCredentialSetupConfirmation} autocomplete="new-password" placeholder="Repeat the credential" spellcheck="false" /></label>
-                <button class="primary" onclick={onConfigureTier1Credential} disabled={tier1EditUnlocking || !canConfigureTier1Edit}><KeyRound size={17} aria-hidden="true" /><span>{tier1EditUnlocking ? "Saving" : "Set credential"}</span></button>
-              </div>
-              <p class="settings-note">This credential is stored by the daemon and is never displayed again. Save it somewhere secure.</p>
-            {:else}
-              <div class="tier1-edit-form admin-action-form">
-                <label><span>Tier 1 credential</span><input type="password" bind:value={tier1EditPhraseInput} autocomplete="current-password" placeholder="Enter the Tier 1 credential" spellcheck="false" /></label>
-                <button class="primary" onclick={onUnlockTier1Edit} disabled={tier1EditUnlocking || !canUnlockTier1Edit}><KeyRound size={17} aria-hidden="true" /><span>{tier1EditUnlocking ? "Unlocking" : "Unlock 5 min"}</span></button>
-              </div>
-            {/if}
+            <label class="preference-row"><span><strong>Sunday restriction</strong><small>Restrict Tier 1 edits and uninstall to Sundays from 20:00 to 23:59. It can only be turned off during that window.</small></span><input type="checkbox" checked={operatorWindowRestrictionEnabled} disabled={operatorWindowRestrictionEnabled && !operatorWindowOpen} onchange={(event) => onUpdateOperatorWindowRestriction((event.currentTarget as HTMLInputElement).checked)} /></label>
+            <div class="tier1-edit-form admin-action-form">
+              <label><span>Tier 1 edit key</span><input type="password" bind:value={tier1EditPhraseInput} autocomplete="current-password" placeholder="Enter the Tier 1 edit key" spellcheck="false" /></label>
+              <button class="primary" onclick={onUnlockTier1Edit} disabled={tier1EditUnlocking || !canUnlockTier1Edit}><KeyRound size={17} aria-hidden="true" /><span>{tier1EditUnlocking ? "Unlocking" : "Unlock 5 min"}</span></button>
+            </div>
             {#if tier1EditMessage}<p class="result-text">{tier1EditMessage}</p>{/if}
             <div class="button-row compact-row settings-action-row"><button class="secondary" onclick={onShowFirstRunOverview}>Show welcome modal</button></div>
-            {#if !uninstallPhraseConfiguredState}
-              <div class="uninstall-form admin-action-form">
-                <label><span>Set uninstall phrase</span><input type="password" bind:value={uninstallPhraseSetupInput} autocomplete="new-password" placeholder="At least 16 characters" spellcheck="false" /></label>
-                <label><span>Confirm uninstall phrase</span><input type="password" bind:value={uninstallPhraseSetupConfirmation} autocomplete="new-password" placeholder="Repeat the phrase" spellcheck="false" /></label>
-                <button class="secondary" onclick={onConfigureUninstallPhrase} disabled={uninstallPhraseConfiguring || !canConfigureUninstallPhrase}><KeyRound size={17} aria-hidden="true" /><span>{uninstallPhraseConfiguring ? "Saving" : "Set uninstall phrase"}</span></button>
-              </div>
-              <p class="settings-note">This phrase is stored only for this desktop user and is never displayed again. Save it somewhere secure.</p>
-            {:else}
-              <div class="uninstall-form admin-action-form">
-                <label><span>Uninstall phrase</span><input type="password" bind:value={uninstallPhraseInput} autocomplete="current-password" placeholder="Enter your uninstall phrase" spellcheck="false" /></label>
-                <button class="secondary danger-action" onclick={onRunUninstallBlockuntu} disabled={uninstallRunning || !canRunUninstall}><Trash2 size={17} aria-hidden="true" /><span>{uninstallRunning ? "Removing" : "Uninstall BlocKuntu"}</span></button>
-              </div>
-            {/if}
+            <div class="uninstall-form admin-action-form">
+              <label><span>Recovery uninstall phrase</span><input type="password" bind:value={uninstallPhraseInput} autocomplete="current-password" placeholder="Enter the recovery uninstall phrase" spellcheck="false" /></label>
+              <button class="secondary danger-action" onclick={onRunUninstallBlockuntu} disabled={uninstallRunning || !canRunUninstall}><Trash2 size={17} aria-hidden="true" /><span>{uninstallRunning ? "Removing" : "Uninstall BlocKuntu"}</span></button>
+            </div>
             {#if uninstallPhraseError}<p class="result-text danger-text">{uninstallPhraseError}</p>{/if}
             {#if uninstallResult}<p class="result-text">{uninstallResult.detail}</p>{/if}
           </section>
@@ -399,7 +349,7 @@
           <section class="settings-panel">
             <div class="settings-panel-header"><div><h3>Notifications</h3><p>Choose which enforcement events BlocKuntu sends to the desktop.</p></div></div>
             {#if notificationPreferences}
-              <div class="button-row compact-row settings-action-row"><button class="secondary" onclick={() => selectAllNotificationOptions(true)} disabled={notificationPreferencesSaving}>Select all</button><button class="secondary" onclick={() => selectAllNotificationOptions(false)} disabled={notificationPreferencesSaving}>Unselect all</button></div>
+              <div class="button-row compact-row settings-action-row notification-selection-actions"><button class="secondary" onclick={() => selectAllNotificationOptions(true)} disabled={notificationPreferencesSaving}>Select all</button><button class="secondary" onclick={() => selectAllNotificationOptions(false)} disabled={notificationPreferencesSaving}>Unselect all</button></div>
               <div class="preference-list">
                 <label class="preference-row"><span><strong>Desktop notifications</strong><small>Master switch for every notification below.</small></span><input type="checkbox" checked={notificationPreferences.enabled} disabled={notificationPreferencesSaving} onchange={(event) => updateNotificationBoolean("enabled", event)} /></label>
                 <label class="preference-row"><span><strong>Website blocked</strong><small>Notify when the browser integration blocks a website.</small></span><input type="checkbox" checked={notificationPreferences.website_blocked} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("website_blocked", event)} /></label>

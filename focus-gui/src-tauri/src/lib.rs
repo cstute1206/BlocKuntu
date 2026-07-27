@@ -1,6 +1,5 @@
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -64,7 +63,8 @@ const CHROME_SYSTEM_NATIVE_HOST_MANIFEST: &str =
 const CHROMIUM_SYSTEM_NATIVE_HOST_MANIFEST: &str =
     "/etc/chromium/native-messaging-hosts/blockuntu_native.json";
 const UNSUPPORTED_BROWSER_RULE_ID: &str = "unsupported-browsers-hard";
-const UNINSTALL_PHRASE_FILE: &str = "uninstall-confirmation.txt";
+const SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE: &str = "/etc/blockuntu/uninstall-recovery.txt";
+const TIER1_EDIT_KEY_FILE: &str = "/etc/blockuntu/tier1-edit-key.txt";
 const INSTALLATION_SERIAL_FILE: &str = "/etc/blockuntu/installation-id";
 const BUILD_NUMBER: &str = match option_env!("BLOCKUNTU_BUILD_NUMBER") {
     Some(value) => value,
@@ -97,8 +97,6 @@ enum GuiError {
     Rpc(String),
     #[error("daemon returned an invalid response")]
     InvalidRpcResponse,
-    #[error("HOME is not set; cannot store the uninstall confirmation phrase")]
-    HomeNotSet,
     #[error("uninstall confirmation phrase does not match")]
     InvalidUninstallPhrase,
     #[error("BlocKuntu installation serial is missing or invalid")]
@@ -164,6 +162,12 @@ struct UnlockRequest {
 struct InstallationInfo {
     installation_serial: Option<String>,
     build_number: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecoveryCredentials {
+    uninstall_phrase: String,
+    tier1_edit_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,26 +311,11 @@ fn request_unlock(request: UnlockRequest, socket_path: Option<String>) -> Result
 }
 
 #[tauri::command]
-fn uninstall_phrase_configured() -> Result<bool, GuiError> {
-    Ok(load_uninstall_phrase().is_ok())
-}
-
-#[tauri::command]
-fn configure_uninstall_phrase(phrase: String) -> Result<(), GuiError> {
-    let phrase = phrase.trim();
-    if phrase.chars().count() < 16 {
-        return Err(GuiError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "uninstall phrase must contain at least 16 characters",
-        )));
-    }
-    if load_uninstall_phrase().is_ok() {
-        return Err(GuiError::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "uninstall phrase is already configured",
-        )));
-    }
-    write_uninstall_phrase(&uninstall_phrase_path()?, phrase)
+fn recovery_credentials() -> Result<RecoveryCredentials, GuiError> {
+    Ok(RecoveryCredentials {
+        uninstall_phrase: read_recovery_credential(SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE)?,
+        tier1_edit_key: read_recovery_credential(TIER1_EDIT_KEY_FILE)?,
+    })
 }
 
 #[tauri::command]
@@ -525,13 +514,12 @@ fn load_installation_serial_from_path(path: &Path) -> Result<String, GuiError> {
     Ok(serial)
 }
 
-fn load_uninstall_phrase() -> Result<String, GuiError> {
-    let path = uninstall_phrase_path()?;
-    let phrase = fs::read_to_string(&path)?.trim().to_string();
+fn read_recovery_credential(path: &str) -> Result<String, GuiError> {
+    let phrase = fs::read_to_string(path)?.trim().to_string();
     if phrase.is_empty() {
         return Err(GuiError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "uninstall phrase is not configured",
+            format!("recovery credential is empty: {path}"),
         )));
     }
     Ok(phrase)
@@ -542,49 +530,7 @@ fn uninstall_phrase_matches(candidate: &str) -> Result<bool, GuiError> {
         return Ok(false);
     }
 
-    Ok(candidate == load_uninstall_phrase()?.trim())
-}
-
-fn write_uninstall_phrase(path: &Path, phrase: &str) -> Result<(), GuiError> {
-    let parent = path.parent().ok_or_else(|| {
-        GuiError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("uninstall phrase path has no parent: {}", path.display()),
-        ))
-    })?;
-
-    fs::create_dir_all(parent)?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(phrase.as_bytes())?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-fn uninstall_phrase_path() -> Result<PathBuf, GuiError> {
-    Ok(blockuntu_data_dir()?.join(UNINSTALL_PHRASE_FILE))
-}
-
-fn blockuntu_data_dir() -> Result<PathBuf, GuiError> {
-    if let Some(path) = std::env::var_os("XDG_DATA_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        return Ok(path.join("blockuntu"));
-    }
-
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .map(|home| home.join(".local/share/blockuntu"))
-        .ok_or(GuiError::HomeNotSet)
+    Ok(candidate == read_recovery_credential(SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE)?.trim())
 }
 
 fn debian_package_installed() -> Result<bool, GuiError> {
@@ -1616,8 +1562,7 @@ pub fn run() {
             evaluate_url,
             request_unlock,
             installation_info,
-            uninstall_phrase_configured,
-            configure_uninstall_phrase,
+            recovery_credentials,
             uninstall_blockuntu,
             system_health
         ])
