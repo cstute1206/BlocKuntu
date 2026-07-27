@@ -351,18 +351,8 @@ log "creating blockuntu socket group and adding ${TARGET_USER}"
 sudo groupadd --system blockuntu 2>/dev/null || true
 sudo usermod -aG blockuntu "${TARGET_USER}"
 
-if [[ ! -s /etc/blockuntu/tier1-edit-key.txt ]]; then
-  log "creating Tier 1 edit key"
-  random_hex="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
-  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
-  temp_key="$(mktemp)"
-  printf 'BLOCKUNTU-TIER1-EDIT-%s\n' "${chunks}" >"${temp_key}"
-  sudo install -d -o root -g root -m 0755 /etc/blockuntu
-  sudo install -o root -g blockuntu -m 0640 "${temp_key}" /etc/blockuntu/tier1-edit-key.txt
-  rm -f "${temp_key}"
-else
-  log "preserving existing /etc/blockuntu/tier1-edit-key.txt"
-fi
+log "removing legacy /etc/blockuntu recovery credentials"
+sudo rm -f /etc/blockuntu/uninstall-recovery.txt /etc/blockuntu/tier1-edit-key.txt
 
 log "installing daemon and native host binaries"
 sudo install -Dm755 focusd/target/release/blockuntud /usr/local/bin/blockuntud
@@ -522,9 +512,6 @@ Important next steps:
 Closing the GUI window keeps BlocKuntu available from the tray icon. On vanilla
 GNOME, install or enable AppIndicator/KStatusNotifierItem support if the tray
 icon is not visible.
-
-The Tier 1 site-list edit key is stored at:
-  /etc/blockuntu/tier1-edit-key.txt
 
 Browser policy repair is deferred until the first extension heartbeat in:
   /etc/systemd/system/blockuntu.service.d/90-defer-browser-policy.conf

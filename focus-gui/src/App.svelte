@@ -25,6 +25,8 @@
   import {
     installationInfo,
     cancelDetox,
+    configureUninstallPhrase,
+    configureTier1EditCredential,
     configSnapshot,
     daemonStatus,
     deleteAppRule,
@@ -40,13 +42,13 @@
     runningApps as fetchRunningApps,
     requestUnlock,
     scheduleActivitySummary,
+    setOperatorWindowRestriction,
     setNotificationPreferences,
     startDetox,
     systemHealth,
-    tier1EditKey,
     tier1EditStatus,
     uninstallBlockuntu,
-    uninstallConfirmationPhrase,
+    uninstallPhraseConfigured,
     unlockTier1Edit,
     upsertAllowance,
     upsertAppRule,
@@ -76,7 +78,6 @@
     normalizeRuleDraft,
     normalizeScheduleDraft,
     ruleIsActive,
-    saveApplicationUiPreferences,
     saveLastSelectedView
   } from "./lib/ui";
   import type { ApplicationUiPreferences } from "./lib/ui";
@@ -94,7 +95,6 @@
     PolicyFileResult,
     RunningApp,
     ScheduleActivitySummary,
-    WindowDetectionStatus,
     Rule,
     Schedule,
     SystemHealth,
@@ -114,7 +114,7 @@
   }
 
   const navItems: Array<{ id: ViewId; label: string; icon: Icon }> = [
-    { id: "overview", label: "Dashboard", icon: LayoutDashboard },
+    { id: "overview", label: "Overview", icon: LayoutDashboard },
     { id: "blocks", label: "Websites", icon: ListChecks },
     { id: "apps", label: "Applications", icon: Gamepad2 },
     { id: "detox", label: "Detox", icon: Timer },
@@ -131,7 +131,6 @@
   let logStatistics = $state<LogSummary | null>(null);
   let scheduleActivityStatistics = $state<ScheduleActivitySummary | null>(null);
   let runningApps = $state<RunningApp[]>([]);
-  let runningAppsWindowDetection = $state<WindowDetectionStatus | null>(null);
   let runningAppsLoading = $state(false);
   let runningAppsError: string | null = $state(null);
   let runningAppsLoadedOnce = $state(false);
@@ -170,6 +169,8 @@
 
   let selectedScheduleId = $state<string | null>(null);
   let scheduleDraft = $state<Schedule | null>(null);
+  let scheduleSiteRuleIds = $state<string[]>([]);
+  let scheduleAppRuleIds = $state<string[]>([]);
   let scheduleSaving = $state(false);
   let scheduleMessage: string | null = $state(null);
 
@@ -182,19 +183,23 @@
   let detoxCancellingId: string | null = $state(null);
   let detoxMessage: string | null = $state(null);
 
-  let uninstallPhrase: string | null = $state(null);
   let installationSerial: string | null = $state(null);
   let buildNumber: string | null = $state(null);
   let uninstallPhraseLoading = $state(false);
+  let uninstallPhraseConfiguredState = $state(false);
+  let uninstallPhraseSetupInput = $state("");
+  let uninstallPhraseSetupConfirmation = $state("");
+  let uninstallPhraseConfiguring = $state(false);
   let uninstallPhraseError: string | null = $state(null);
   let uninstallPhraseInput = $state("");
   let uninstallRunning = $state(false);
   let uninstallResult: UninstallResult | null = $state(null);
 
-  let tier1EditKeyValue: string | null = $state(null);
-  let tier1EditKeyLoading = $state(false);
-  let tier1EditKeyError: string | null = $state(null);
   let tier1EditPhraseInput = $state("");
+  let tier1EditCredentialSetupInput = $state("");
+  let tier1EditCredentialSetupConfirmation = $state("");
+  let tier1EditCredentialConfigured = $state(false);
+  let operatorWindowRestrictionEnabled = $state(false);
   let tier1EditUnlocking = $state(false);
   let tier1EditUnlockedUntil: string | null = $state(null);
   let operatorWindowOpenFromDaemon: boolean | null = $state(null);
@@ -210,13 +215,17 @@
 
   let daemonOnline = $derived(status?.status === "ok");
   let activeViewTitle = $derived(
-    navItems.find((item) => item.id === activeView)?.label ?? "Dashboard"
+    navItems.find((item) => item.id === activeView)?.label ?? "Overview"
   );
   let tier1EditUnlocked = $derived(
     Boolean(tier1EditUnlockedUntil && Date.parse(tier1EditUnlockedUntil) > nowMs)
   );
-  let operatorWindowOpen = $derived(operatorWindowOpenFromDaemon ?? operatorWindowOpenAt(nowMs));
-  let operatorWindowLabel = $derived(operatorWindowLabelFromDaemon ?? OPERATOR_WINDOW_LABEL);
+  let operatorWindowOpen = $derived(
+    operatorWindowOpenFromDaemon ?? (!operatorWindowRestrictionEnabled || operatorWindowOpenAt(nowMs))
+  );
+  let operatorWindowLabel = $derived(
+    operatorWindowLabelFromDaemon ?? (operatorWindowRestrictionEnabled ? OPERATOR_WINDOW_LABEL : "Any time")
+  );
   let activeDetoxSessions = $derived(
     detoxSessionList.filter(
       (session) =>
@@ -247,7 +256,6 @@
     showFirstRunOverview = !firstRunOverviewDismissed();
     void loadUninstallPhrase();
     void loadInstallationInfo();
-    void loadTier1EditKey();
     void loadNotificationPreferences();
     void refreshAll();
     let disposed = false;
@@ -473,9 +481,13 @@
         : null;
       operatorWindowOpenFromDaemon = tier1EditStatusResult.value.operator_window_open ?? null;
       operatorWindowLabelFromDaemon = tier1EditStatusResult.value.operator_window_label ?? null;
+      tier1EditCredentialConfigured = tier1EditStatusResult.value.credential_configured ?? false;
+      operatorWindowRestrictionEnabled =
+        tier1EditStatusResult.value.operator_window_restriction_enabled ?? false;
     } else {
       operatorWindowOpenFromDaemon = null;
       operatorWindowLabelFromDaemon = null;
+      tier1EditCredentialConfigured = false;
     }
   }
 
@@ -490,7 +502,6 @@
     try {
       const response = await fetchRunningApps(socketArg());
       runningApps = response.apps;
-      runningAppsWindowDetection = response.window_detection;
       runningAppsError = null;
     } catch (error) {
       runningAppsError = formatError(error);
@@ -527,9 +538,9 @@
         snapshot.schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
       if (!selectedScheduleSnapshot) {
         selectedScheduleId = snapshot.schedules[0]?.id ?? null;
-        scheduleDraft = snapshot.schedules[0] ? cloneSchedule(snapshot.schedules[0]) : null;
+        setScheduleDraft(snapshot.schedules[0] ?? null, snapshot);
       } else {
-        scheduleDraft = cloneSchedule(selectedScheduleSnapshot);
+        setScheduleDraft(selectedScheduleSnapshot, snapshot);
       }
     }
 
@@ -658,7 +669,11 @@
       snapshot.schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
     if (!savedSchedule) return true;
 
-    return !sameDraft(normalizeScheduleDraft(scheduleDraft), normalizeScheduleDraft(savedSchedule));
+    return (
+      !sameDraft(normalizeScheduleDraft(scheduleDraft), normalizeScheduleDraft(savedSchedule)) ||
+      !sameIdList(scheduleSiteRuleIds, scheduleTargetsFor(savedSchedule.id, snapshot.rules)) ||
+      !sameIdList(scheduleAppRuleIds, scheduleTargetsFor(savedSchedule.id, snapshot.app_rules))
+    );
   }
 
   function sameDraft(left: unknown, right: unknown): boolean {
@@ -682,17 +697,26 @@
   }
 
   async function runUrlCheck(): Promise<void> {
+    const normalizedUrl = normalizeProbeUrl(testUrl);
+    if (!normalizedUrl) return;
+
     urlChecking = true;
     urlDecision = null;
     lastError = null;
     try {
-      urlDecision = await evaluateUrl(testUrl, socketArg());
-      await refreshLogStatistics();
+      testUrl = normalizedUrl;
+      urlDecision = await evaluateUrl(normalizedUrl, socketArg(), true);
     } catch (error) {
       lastError = formatError(error);
     } finally {
       urlChecking = false;
     }
+  }
+
+  function normalizeProbeUrl(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    return /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   }
 
   async function runUnlock(): Promise<void> {
@@ -796,12 +820,32 @@
     uninstallPhraseLoading = true;
     uninstallPhraseError = null;
     try {
-      uninstallPhrase = (await uninstallConfirmationPhrase()).phrase;
+      uninstallPhraseConfiguredState = await uninstallPhraseConfigured();
     } catch (error) {
-      uninstallPhrase = null;
       uninstallPhraseError = formatError(error);
     } finally {
       uninstallPhraseLoading = false;
+    }
+  }
+
+  async function configureUninstallCredential(): Promise<void> {
+    if (
+      !uninstallPhraseSetupInput.trim() ||
+      uninstallPhraseSetupInput !== uninstallPhraseSetupConfirmation
+    ) {
+      return;
+    }
+    uninstallPhraseConfiguring = true;
+    uninstallPhraseError = null;
+    try {
+      await configureUninstallPhrase(uninstallPhraseSetupInput);
+      uninstallPhraseConfiguredState = true;
+      uninstallPhraseSetupInput = "";
+      uninstallPhraseSetupConfirmation = "";
+    } catch (error) {
+      uninstallPhraseError = formatError(error);
+    } finally {
+      uninstallPhraseConfiguring = false;
     }
   }
 
@@ -816,21 +860,8 @@
     }
   }
 
-  async function loadTier1EditKey(): Promise<void> {
-    tier1EditKeyLoading = true;
-    tier1EditKeyError = null;
-    try {
-      tier1EditKeyValue = (await tier1EditKey()).key;
-    } catch (error) {
-      tier1EditKeyValue = null;
-      tier1EditKeyError = formatError(error);
-    } finally {
-      tier1EditKeyLoading = false;
-    }
-  }
-
   async function runUnlockTier1Edit(): Promise<void> {
-    if (!tier1EditPhraseInput.trim() || !operatorWindowOpen) return;
+    if (!tier1EditPhraseInput.trim()) return;
     tier1EditUnlocking = true;
     tier1EditMessage = null;
     lastError = null;
@@ -846,6 +877,41 @@
       lastError = formatError(error);
     } finally {
       tier1EditUnlocking = false;
+    }
+  }
+
+  async function configureTier1Credential(): Promise<void> {
+    if (
+      !tier1EditCredentialSetupInput.trim() ||
+      tier1EditCredentialSetupInput !== tier1EditCredentialSetupConfirmation
+    ) {
+      return;
+    }
+    tier1EditUnlocking = true;
+    tier1EditMessage = null;
+    lastError = null;
+    try {
+      await configureTier1EditCredential(tier1EditCredentialSetupInput, socketArg());
+      tier1EditCredentialConfigured = true;
+      tier1EditCredentialSetupInput = "";
+      tier1EditCredentialSetupConfirmation = "";
+      tier1EditMessage = "Tier 1 credential configured. Keep it somewhere secure.";
+    } catch (error) {
+      lastError = formatError(error);
+    } finally {
+      tier1EditUnlocking = false;
+    }
+  }
+
+  async function updateOperatorWindowRestriction(enabled: boolean): Promise<void> {
+    try {
+      await setOperatorWindowRestriction(enabled, socketArg());
+      operatorWindowRestrictionEnabled = enabled;
+      operatorWindowOpenFromDaemon = enabled ? null : true;
+      operatorWindowLabelFromDaemon = enabled ? null : "Any time";
+      await refreshRuntime({ silent: true });
+    } catch (error) {
+      lastError = formatError(error);
     }
   }
 
@@ -942,25 +1008,31 @@
     lastError = null;
     ruleMessage = null;
     try {
+      const normalizedRuleDraft = normalizeRuleDraft(ruleDraft);
+      if (normalizedRuleDraft.patterns.length === 0) {
+        lastError = "Add at least one website pattern before saving.";
+        return;
+      }
+
       const socket = socketArg();
       const savedRule = config?.rules.find((rule) => rule.id === ruleDraft?.id) ?? null;
       const additiveOnlySave = savedRule ? siteRuleSaveIsAdditiveOnly(savedRule, config) : false;
-      if (ruleDraft.tier === "controlled_access" && !additiveOnlySave) {
+      if (normalizedRuleDraft.tier === "controlled_access" && !additiveOnlySave) {
         const allowance = normalizeAllowanceDraft(
-          ruleAllowanceDraft ?? defaultAllowanceForRule(ruleDraft),
-          ruleDraft
+          ruleAllowanceDraft ?? defaultAllowanceForRule(normalizedRuleDraft),
+          normalizedRuleDraft
         );
         const allowanceResponse = await upsertAllowance(allowance, socket);
         config = allowanceResponse.config;
         ruleAllowanceDraft = cloneAllowance(allowance);
-        ruleDraft.allowance_id = allowance.id;
+        normalizedRuleDraft.allowance_id = allowance.id;
       } else if (savedRule && additiveOnlySave) {
-        ruleDraft.allowance_id = savedRule.allowance_id ?? null;
+        normalizedRuleDraft.allowance_id = savedRule.allowance_id ?? null;
       } else {
-        ruleDraft.allowance_id = null;
+        normalizedRuleDraft.allowance_id = null;
       }
 
-      const savedRuleDraft = normalizeRuleDraftForSave(ruleDraft, config);
+      const savedRuleDraft = normalizeRuleDraftForSave(normalizedRuleDraft, config);
       const response = await upsertSiteList(savedRuleDraft, socket);
       config = response.config;
       selectedRuleId = savedRuleDraft.id;
@@ -1116,8 +1188,30 @@
 
   function selectSchedule(schedule: Schedule): void {
     selectedScheduleId = schedule.id;
-    scheduleDraft = cloneSchedule(schedule);
+    setScheduleDraft(schedule);
     scheduleMessage = null;
+  }
+
+  function setScheduleDraft(
+    schedule: Schedule | null,
+    snapshot: ConfigSnapshot | null = config
+  ): void {
+    scheduleDraft = schedule ? cloneSchedule(schedule) : null;
+    scheduleSiteRuleIds = schedule ? scheduleTargetsFor(schedule.id, snapshot?.rules ?? []) : [];
+    scheduleAppRuleIds = schedule ? scheduleTargetsFor(schedule.id, snapshot?.app_rules ?? []) : [];
+  }
+
+  function scheduleTargetsFor(
+    scheduleId: string,
+    rules: Array<Rule | AppRule>
+  ): string[] {
+    return rules
+      .filter((rule) => rule.tier !== "hard" && rule.schedule_ids.includes(scheduleId))
+      .map((rule) => rule.id);
+  }
+
+  function sameIdList(left: string[], right: string[]): boolean {
+    return left.length === right.length && left.every((id) => right.includes(id));
   }
 
   function startNewSchedule(): void {
@@ -1131,6 +1225,8 @@
       name: `Schedule ${index}`,
       windows: [{ weekday: "workdays", start: "09:00", end: "17:00" }]
     };
+    scheduleSiteRuleIds = [];
+    scheduleAppRuleIds = [];
     scheduleMessage = null;
   }
 
@@ -1140,12 +1236,20 @@
     lastError = null;
     scheduleMessage = null;
     try {
-      const response = await upsertSchedule(normalizeScheduleDraft(scheduleDraft), socketArg());
+      const normalizedScheduleDraft = normalizeScheduleDraft(scheduleDraft);
+      const response = await upsertSchedule(
+        normalizedScheduleDraft,
+        socketArg(),
+        scheduleSiteRuleIds,
+        scheduleAppRuleIds
+      );
       config = response.config;
-      selectedScheduleId = scheduleDraft.id.trim();
-      scheduleDraft = cloneSchedule(
+      selectedScheduleId = normalizedScheduleDraft.id;
+      setScheduleDraft(
         response.config.schedules.find((schedule) => schedule.id === selectedScheduleId) ??
-          response.config.schedules[0]
+          response.config.schedules[0] ??
+          null,
+        response.config
       );
       scheduleMessage = "Saved.";
       await refreshLogStatistics();
@@ -1167,7 +1271,7 @@
       const response = await deleteSchedule(scheduleDraft.id, socketArg());
       config = response.config;
       selectedScheduleId = response.config.schedules[0]?.id ?? null;
-      scheduleDraft = response.config.schedules[0] ? cloneSchedule(response.config.schedules[0]) : null;
+      setScheduleDraft(response.config.schedules[0] ?? null, response.config);
       scheduleMessage = "Deleted.";
       await refreshLogStatistics();
     } catch (error) {
@@ -1180,12 +1284,6 @@
   function dismissFirstRunOverview(): void {
     showFirstRunOverview = false;
     markFirstRunOverviewDismissed();
-  }
-
-  function updateApplicationUiPreferences(preferences: ApplicationUiPreferences): void {
-    uiPreferences = preferences;
-    saveApplicationUiPreferences(preferences);
-    configureRuntimeRefresh(preferences.refreshIntervalSeconds);
   }
 
   async function loadNotificationPreferences(): Promise<void> {
@@ -1217,59 +1315,6 @@
     showFirstRunOverview = true;
     closeSettings();
     setActiveView("overview");
-  }
-
-  async function copyDiagnostics(): Promise<void> {
-    const healthSummary = health
-      ? [
-          `Health checked: ${health.checked_at}`,
-          `Socket: ${health.socket_path}`,
-          ...health.checks.map((check) => `[${check.state.toUpperCase()}] ${check.label}: ${check.detail}`)
-        ]
-      : ["Health information is unavailable."];
-    const enforcementSummary = enforcement
-      ? [
-          "",
-          `Enforcement: ${enforcement.enforcement_state}`,
-          `Firefox policy: ${enforcement.firefox_policy.detail}`,
-          `Chrome policy: ${enforcement.chrome_policy.detail}`,
-          `Hosts file: ${enforcement.hosts_file.detail}`
-        ]
-      : [];
-
-    try {
-      await copyText([...healthSummary, ...enforcementSummary].join("\n"));
-    } catch (error) {
-      lastError = formatError(error);
-    }
-  }
-
-  async function copyInstallationSerial(): Promise<void> {
-    if (!installationSerial) return;
-    try {
-      await copyText(installationSerial);
-    } catch (error) {
-      lastError = formatError(error);
-    }
-  }
-
-  async function copyText(value: string): Promise<void> {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(value);
-      return;
-    }
-
-    const textarea = document.createElement("textarea");
-    textarea.value = value;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.append(textarea);
-    textarea.select();
-    const copied = document.execCommand("copy");
-    textarea.remove();
-    if (!copied) {
-      throw new Error("Clipboard access is unavailable.");
-    }
   }
 
 </script>
@@ -1344,7 +1389,6 @@
     {#if activeView === "overview"}
       <OverviewView
         {status}
-        {enforcement}
         {health}
         {config}
         {showFirstRunOverview}
@@ -1355,12 +1399,6 @@
         bind:unlockReason
         {unlockResult}
         {unlocking}
-        {uninstallPhrase}
-        {uninstallPhraseLoading}
-        {uninstallPhraseError}
-        tier1EditKey={tier1EditKeyValue}
-        {tier1EditKeyLoading}
-        {tier1EditKeyError}
         onDismissFirstRunOverview={dismissFirstRunOverview}
         onRunUrlCheck={runUrlCheck}
         onRunUnlock={runUnlock}
@@ -1383,8 +1421,6 @@
       <AppRulesView
         {config}
         {runningApps}
-        runningAppsWindowDetection={runningAppsWindowDetection}
-        {runningAppsLoading}
         {runningAppsError}
         bind:appRuleDraft
         bind:appRuleAllowanceDraft
@@ -1392,10 +1428,7 @@
         {appRuleMessage}
         {activeDetoxAppRuleIds}
         onSelectAppRule={selectAppRule}
-        onStartNewAppRule={startNewAppRule}
-        onStartNewAppRuleFromRunningApp={startNewAppRuleFromRunningApp}
         onAddDetectedMatchers={addDetectedMatchersToDraft}
-        onRefreshRunningApps={() => refreshRunningApps()}
         onSaveAppRuleDraft={saveAppRuleDraft}
         onRemoveAppRuleDraft={removeAppRuleDraft}
       />
@@ -1420,6 +1453,8 @@
       <SchedulesView
         {config}
         bind:scheduleDraft
+        bind:scheduleSiteRuleIds
+        bind:scheduleAppRuleIds
         {scheduleSaving}
         {scheduleMessage}
         onSelectSchedule={selectSchedule}
@@ -1443,37 +1478,43 @@
     <AdminView
         {health}
         {enforcement}
-        runningAppsWindowDetection={runningAppsWindowDetection}
-        applicationUiPreferences={uiPreferences}
         notificationPreferences={notificationPreferenceState}
         {notificationPreferencesSaving}
         {notificationPreferencesError}
         {installationSerial}
         {buildNumber}
         {uninstallPhraseLoading}
+        {uninstallPhraseConfiguredState}
+        bind:uninstallPhraseSetupInput
+        bind:uninstallPhraseSetupConfirmation
+        {uninstallPhraseConfiguring}
         bind:uninstallPhraseInput
         {uninstallRunning}
         {uninstallResult}
         {uninstallPhraseError}
         bind:tier1EditPhraseInput
         {tier1EditUnlocking}
+        {tier1EditUnlocked}
         tier1EditUnlockedUntil={tier1EditUnlockedUntil}
         {operatorWindowOpen}
         {operatorWindowLabel}
+        {operatorWindowRestrictionEnabled}
+        {tier1EditCredentialConfigured}
+        bind:tier1EditCredentialSetupInput
+        bind:tier1EditCredentialSetupConfirmation
         {tier1EditMessage}
-        {tier1EditKeyError}
         {policyExportRunning}
         {policyImportRunning}
         {policyTransferMessage}
         {policyTransferError}
         onRefreshHealth={() => refreshAll()}
-        onCopyDiagnostics={copyDiagnostics}
-        onCopyInstallationSerial={copyInstallationSerial}
         onRunUninstallBlockuntu={runUninstallBlockuntu}
+        onConfigureUninstallPhrase={configureUninstallCredential}
         onUnlockTier1Edit={runUnlockTier1Edit}
+        onConfigureTier1Credential={configureTier1Credential}
+        onUpdateOperatorWindowRestriction={updateOperatorWindowRestriction}
         onExportPolicyToml={runExportPolicyToml}
         onImportPolicyToml={runImportPolicyToml}
-        onUpdateApplicationUiPreferences={updateApplicationUiPreferences}
         onUpdateNotificationPreferences={updateNotificationPreferences}
         onShowFirstRunOverview={showFirstRunOverviewAgain}
         onClose={closeSettings}

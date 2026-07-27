@@ -29,34 +29,11 @@ enforcement or remove package files.
 
 ## Uninstall Phrases
 
-The GUI accepts two generated phrases:
-
-| Phrase                 | Path                                                                                                           | Owner and mode           | Created by                                    | Displayed in GUI |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------ | --------------------------------------------- | ---------------- |
-| First-run phrase       | `$XDG_DATA_HOME/blockuntu/uninstall-confirmation.txt` or `~/.local/share/blockuntu/uninstall-confirmation.txt` | current user, `0600`     | GUI on first read if missing or empty         | Yes              |
-| System recovery phrase | `/etc/blockuntu/uninstall-recovery.txt`                                                                        | `root:blockuntu`, `0640` | Debian package `postinst` if missing or empty | No               |
-
-Both phrases are generated from 24 random bytes from `/dev/urandom` and formatted
-as uppercase hex chunks. The normal first-run phrase starts with
-`BLOCKUNTU-UNINSTALL-`. The system recovery phrase starts with
-`BLOCKUNTU-UNINSTALL-RECOVERY-`.
-
-The recovery phrase is not a hardcoded master password. It is generated on the
-installed system and preserved across package upgrades as long as the file
-already exists.
-
-To read the system recovery phrase:
-
-```bash
-sudo cat /etc/blockuntu/uninstall-recovery.txt
-```
-
-After the desktop user has logged in with `blockuntu` group membership, this may
-also work without `sudo`:
-
-```bash
-cat /etc/blockuntu/uninstall-recovery.txt
-```
+The GUI uses one per-user uninstall phrase at
+`$XDG_DATA_HOME/blockuntu/uninstall-confirmation.txt` (or
+`~/.local/share/blockuntu/uninstall-confirmation.txt`). The user sets it once
+in Settings, it is stored with mode `0600`, and it is never displayed again. No
+system recovery credential is stored in `/etc/blockuntu`.
 
 ## Normal Phrase Validation
 
@@ -64,15 +41,10 @@ For the ordinary uninstall path, the frontend only checks that the uninstall
 input is non-empty. The Tauri backend is the authority:
 
 1. It trims the input.
-2. It compares the input with the per-user first-run phrase.
-3. If that does not match, it reads `/etc/blockuntu/uninstall-recovery.txt`.
-4. It accepts the input if it exactly matches any non-empty line in that file.
-5. If neither phrase matches, ordinary phrase authorization fails before
-   `pkexec` is invoked.
-
-If the recovery phrase file is missing or unreadable to the GUI process, the GUI
-still works with the first-run phrase. Permission errors for the recovery phrase
-are treated as "recovery phrase unavailable", not as a hard GUI failure.
+2. It compares the input with the saved per-user phrase.
+3. It accepts the input only if it exactly matches that phrase.
+4. If it does not match, ordinary phrase authorization fails before `pkexec` is
+   invoked.
 
 ## What Package Purge Removes
 
@@ -109,7 +81,7 @@ policy state.
 ## What Package Purge Does Not Remove
 
 Package purge does not remove user-owned GUI state outside the package, including
-the first-run uninstall phrase under `~/.local/share/blockuntu` or
+the per-user uninstall phrase under `~/.local/share/blockuntu` or
 `$XDG_DATA_HOME/blockuntu`.
 
 Package purge also does not remove stale development Native Messaging manifests

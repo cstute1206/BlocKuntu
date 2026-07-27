@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Local, Timelike, Utc, Weekday};
+use chrono::{DateTime, Utc};
 use focus_core::{emergency_uninstall_code_is_valid, installation_serial_is_valid};
 use notify_rust::{Hint, Urgency};
 use serde::{Deserialize, Serialize};
@@ -65,8 +65,6 @@ const CHROMIUM_SYSTEM_NATIVE_HOST_MANIFEST: &str =
     "/etc/chromium/native-messaging-hosts/blockuntu_native.json";
 const UNSUPPORTED_BROWSER_RULE_ID: &str = "unsupported-browsers-hard";
 const UNINSTALL_PHRASE_FILE: &str = "uninstall-confirmation.txt";
-const SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE: &str = "/etc/blockuntu/uninstall-recovery.txt";
-const TIER1_EDIT_KEY_FILE: &str = "/etc/blockuntu/tier1-edit-key.txt";
 const INSTALLATION_SERIAL_FILE: &str = "/etc/blockuntu/installation-id";
 const BUILD_NUMBER: &str = match option_env!("BLOCKUNTU_BUILD_NUMBER") {
     Some(value) => value,
@@ -78,8 +76,6 @@ const CONFINED_FIREFOX_SETUP_COMMANDS: [&str; 2] = [
     "/bin/blockuntu-setup-confined-firefox",
 ];
 const BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS: u64 = 6;
-const OPERATOR_WINDOW_START_MINUTE: u32 = 20 * 60;
-const OPERATOR_WINDOW_END_MINUTE: u32 = 23 * 60 + 59;
 const TRAY_REFRESH_INTERVAL_SECONDS: u64 = 5;
 const TRAY_OPEN_VIEW_EVENT: &str = "blockuntu-open-view";
 const TRAY_RUNTIME_REFRESH_EVENT: &str = "blockuntu-runtime-refresh";
@@ -107,8 +103,6 @@ enum GuiError {
     InvalidUninstallPhrase,
     #[error("BlocKuntu installation serial is missing or invalid")]
     InvalidInstallationSerial,
-    #[error("operator actions are only available during Sunday 20:00-23:59")]
-    OperatorWindowClosed,
     #[error("GUI uninstall requires pkexec, but pkexec was not found")]
     MissingPkexec,
     #[error("uninstall command failed: {0}")]
@@ -167,19 +161,9 @@ struct UnlockRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct UninstallConfirmation {
-    phrase: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallationInfo {
     installation_serial: Option<String>,
     build_number: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Tier1EditKey {
-    key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,13 +275,18 @@ fn import_policy_toml(socket_path: Option<String>) -> Result<PolicyFileResult, G
 }
 
 #[tauri::command]
-fn evaluate_url(url: String, socket_path: Option<String>) -> Result<Value, GuiError> {
+fn evaluate_url(
+    url: String,
+    socket_path: Option<String>,
+    probe: Option<bool>,
+) -> Result<Value, GuiError> {
     let socket = resolve_socket_path(socket_path.as_deref());
     call_daemon(
         &socket,
         "evaluate_url",
         json!({
             "url": url,
+            "probe": probe.unwrap_or(false),
             "now": Utc::now().to_rfc3339()
         }),
     )
@@ -318,10 +307,26 @@ fn request_unlock(request: UnlockRequest, socket_path: Option<String>) -> Result
 }
 
 #[tauri::command]
-fn uninstall_confirmation_phrase() -> Result<UninstallConfirmation, GuiError> {
-    Ok(UninstallConfirmation {
-        phrase: load_or_create_uninstall_phrase()?,
-    })
+fn uninstall_phrase_configured() -> Result<bool, GuiError> {
+    Ok(load_uninstall_phrase().is_ok())
+}
+
+#[tauri::command]
+fn configure_uninstall_phrase(phrase: String) -> Result<(), GuiError> {
+    let phrase = phrase.trim();
+    if phrase.chars().count() < 16 {
+        return Err(GuiError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "uninstall phrase must contain at least 16 characters",
+        )));
+    }
+    if load_uninstall_phrase().is_ok() {
+        return Err(GuiError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "uninstall phrase is already configured",
+        )));
+    }
+    write_uninstall_phrase(&uninstall_phrase_path()?, phrase)
 }
 
 #[tauri::command]
@@ -337,32 +342,12 @@ fn installation_info_from_path(path: &Path) -> InstallationInfo {
 }
 
 #[tauri::command]
-fn tier1_edit_key() -> Result<Tier1EditKey, GuiError> {
-    let key = fs::read_to_string(TIER1_EDIT_KEY_FILE)?
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default()
-        .to_string();
-    if key.is_empty() {
-        return Err(GuiError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Tier 1 edit key is empty: {TIER1_EDIT_KEY_FILE}"),
-        )));
-    }
-    Ok(Tier1EditKey { key })
-}
-
-#[tauri::command]
 fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
     let candidate = phrase.trim();
     let emergency_authorized = load_installation_serial()
         .ok()
         .is_some_and(|serial| emergency_uninstall_code_is_valid(candidate, &serial));
     if !emergency_authorized {
-        if !operator_window_open_now() {
-            return Err(GuiError::OperatorWindowClosed);
-        }
         if !uninstall_phrase_matches(candidate)? {
             return Err(GuiError::InvalidUninstallPhrase);
         }
@@ -540,20 +525,16 @@ fn load_installation_serial_from_path(path: &Path) -> Result<String, GuiError> {
     Ok(serial)
 }
 
-fn load_or_create_uninstall_phrase() -> Result<String, GuiError> {
+fn load_uninstall_phrase() -> Result<String, GuiError> {
     let path = uninstall_phrase_path()?;
-    match fs::read_to_string(&path) {
-        Ok(contents) => {
-            let phrase = contents.trim().to_string();
-            if phrase.is_empty() {
-                write_uninstall_phrase(&path)
-            } else {
-                Ok(phrase)
-            }
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => write_uninstall_phrase(&path),
-        Err(err) => Err(err.into()),
+    let phrase = fs::read_to_string(&path)?.trim().to_string();
+    if phrase.is_empty() {
+        return Err(GuiError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "uninstall phrase is not configured",
+        )));
     }
+    Ok(phrase)
 }
 
 fn uninstall_phrase_matches(candidate: &str) -> Result<bool, GuiError> {
@@ -561,60 +542,10 @@ fn uninstall_phrase_matches(candidate: &str) -> Result<bool, GuiError> {
         return Ok(false);
     }
 
-    let primary_phrase = load_or_create_uninstall_phrase()?;
-    uninstall_phrase_matches_with_recovery(
-        candidate,
-        &primary_phrase,
-        Path::new(SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE),
-    )
+    Ok(candidate == load_uninstall_phrase()?.trim())
 }
 
-fn uninstall_phrase_matches_with_recovery(
-    candidate: &str,
-    primary_phrase: &str,
-    recovery_phrase_path: &Path,
-) -> Result<bool, GuiError> {
-    if candidate.is_empty() {
-        return Ok(false);
-    }
-    if candidate == primary_phrase.trim() {
-        return Ok(true);
-    }
-
-    match fs::read_to_string(recovery_phrase_path) {
-        Ok(contents) => Ok(phrase_contents_match(candidate, &contents)),
-        Err(err)
-            if matches!(
-                err.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn phrase_contents_match(candidate: &str, contents: &str) -> bool {
-    contents
-        .lines()
-        .map(str::trim)
-        .any(|phrase| !phrase.is_empty() && candidate == phrase)
-}
-
-fn operator_window_open_now() -> bool {
-    let now = Local::now();
-    operator_window_open_parts(now.weekday(), now.hour(), now.minute())
-}
-
-fn operator_window_open_parts(weekday: Weekday, hour: u32, minute: u32) -> bool {
-    let current_minute = hour * 60 + minute;
-    weekday == Weekday::Sun
-        && (OPERATOR_WINDOW_START_MINUTE..=OPERATOR_WINDOW_END_MINUTE).contains(&current_minute)
-}
-
-fn write_uninstall_phrase(path: &Path) -> Result<String, GuiError> {
-    let phrase = generate_uninstall_phrase()?;
+fn write_uninstall_phrase(path: &Path, phrase: &str) -> Result<(), GuiError> {
     let parent = path.parent().ok_or_else(|| {
         GuiError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -634,7 +565,7 @@ fn write_uninstall_phrase(path: &Path) -> Result<String, GuiError> {
     file.write_all(b"\n")?;
     file.sync_all()?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(phrase)
+    Ok(())
 }
 
 fn uninstall_phrase_path() -> Result<PathBuf, GuiError> {
@@ -654,22 +585,6 @@ fn blockuntu_data_dir() -> Result<PathBuf, GuiError> {
         .map(PathBuf::from)
         .map(|home| home.join(".local/share/blockuntu"))
         .ok_or(GuiError::HomeNotSet)
-}
-
-fn generate_uninstall_phrase() -> Result<String, GuiError> {
-    let mut bytes = [0_u8; 24];
-    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    let hex = bytes
-        .iter()
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<String>();
-    let chunks = hex
-        .as_bytes()
-        .chunks(8)
-        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
-        .collect::<Vec<_>>()
-        .join("-");
-    Ok(format!("BLOCKUNTU-UNINSTALL-{chunks}"))
 }
 
 fn debian_package_installed() -> Result<bool, GuiError> {
@@ -1701,8 +1616,8 @@ pub fn run() {
             evaluate_url,
             request_unlock,
             installation_info,
-            uninstall_confirmation_phrase,
-            tier1_edit_key,
+            uninstall_phrase_configured,
+            configure_uninstall_phrase,
             uninstall_blockuntu,
             system_health
         ])
@@ -1714,7 +1629,7 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    fn temp_recovery_path(name: &str) -> PathBuf {
+    fn temp_path(name: &str) -> PathBuf {
         let unique = format!(
             "blockuntu-gui-{name}-{}-{}",
             std::process::id(),
@@ -1724,17 +1639,8 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_phrase_accepts_primary_phrase() {
-        let path = temp_recovery_path("primary");
-        let result = uninstall_phrase_matches_with_recovery("primary", "primary", &path)
-            .expect("phrase check should succeed");
-
-        assert!(result);
-    }
-
-    #[test]
     fn installation_serial_loader_accepts_the_packaged_format() {
-        let path = temp_recovery_path("installation-serial");
+        let path = temp_path("installation-serial");
         fs::write(&path, "BKI-7A91C246-398AF072-5E70DA11-D9B4C83F\n")
             .expect("write installation serial");
 
@@ -1747,7 +1653,7 @@ mod tests {
 
     #[test]
     fn installation_serial_loader_rejects_malformed_content() {
-        let path = temp_recovery_path("invalid-installation-serial");
+        let path = temp_path("invalid-installation-serial");
         fs::write(&path, "BKI-not-valid\n").expect("write installation serial");
 
         let result = load_installation_serial_from_path(&path);
@@ -1758,51 +1664,12 @@ mod tests {
 
     #[test]
     fn installation_info_keeps_build_number_when_serial_is_unavailable() {
-        let path = temp_recovery_path("missing-installation-serial");
+        let path = temp_path("missing-installation-serial");
 
         let info = installation_info_from_path(&path);
 
         assert_eq!(info.installation_serial, None);
         assert!(!info.build_number.trim().is_empty());
-    }
-
-    #[test]
-    fn uninstall_phrase_accepts_recovery_phrase() {
-        let path = temp_recovery_path("recovery");
-        fs::write(&path, "BLOCKUNTU-UNINSTALL-RECOVERY-AAAA\n").expect("write recovery phrase");
-
-        let result = uninstall_phrase_matches_with_recovery(
-            "BLOCKUNTU-UNINSTALL-RECOVERY-AAAA",
-            "primary",
-            &path,
-        )
-        .expect("phrase check should succeed");
-
-        let _ = fs::remove_file(&path);
-        assert!(result);
-    }
-
-    #[test]
-    fn uninstall_phrase_rejects_empty_or_unknown_phrase() {
-        let path = temp_recovery_path("unknown");
-        fs::write(&path, "BLOCKUNTU-UNINSTALL-RECOVERY-AAAA\n").expect("write recovery phrase");
-
-        let empty = uninstall_phrase_matches_with_recovery("", "primary", &path)
-            .expect("empty phrase check should succeed");
-        let unknown = uninstall_phrase_matches_with_recovery("unknown", "primary", &path)
-            .expect("unknown phrase check should succeed");
-
-        let _ = fs::remove_file(&path);
-        assert!(!empty);
-        assert!(!unknown);
-    }
-
-    #[test]
-    fn operator_window_is_sunday_20_to_2359() {
-        assert!(!operator_window_open_parts(Weekday::Sun, 19, 59));
-        assert!(operator_window_open_parts(Weekday::Sun, 20, 0));
-        assert!(operator_window_open_parts(Weekday::Sun, 23, 59));
-        assert!(!operator_window_open_parts(Weekday::Mon, 20, 0));
     }
 
     #[test]

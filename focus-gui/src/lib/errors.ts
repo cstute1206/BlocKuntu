@@ -298,7 +298,7 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   }
 
   if (normalized.startsWith("Tier 1 edit key is unavailable at ")) {
-    return "The daemon cannot read the Tier 1 edit key. Check /etc/blockuntu/tier1-edit-key.txt and its permissions.";
+    return "The Tier 1 credential is unavailable. Configure it in Protected Changes and Uninstall.";
   }
 
   if (isTimeValidationMessage(normalized)) {
@@ -353,7 +353,7 @@ function humanizeErrorMessage(message: string): string {
   }
 
   if (normalized === "uninstall confirmation phrase does not match") {
-    return "The uninstall phrase does not match. Use the displayed phrase exactly, or the recovery phrase from /etc/blockuntu/uninstall-recovery.txt.";
+    return "The uninstall phrase does not match.";
   }
 
   if (
@@ -380,7 +380,7 @@ function humanizeErrorMessage(message: string): string {
   }
 
   if (normalized.startsWith("Tier 1 edit key is empty: ")) {
-    return "The Tier 1 edit key file is empty. Reinstall the package or recreate /etc/blockuntu/tier1-edit-key.txt.";
+    return "The Tier 1 credential is not configured yet.";
   }
 
   const stripped = stripKnownPrefixes(normalized, [

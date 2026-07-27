@@ -16,6 +16,7 @@ use focus_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::app::{
     browser_startup_grace_seconds, hosts_detox_sessions_for_clock, is_blockuntu_process,
@@ -45,9 +46,11 @@ const BROWSER_EXTENSION_MODE_ACTIVE: &str = "active";
 const BROWSER_EXTENSION_MODE_UNINSTALLING: &str = "uninstalling";
 const UNINSTALL_HANDOFF_SECONDS: i64 = 30;
 const PACKAGE_REMOVAL_LEASE_PATH: &str = "/run/blockuntu/package-removal-lease";
-const TIER1_EDIT_KEY_PATH: &str = "/etc/blockuntu/tier1-edit-key.txt";
 const INSTALLATION_SERIAL_PATH: &str = "/etc/blockuntu/installation-id";
 const TIER1_EDIT_UNLOCK_UNTIL_KEY: &str = "tier1_edit_unlocked_until";
+const TIER1_EDIT_CREDENTIAL_SALT_KEY: &str = "tier1_edit_credential_salt";
+const TIER1_EDIT_CREDENTIAL_HASH_KEY: &str = "tier1_edit_credential_hash";
+const OPERATOR_WINDOW_RESTRICTION_KEY: &str = "operator_window_restriction_enabled";
 const TIER1_EDIT_UNLOCK_MINUTES: i64 = 5;
 const OPERATOR_WINDOW_START_MINUTE: u16 = 20 * 60;
 const OPERATOR_WINDOW_END_MINUTE: u16 = 23 * 60 + 59;
@@ -71,7 +74,6 @@ pub struct RpcContext {
     manage_chrome_policy: bool,
     defer_firefox_policy_repair_until_heartbeat: bool,
     defer_chrome_policy_repair_until_heartbeat: bool,
-    tier1_edit_key_path: PathBuf,
     installation_serial_path: PathBuf,
     package_removal_lease_path: PathBuf,
     event_log_path: PathBuf,
@@ -91,7 +93,6 @@ impl RpcContext {
             manage_chrome_policy: true,
             defer_firefox_policy_repair_until_heartbeat: false,
             defer_chrome_policy_repair_until_heartbeat: false,
-            tier1_edit_key_path: PathBuf::from(TIER1_EDIT_KEY_PATH),
             installation_serial_path: PathBuf::from(INSTALLATION_SERIAL_PATH),
             package_removal_lease_path: PathBuf::from(PACKAGE_REMOVAL_LEASE_PATH),
             event_log_path: PathBuf::from(DEFAULT_EVENT_LOG_PATH),
@@ -136,11 +137,6 @@ impl RpcContext {
             defer_firefox_policy_repair_until_heartbeat;
         self.defer_chrome_policy_repair_until_heartbeat =
             defer_chrome_policy_repair_until_heartbeat;
-        self
-    }
-
-    pub fn with_tier1_edit_key_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.tier1_edit_key_path = path.into();
         self
     }
 
@@ -215,6 +211,8 @@ struct LegacyRequest {
 struct EvaluateUrlParams {
     url: String,
     #[serde(default)]
+    probe: bool,
+    #[serde(default)]
     now: Option<String>,
 }
 
@@ -231,6 +229,16 @@ struct Tier1EditUnlockParams {
     phrase: String,
     #[serde(default)]
     now: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigureTier1EditCredentialParams {
+    phrase: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetOperatorWindowRestrictionParams {
+    enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -355,6 +363,10 @@ struct RunningAppsResponse {
 #[derive(Debug, Deserialize)]
 struct UpsertScheduleParams {
     schedule: ScheduleConfig,
+    #[serde(default)]
+    site_rule_ids: Option<Vec<String>>,
+    #[serde(default)]
+    app_rule_ids: Option<Vec<String>>,
     #[serde(default)]
     now: Option<String>,
 }
@@ -578,6 +590,14 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
             let params = parse_params::<Tier1EditUnlockParams>(params)?;
             unlock_tier1_edit_method(context, params)
         }
+        "configure_tier1_edit_credential" => {
+            let params = parse_params::<ConfigureTier1EditCredentialParams>(params)?;
+            configure_tier1_edit_credential_method(context, params)
+        }
+        "set_operator_window_restriction" => {
+            let params = parse_params::<SetOperatorWindowRestrictionParams>(params)?;
+            set_operator_window_restriction_method(context, params)
+        }
         "tier1_edit_status" => {
             let params = parse_params::<Tier1EditStatusParams>(params)?;
             tier1_edit_status_method(context, params)
@@ -667,13 +687,16 @@ fn clock_integrity_status_method(context: &RpcContext) -> Result<Value> {
 fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Result<Value> {
     let hosts = context.hosts()?;
     let operator_now = guarded_now(context, params.now.as_deref())?;
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let operator_window_restriction_enabled = operator_window_restriction_enabled(&core)?;
+    drop(core);
     let emergency_authorized = params
         .emergency_code
         .as_deref()
         .is_some_and(|code| emergency_uninstall_code_matches(context, code));
     if !emergency_authorized {
         reject_if_clock_tampered(context)?;
-        if !operator_window_open(operator_now) {
+        if operator_window_restriction_enabled && !operator_window_open(operator_now) {
             return Err(operator_window_closed_error("GUI uninstall"));
         }
     }
@@ -708,7 +731,7 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
             Some("system"),
             Some(&format!(
                 "authorization={};browser_extension_mode={BROWSER_EXTENSION_MODE_UNINSTALLING};until={};firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}",
-                if emergency_authorized { "emergency" } else { "operator_window" },
+                if emergency_authorized { "emergency" } else if operator_window_restriction_enabled { "operator_window" } else { "phrase" },
                 uninstalling_until.to_rfc3339()
             )),
             now,
@@ -1639,6 +1662,22 @@ fn upsert_schedule_method(context: &RpcContext, params: UpsertScheduleParams) ->
     let schedule_id = params.schedule.id.clone();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
+    let site_rule_ids = params.site_rule_ids.map(normalized_unique_ids);
+    let app_rule_ids = params.app_rule_ids.map(normalized_unique_ids);
+
+    if let Some(rule_ids) = site_rule_ids.as_deref() {
+        validate_detox_targets(&next, rule_ids, &[])?;
+    }
+    if let Some(rule_ids) = app_rule_ids.as_deref() {
+        validate_detox_targets(&next, &[], rule_ids)?;
+    }
+
+    let target_updates_change = schedule_target_updates_change(
+        &next,
+        &schedule_id,
+        site_rule_ids.as_deref(),
+        app_rule_ids.as_deref(),
+    );
 
     match next
         .schedules
@@ -1647,7 +1686,10 @@ fn upsert_schedule_method(context: &RpcContext, params: UpsertScheduleParams) ->
     {
         Some(index) => {
             let current_schedule = &next.schedules[index];
-            if current_schedule != &params.schedule && schedule_is_active_at(current_schedule, now)
+            if schedule_is_active_at(current_schedule, now)
+                && ((current_schedule != &params.schedule
+                    && !schedule_edit_is_additive(current_schedule, &params.schedule))
+                    || target_updates_change)
             {
                 return Err(active_schedule_edit_error(&current_schedule.id));
             }
@@ -1655,6 +1697,16 @@ fn upsert_schedule_method(context: &RpcContext, params: UpsertScheduleParams) ->
         }
         None => next.schedules.push(params.schedule),
     }
+
+    apply_schedule_target_updates(
+        &core,
+        core.config(),
+        &mut next,
+        &schedule_id,
+        site_rule_ids.as_deref(),
+        app_rule_ids.as_deref(),
+        now,
+    )?;
 
     focus_core::validate_config(&next)?;
     persist_policy_config(context, &mut core, next)?;
@@ -1994,7 +2046,7 @@ fn evaluate_url_method(context: &RpcContext, params: EvaluateUrlParams) -> Resul
         .with_clock_tampered(guarded.integrity.state == "tampered");
     let decision = evaluate_url(&params.url, &eval_context);
 
-    if decision.is_block() {
+    if decision.is_block() && !params.probe {
         core.database().record_event(
             "url_blocked",
             Some(&params.url),
@@ -2100,20 +2152,20 @@ fn unlock_tier1_edit_method(context: &RpcContext, params: Tier1EditUnlockParams)
     let phrase = params.phrase.trim();
     if phrase.is_empty() {
         return Err(DaemonError::InvalidRequest(
-            "Tier 1 edit key is required".to_string(),
+            "Tier 1 credential is required".to_string(),
         ));
     }
-    if !tier1_edit_key_matches(&context.tier1_edit_key_path, phrase)? {
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    if !tier1_edit_credential_matches(&core, phrase)? {
         return Err(DaemonError::InvalidRequest(
-            "Tier 1 edit key does not match".to_string(),
+            "Tier 1 edit credential does not match".to_string(),
         ));
     }
-    if !operator_window_open(now) {
+    if operator_window_restriction_enabled(&core)? && !operator_window_open(now) {
         return Err(operator_window_closed_error("Tier 1 edits"));
     }
 
     let expires_at = now_utc + Duration::minutes(TIER1_EDIT_UNLOCK_MINUTES);
-    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     core.database().set_service_state(
         TIER1_EDIT_UNLOCK_UNTIL_KEY,
         &expires_at.to_rfc3339(),
@@ -2127,6 +2179,71 @@ fn unlock_tier1_edit_method(context: &RpcContext, params: Tier1EditUnlockParams)
     )?;
 
     tier1_edit_status_json(&core, now)
+}
+
+fn configure_tier1_edit_credential_method(
+    context: &RpcContext,
+    params: ConfigureTier1EditCredentialParams,
+) -> Result<Value> {
+    let phrase = params.phrase.trim();
+    if phrase.chars().count() < 16 {
+        return Err(DaemonError::InvalidRequest(
+            "Tier 1 credential must contain at least 16 characters".to_string(),
+        ));
+    }
+    let now = Utc::now();
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    if tier1_edit_credential_configured(&core)? {
+        return Err(DaemonError::InvalidRequest(
+            "Tier 1 credential is already configured".to_string(),
+        ));
+    }
+    let salt = random_credential_salt()?;
+    core.database()
+        .set_service_state(TIER1_EDIT_CREDENTIAL_SALT_KEY, &salt, now)?;
+    core.database().set_service_state(
+        TIER1_EDIT_CREDENTIAL_HASH_KEY,
+        &tier1_edit_credential_hash(&salt, phrase),
+        now,
+    )?;
+    core.database().record_event(
+        "tier1_edit_credential_configured",
+        Some("site_lists"),
+        Some("Daemon-owned Tier 1 credential configured"),
+        now,
+    )?;
+    Ok(json!({ "configured": true }))
+}
+
+fn set_operator_window_restriction_method(
+    context: &RpcContext,
+    params: SetOperatorWindowRestrictionParams,
+) -> Result<Value> {
+    let now = Utc::now();
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    if tier1_edit_credential_configured(&core)?
+        && !tier1_edit_window_active(&core, now.fixed_offset())?
+    {
+        return Err(DaemonError::InvalidRequest(
+            "Unlock Tier 1 edits before changing the Sunday restriction".to_string(),
+        ));
+    }
+    core.database().set_service_state(
+        OPERATOR_WINDOW_RESTRICTION_KEY,
+        if params.enabled { "true" } else { "false" },
+        now,
+    )?;
+    core.database().record_event(
+        "operator_window_restriction_updated",
+        Some("protected_changes"),
+        Some(if params.enabled {
+            "Sunday restriction enabled"
+        } else {
+            "Sunday restriction disabled"
+        }),
+        now,
+    )?;
+    Ok(json!({ "enabled": params.enabled }))
 }
 
 fn tier1_edit_status_method(context: &RpcContext, params: Tier1EditStatusParams) -> Result<Value> {
@@ -2438,7 +2555,14 @@ fn handle_legacy_request(context: &RpcContext, value: Value) -> Value {
     let Some(url) = request.url else {
         return json!({ "action": "allow", "error": "missing url" });
     };
-    match evaluate_url_method(context, EvaluateUrlParams { url, now: None }) {
+    match evaluate_url_method(
+        context,
+        EvaluateUrlParams {
+            url,
+            probe: false,
+            now: None,
+        },
+    ) {
         Ok(value) if value.get("decision").and_then(Value::as_str) == Some("block") => {
             json!({ "action": "block", "reason": value.get("reason").cloned().unwrap_or(Value::Null) })
         }
@@ -2968,12 +3092,15 @@ fn tier1_edit_status_json(core: &FocusCore, now: DateTime<FixedOffset>) -> Resul
         .filter(|expires_at| *expires_at > now_utc)
         .map(|expires_at| (expires_at - now_utc).num_seconds());
 
+    let operator_window_restricted = operator_window_restriction_enabled(core)?;
     Ok(json!({
         "active": active,
         "expires_at": expires_at,
         "remaining_seconds": remaining_seconds,
-        "operator_window_open": operator_window_open(now) && !clock_tampered,
-        "operator_window_label": operator_window_label(),
+        "credential_configured": tier1_edit_credential_configured(core)?,
+        "operator_window_restriction_enabled": operator_window_restricted,
+        "operator_window_open": (!operator_window_restricted || operator_window_open(now)) && !clock_tampered,
+        "operator_window_label": if operator_window_restricted { operator_window_label() } else { "Any time" },
         "clock_integrity": clock_integrity
     }))
 }
@@ -2995,17 +3122,57 @@ fn operator_window_closed_error(action: &str) -> DaemonError {
     ))
 }
 
-fn tier1_edit_key_matches(path: &Path, candidate: &str) -> Result<bool> {
-    let contents = std::fs::read_to_string(path).map_err(|err| {
-        DaemonError::InvalidRequest(format!(
-            "Tier 1 edit key is unavailable at {}: {err}",
-            path.display()
-        ))
-    })?;
-    Ok(contents
-        .lines()
-        .map(str::trim)
-        .any(|phrase| !phrase.is_empty() && phrase == candidate))
+fn operator_window_restriction_enabled(core: &FocusCore) -> Result<bool> {
+    Ok(core
+        .database()
+        .service_state(OPERATOR_WINDOW_RESTRICTION_KEY)?
+        .as_deref()
+        == Some("true"))
+}
+
+fn tier1_edit_credential_configured(core: &FocusCore) -> Result<bool> {
+    Ok(core
+        .database()
+        .service_state(TIER1_EDIT_CREDENTIAL_SALT_KEY)?
+        .is_some()
+        && core
+            .database()
+            .service_state(TIER1_EDIT_CREDENTIAL_HASH_KEY)?
+            .is_some())
+}
+
+fn tier1_edit_credential_matches(core: &FocusCore, candidate: &str) -> Result<bool> {
+    let Some(salt) = core
+        .database()
+        .service_state(TIER1_EDIT_CREDENTIAL_SALT_KEY)?
+    else {
+        return Err(DaemonError::InvalidRequest(
+            "Tier 1 credential has not been configured".to_string(),
+        ));
+    };
+    let Some(expected_hash) = core
+        .database()
+        .service_state(TIER1_EDIT_CREDENTIAL_HASH_KEY)?
+    else {
+        return Err(DaemonError::InvalidRequest(
+            "Tier 1 credential has not been configured".to_string(),
+        ));
+    };
+    Ok(tier1_edit_credential_hash(&salt, candidate) == expected_hash)
+}
+
+fn random_credential_salt() -> Result<String> {
+    let mut bytes = [0_u8; 32];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn tier1_edit_credential_hash(salt: &str, phrase: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(salt.as_bytes());
+    hasher.update([0]);
+    hasher.update(phrase.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn repair_hosts_after_policy_change(
@@ -3155,6 +3322,148 @@ fn app_rule_edit_is_additive(current: &AppRuleConfig, proposed: &AppRuleConfig) 
             .iter()
             .zip(proposed.matchers.iter())
             .all(|(current, proposed)| current == proposed)
+}
+
+fn schedule_edit_is_additive(current: &ScheduleConfig, proposed: &ScheduleConfig) -> bool {
+    current.id == proposed.id
+        && current.name == proposed.name
+        && proposed.windows.len() >= current.windows.len()
+        && current
+            .windows
+            .iter()
+            .zip(proposed.windows.iter())
+            .all(|(current, proposed)| current == proposed)
+}
+
+fn schedule_target_updates_change(
+    config: &Config,
+    schedule_id: &str,
+    site_rule_ids: Option<&[String]>,
+    app_rule_ids: Option<&[String]>,
+) -> bool {
+    site_rule_ids.is_some_and(|requested| {
+        !same_id_membership(
+            requested,
+            &config
+                .rules
+                .iter()
+                .filter(|rule| {
+                    rule.tier != RuleTier::Hard
+                        && rule.schedule_ids.iter().any(|id| id == schedule_id)
+                })
+                .map(|rule| rule.id.clone())
+                .collect::<Vec<_>>(),
+        )
+    }) || app_rule_ids.is_some_and(|requested| {
+        !same_id_membership(
+            requested,
+            &config
+                .app_rules
+                .iter()
+                .filter(|rule| {
+                    rule.tier != RuleTier::Hard
+                        && rule.schedule_ids.iter().any(|id| id == schedule_id)
+                })
+                .map(|rule| rule.id.clone())
+                .collect::<Vec<_>>(),
+        )
+    })
+}
+
+fn same_id_membership(left: &[String], right: &[String]) -> bool {
+    left.len() == right.len() && left.iter().all(|id| right.contains(id))
+}
+
+fn apply_schedule_target_updates(
+    core: &FocusCore,
+    current: &Config,
+    next: &mut Config,
+    schedule_id: &str,
+    site_rule_ids: Option<&[String]>,
+    app_rule_ids: Option<&[String]>,
+    now: DateTime<FixedOffset>,
+) -> Result<()> {
+    if let Some(rule_ids) = site_rule_ids {
+        let changed_rule_ids = current
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.tier != RuleTier::Hard
+                    && (rule.schedule_ids.iter().any(|id| id == schedule_id)
+                        != rule_ids.contains(&rule.id))
+            })
+            .map(|rule| rule.id.clone())
+            .collect::<Vec<_>>();
+
+        for rule_id in changed_rule_ids {
+            let rule = current
+                .rules
+                .iter()
+                .find(|rule| rule.id == rule_id)
+                .expect("changed site rule must exist");
+            if site_rule_in_active_detox(core, &rule.id, now)? {
+                return Err(active_detox_site_list_edit_error(&rule.id));
+            }
+            if rule_is_active_at(rule, current, now) {
+                return Err(active_site_list_edit_error(&rule.id));
+            }
+        }
+
+        for rule in &mut next.rules {
+            if rule.tier == RuleTier::Hard {
+                continue;
+            }
+            if rule.schedule_ids.iter().any(|id| id == schedule_id) == rule_ids.contains(&rule.id) {
+                continue;
+            }
+            rule.schedule_ids.retain(|id| id != schedule_id);
+            if rule_ids.contains(&rule.id) {
+                rule.schedule_ids.push(schedule_id.to_string());
+            }
+        }
+    }
+
+    if let Some(rule_ids) = app_rule_ids {
+        let changed_rule_ids = current
+            .app_rules
+            .iter()
+            .filter(|rule| {
+                rule.tier != RuleTier::Hard
+                    && (rule.schedule_ids.iter().any(|id| id == schedule_id)
+                        != rule_ids.contains(&rule.id))
+            })
+            .map(|rule| rule.id.clone())
+            .collect::<Vec<_>>();
+
+        for rule_id in changed_rule_ids {
+            let rule = current
+                .app_rules
+                .iter()
+                .find(|rule| rule.id == rule_id)
+                .expect("changed app rule must exist");
+            if app_rule_in_active_detox(core, &rule.id, now)? {
+                return Err(active_detox_app_rule_edit_error(&rule.id));
+            }
+            if app_rule_is_active_at(rule, current, now) {
+                return Err(active_app_rule_edit_error(&rule.id));
+            }
+        }
+
+        for rule in &mut next.app_rules {
+            if rule.tier == RuleTier::Hard {
+                continue;
+            }
+            if rule.schedule_ids.iter().any(|id| id == schedule_id) == rule_ids.contains(&rule.id) {
+                continue;
+            }
+            rule.schedule_ids.retain(|id| id != schedule_id);
+            if rule_ids.contains(&rule.id) {
+                rule.schedule_ids.push(schedule_id.to_string());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn site_rule_in_active_detox(
@@ -3376,12 +3685,24 @@ mod tests {
         RpcContext::new(Arc::new(Mutex::new(core))).with_trusted_client_time()
     }
 
-    fn rpc_context_with_tier1_edit_key(context: RpcContext) -> (tempfile::TempDir, RpcContext) {
+    fn rpc_context_with_tier1_edit_credential(
+        context: RpcContext,
+    ) -> (tempfile::TempDir, RpcContext) {
         let temp = tempfile::tempdir().expect("temp dir should be created");
-        let key_path = temp.path().join("tier1-edit-key.txt");
-        std::fs::write(&key_path, "BLOCKUNTU-TIER1-EDIT-TEST\n")
-            .expect("tier 1 edit key should write");
-        (temp, context.with_tier1_edit_key_path(key_path))
+        let core = context.core.lock().expect("core should lock");
+        let salt = "test-tier1-edit-salt";
+        core.database()
+            .set_service_state(super::TIER1_EDIT_CREDENTIAL_SALT_KEY, salt, Utc::now())
+            .expect("tier 1 salt should persist");
+        core.database()
+            .set_service_state(
+                super::TIER1_EDIT_CREDENTIAL_HASH_KEY,
+                &super::tier1_edit_credential_hash(salt, "BLOCKUNTU-TIER1-EDIT-TEST"),
+                Utc::now(),
+            )
+            .expect("tier 1 credential should persist");
+        drop(core);
+        (temp, context)
     }
 
     fn rpc_context_with_enforcement_managers(
@@ -3541,6 +3862,43 @@ mod tests {
         ))
         .expect("response should parse");
         assert!(after_ack["result"]["notifications"]
+            .as_array()
+            .expect("notifications should be an array")
+            .is_empty());
+    }
+
+    #[test]
+    fn blocked_url_probe_does_not_queue_a_notification() {
+        let context = rpc_context();
+        let evaluate = json!({
+            "jsonrpc": "2.0",
+            "id": 706,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://blocked.example/watch",
+                "probe": true,
+                "now": Local::now().to_rfc3339()
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&evaluate).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(response["result"]["decision"], "block");
+
+        let pending = json!({
+            "jsonrpc": "2.0",
+            "id": 707,
+            "method": "pending_notifications",
+            "params": { "limit": 20 }
+        });
+        let pending_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&pending).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(pending_response["result"]["notifications"]
             .as_array()
             .expect("notifications should be an array")
             .is_empty());
@@ -4736,7 +5094,7 @@ mod tests {
 
     #[test]
     fn tier1_edit_unlock_allows_active_tier1_site_list_edits() {
-        let (_temp, context) = rpc_context_with_tier1_edit_key(rpc_context());
+        let (_temp, context) = rpc_context_with_tier1_edit_credential(rpc_context());
         let unlock_request = json!({
             "jsonrpc": "2.0",
             "id": 112,
@@ -4789,7 +5147,12 @@ mod tests {
 
     #[test]
     fn tier1_edit_unlock_is_limited_to_sunday_evening_operator_window() {
-        let (_temp, context) = rpc_context_with_tier1_edit_key(rpc_context());
+        let (_temp, context) = rpc_context_with_tier1_edit_credential(rpc_context());
+        let core = context.core.lock().expect("core should lock");
+        core.database()
+            .set_service_state(super::OPERATOR_WINDOW_RESTRICTION_KEY, "true", Utc::now())
+            .expect("operator restriction should persist");
+        drop(core);
         let unlock_request = json!({
             "jsonrpc": "2.0",
             "id": 127,
@@ -4833,9 +5196,50 @@ mod tests {
     }
 
     #[test]
+    fn daemon_owned_tier1_credential_is_configured_once_and_allows_any_time_by_default() {
+        let context = rpc_context();
+        let configure = json!({
+            "jsonrpc": "2.0",
+            "id": 129,
+            "method": "configure_tier1_edit_credential",
+            "params": { "phrase": "a secure tier one credential" }
+        });
+        let configure_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&configure).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(configure_response["result"]["configured"], true);
+
+        let unlock = json!({
+            "jsonrpc": "2.0",
+            "id": 130,
+            "method": "unlock_tier1_edit",
+            "params": {
+                "phrase": "a secure tier one credential",
+                "now": "2026-05-22T10:00:00+02:00"
+            }
+        });
+        let unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&unlock).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(unlock_response["result"]["active"], true);
+        assert_eq!(
+            unlock_response["result"]["operator_window_restriction_enabled"],
+            false
+        );
+        assert_eq!(
+            unlock_response["result"]["operator_window_label"],
+            "Any time"
+        );
+    }
+
+    #[test]
     fn tier1_edit_unlock_does_not_allow_active_tier2_site_list_edits() {
         let (_temp, context) =
-            rpc_context_with_tier1_edit_key(active_sunday_scheduled_rpc_context());
+            rpc_context_with_tier1_edit_credential(active_sunday_scheduled_rpc_context());
         let unlock_request = json!({
             "jsonrpc": "2.0",
             "id": 114,
@@ -4885,7 +5289,7 @@ mod tests {
 
     #[test]
     fn detox_session_blocks_until_privileged_cancel() {
-        let (_temp, context) = rpc_context_with_tier1_edit_key(editable_rpc_context());
+        let (_temp, context) = rpc_context_with_tier1_edit_credential(editable_rpc_context());
         let start_request = json!({
             "jsonrpc": "2.0",
             "id": 121,
@@ -5160,7 +5564,7 @@ mod tests {
             "#,
         );
         let (temp, context) = rpc_context_with_enforcement_managers_for(strict_context, false);
-        let (_key_temp, context) = rpc_context_with_tier1_edit_key(context);
+        let (_credential_temp, context) = rpc_context_with_tier1_edit_credential(context);
         let hosts_path = temp.path().join("hosts");
         let start_request = json!({
             "jsonrpc": "2.0",
@@ -5345,6 +5749,103 @@ mod tests {
     }
 
     #[test]
+    fn allows_appending_windows_to_an_active_schedule() {
+        let context = active_scheduled_rpc_context();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 18,
+            "method": "upsert_schedule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "schedule": {
+                    "id": "work-hours",
+                    "name": "Work hours",
+                    "windows": [
+                        { "weekday": "fri", "start": "09:00", "end": "17:00" },
+                        { "weekday": "fri", "start": "18:00", "end": "19:00" }
+                    ]
+                }
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(
+            response["result"]["config"]["schedules"][0]["windows"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn schedule_save_attaches_selected_website_and_application_rules() {
+        let context = rpc_context_with_config_toml(
+            r#"
+            [[schedules]]
+            id = "work-hours"
+            name = "Work hours"
+
+            [[schedules.windows]]
+            weekday = "mon"
+            start = "09:00"
+            end = "17:00"
+
+            [[rules]]
+            id = "controlled-site"
+            name = "Controlled site"
+            tier = "controlled_access"
+            patterns = [
+              { kind = "domain", value = "controlled.example", match_subdomains = true }
+            ]
+
+            [[app_rules]]
+            id = "controlled-app"
+            name = "Controlled app"
+            tier = "controlled_access"
+            matchers = [
+              { kind = "command_name", value = "kmines" }
+            ]
+            "#,
+        );
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 19,
+            "method": "upsert_schedule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "schedule": {
+                    "id": "work-hours",
+                    "name": "Work hours",
+                    "windows": [{ "weekday": "mon", "start": "09:00", "end": "17:00" }]
+                },
+                "site_rule_ids": ["controlled-site"],
+                "app_rule_ids": ["controlled-app"]
+            }
+        });
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(
+            response["result"]["config"]["rules"][0]["schedule_ids"],
+            json!(["work-hours"])
+        );
+        assert_eq!(
+            response["result"]["config"]["app_rules"][0]["schedule_ids"],
+            json!(["work-hours"])
+        );
+    }
+
+    #[test]
     fn reports_missing_extension_heartbeat() {
         let now = Utc
             .with_ymd_and_hms(2026, 5, 22, 10, 0, 0)
@@ -5524,6 +6025,11 @@ mod tests {
     #[test]
     fn prepare_uninstall_is_limited_to_operator_window() {
         let (_temp, context) = rpc_context_with_enforcement_managers(true);
+        let core = context.core.lock().expect("core should lock");
+        core.database()
+            .set_service_state(super::OPERATOR_WINDOW_RESTRICTION_KEY, "true", Utc::now())
+            .expect("operator restriction should persist");
+        drop(core);
         let prepare = json!({
             "jsonrpc": "2.0",
             "id": 144,

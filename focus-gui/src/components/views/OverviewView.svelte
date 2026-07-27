@@ -1,9 +1,6 @@
 <script lang="ts">
   import {
-    AlertTriangle,
-    CircleMinus,
     CheckCircle2,
-    Clock3,
     Play,
     Search,
     Server,
@@ -16,17 +13,12 @@
     ConfigSnapshot,
     DaemonStatus,
     DecisionResult,
-    EnforcementStatus,
-    HealthCheck,
     SystemHealth,
     UnlockResult
   } from "../../lib/types";
 
-  type BrowserSetupState = "ok" | "inactive" | "pending" | "warn" | "error" | "unknown";
-
   interface Props {
     status: DaemonStatus | null;
-    enforcement: EnforcementStatus | null;
     health: SystemHealth | null;
     config: ConfigSnapshot | null;
     showFirstRunOverview: boolean;
@@ -37,12 +29,6 @@
     unlockReason?: string;
     unlockResult: UnlockResult | null;
     unlocking: boolean;
-    uninstallPhrase: string | null;
-    uninstallPhraseLoading: boolean;
-    uninstallPhraseError: string | null;
-    tier1EditKey: string | null;
-    tier1EditKeyLoading: boolean;
-    tier1EditKeyError: string | null;
     onDismissFirstRunOverview: () => void;
     onRunUrlCheck: () => void | Promise<void>;
     onRunUnlock: () => void | Promise<void>;
@@ -50,7 +36,6 @@
 
   let {
     status,
-    enforcement,
     health,
     config,
     showFirstRunOverview,
@@ -61,12 +46,6 @@
     unlockReason = $bindable(""),
     unlockResult,
     unlocking,
-    uninstallPhrase,
-    uninstallPhraseLoading,
-    uninstallPhraseError,
-    tier1EditKey,
-    tier1EditKeyLoading,
-    tier1EditKeyError,
     onDismissFirstRunOverview,
     onRunUrlCheck,
     onRunUnlock
@@ -99,184 +78,56 @@
   let failingChecks = $derived(
     health?.checks.filter((check) => check.state === "error" || check.state === "warn") ?? []
   );
-  let firefoxExtensionCheck = $derived(
-    health?.checks.find((check) => check.key === "firefox_extension") ?? null
-  );
-  let chromeExtensionCheck = $derived(
-    health?.checks.find((check) => check.key === "chrome_extension") ?? null
-  );
-  let showFirefoxSetup = $derived(Boolean(firefoxExtensionCheck));
-  let showChromeSetup = $derived(Boolean(chromeExtensionCheck));
-  let firefoxSetupState = $derived(browserSetupState(firefoxExtensionCheck));
-  let chromeSetupState = $derived(browserSetupState(chromeExtensionCheck));
-  let firefoxPolicyPending = $derived(
-    Boolean(
-      enforcement?.firefox_policy.deferred_until_heartbeat &&
-        !enforcement.firefox_policy.active_after_heartbeat
-    )
-  );
-  let chromePolicyPending = $derived(
-    Boolean(
-      enforcement?.chrome_policy.deferred_until_heartbeat &&
-        !enforcement.chrome_policy.active_after_heartbeat
-    )
-  );
-  let showFirefoxPolicy = $derived(
-    Boolean(health?.checks.some((check) => check.key === "firefox_policy"))
-  );
-  let showChromePolicy = $derived(
-    Boolean(health?.checks.some((check) => check.key === "chrome_policy"))
-  );
-
-  function browserSetupState(check: HealthCheck | null): BrowserSetupState {
-    if (!check) return "unknown";
-    return check.state;
+  function submitUrlCheckOnEnter(event: KeyboardEvent): void {
+    if (event.key !== "Enter" || event.isComposing || urlChecking) return;
+    event.preventDefault();
+    void onRunUrlCheck();
   }
 
-  function setupStateLabel(state: BrowserSetupState): string {
-    if (state === "ok") return "Connected";
-    if (state === "inactive") return "Browser closed";
-    if (state === "pending") return "Starting";
-    if (state === "error") return "Needs attention";
-    if (state === "warn") return "Install extension";
-    return "Checking";
+  function submitUnlockOnEnter(event: KeyboardEvent): void {
+    if (event.key !== "Enter" || event.isComposing || !canUnlock) return;
+    event.preventDefault();
+    void onRunUnlock();
   }
 </script>
 
 {#if showFirstRunOverview}
-  <section class="setup-panel" aria-label="First run setup">
-    <div class="setup-panel-header">
-      <div class="panel-title">
-        <Shield size={18} aria-hidden="true" />
-        <h2>First Run</h2>
+  <div class="onboarding-backdrop">
+    <div
+      class="onboarding-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="onboarding-title"
+      tabindex="-1"
+    >
+      <div class="onboarding-modal-header">
+        <div class="panel-title">
+          <Shield size={18} aria-hidden="true" />
+          <h2 id="onboarding-title">Welcome to BlocKuntu</h2>
+        </div>
+        <button class="icon-button" title="Close introduction" onclick={onDismissFirstRunOverview}>
+          <XCircle size={17} aria-hidden="true" />
+        </button>
       </div>
-      <button
-        class="icon-button"
-        title="Dismiss"
-        onclick={onDismissFirstRunOverview}
-        disabled={!uninstallPhrase}
-      >
-        <XCircle size={17} aria-hidden="true" />
-      </button>
-    </div>
-    <div class="setup-grid">
-      {#if showFirefoxSetup}
-        <div class="setup-row" data-state={firefoxSetupState}>
-          {#if firefoxSetupState === "ok"}
-            <CheckCircle2 size={18} aria-hidden="true" />
-          {:else if firefoxSetupState === "inactive"}
-            <CircleMinus size={18} aria-hidden="true" />
-          {:else if firefoxSetupState === "pending"}
-            <Clock3 size={18} aria-hidden="true" />
-          {:else if firefoxSetupState === "error"}
-            <XCircle size={18} aria-hidden="true" />
-          {:else}
-            <AlertTriangle size={18} aria-hidden="true" />
-          {/if}
-          <span>Firefox extension</span>
-          <strong>{setupStateLabel(firefoxSetupState)}</strong>
-          <small>
-            {firefoxExtensionCheck?.detail ??
-              "No heartbeat yet. Install and enable the BlocKuntu Firefox extension."}
-          </small>
+      <div class="onboarding-copy">
+        <p>BlocKuntu applies the rules you configure. Before adding your first list, keep these rules in mind:</p>
+        <ul>
+          <li><strong>Tier 1</strong> is always blocked. Edit it only with the Tier 1 unlock.</li>
+          <li><strong>Tier 2</strong> blocks strictly during an attached schedule or Detox and cannot be manually unlocked.</li>
+          <li><strong>Tier 3</strong> is also active during a schedule or Detox, but retains its daily allowance and manual unlock.</li>
+          <li>Tier 2 and Tier 3 lists need a schedule or a Detox session to become active.</li>
+          <li>Install the Firefox and/or Chrome extension for browser blocking.</li>
+        </ul>
+        <div class="onboarding-credentials">
+          <p><strong>Protected changes</strong> — set a Tier 1 credential in Settings before you need to edit Tier 1 rules. It is never displayed again, so save it somewhere secure.</p>
+          <p><strong>Uninstall</strong> — create and save the uninstall phrase in Settings before you need the protected uninstall flow.</p>
         </div>
-      {/if}
-
-      {#if showChromeSetup}
-        <div class="setup-row" data-state={chromeSetupState}>
-          {#if chromeSetupState === "ok"}
-            <CheckCircle2 size={18} aria-hidden="true" />
-          {:else if chromeSetupState === "inactive"}
-            <CircleMinus size={18} aria-hidden="true" />
-          {:else if chromeSetupState === "pending"}
-            <Clock3 size={18} aria-hidden="true" />
-          {:else if chromeSetupState === "error"}
-            <XCircle size={18} aria-hidden="true" />
-          {:else}
-            <AlertTriangle size={18} aria-hidden="true" />
-          {/if}
-          <span>Chrome extension</span>
-          <strong>{setupStateLabel(chromeSetupState)}</strong>
-          <small>
-            {chromeExtensionCheck?.detail ??
-              "No heartbeat yet. Install and enable the BlocKuntu Chrome extension."}
-          </small>
+        <div class="button-row onboarding-actions">
+          <button class="primary" onclick={onDismissFirstRunOverview}>Get started</button>
         </div>
-      {/if}
-
-      {#if showFirefoxPolicy}
-        <div class="setup-row" data-state={firefoxPolicyPending ? "warn" : "ok"}>
-          {#if firefoxPolicyPending}
-            <AlertTriangle size={18} aria-hidden="true" />
-          {:else}
-            <CheckCircle2 size={18} aria-hidden="true" />
-          {/if}
-          <span>Firefox policy</span>
-          <strong>{firefoxPolicyPending ? "Deferred" : "Ready"}</strong>
-          <small>
-            {firefoxPolicyPending
-              ? "Managed policy will be written after the first Firefox extension heartbeat."
-              : (enforcement?.firefox_policy.detail ?? "Waiting for daemon status.")}
-          </small>
-        </div>
-      {/if}
-
-      {#if showChromePolicy}
-        <div class="setup-row" data-state={chromePolicyPending ? "warn" : "ok"}>
-          {#if chromePolicyPending}
-            <AlertTriangle size={18} aria-hidden="true" />
-          {:else}
-            <CheckCircle2 size={18} aria-hidden="true" />
-          {/if}
-          <span>Chrome policy</span>
-          <strong>{chromePolicyPending ? "Deferred" : "Ready"}</strong>
-          <small>
-            {chromePolicyPending
-              ? "Managed policy will be written after the first Chrome extension heartbeat."
-              : (enforcement?.chrome_policy.detail ?? "Waiting for daemon status.")}
-          </small>
-        </div>
-      {/if}
-
-      <div class="setup-row setup-row-wide" data-state={uninstallPhrase ? "ok" : "warn"}>
-        {#if uninstallPhrase}
-          <CheckCircle2 size={18} aria-hidden="true" />
-        {:else}
-          <AlertTriangle size={18} aria-hidden="true" />
-        {/if}
-        <span>Uninstall phrase</span>
-        <strong>{uninstallPhrase ? "Created" : "Unavailable"}</strong>
-        <small>
-          {#if uninstallPhrase}
-            <code class="phrase-code">{uninstallPhrase}</code>
-          {:else if uninstallPhraseLoading}
-            Creating confirmation phrase.
-          {:else}
-            {uninstallPhraseError ?? "Confirmation phrase could not be created."}
-          {/if}
-        </small>
-      </div>
-
-      <div class="setup-row setup-row-wide" data-state={tier1EditKey ? "ok" : "warn"}>
-        {#if tier1EditKey}
-          <CheckCircle2 size={18} aria-hidden="true" />
-        {:else}
-          <AlertTriangle size={18} aria-hidden="true" />
-        {/if}
-        <span>Tier 1 edit key</span>
-        <strong>{tier1EditKey ? "Created" : "Unavailable"}</strong>
-        <small>
-          {#if tier1EditKey}
-            <code class="phrase-code">{tier1EditKey}</code>
-          {:else if tier1EditKeyLoading}
-            Loading edit key.
-          {:else}
-            {tier1EditKeyError ?? "Tier 1 edit key could not be loaded."}
-          {/if}
-        </small>
       </div>
     </div>
-  </section>
+  </div>
 {/if}
 
 <section class="dashboard-grid">
@@ -345,7 +196,11 @@
       <h2>URL Probe</h2>
     </div>
     <div class="input-row">
-      <input bind:value={testUrl} placeholder="https://example.com/" />
+      <input
+        bind:value={testUrl}
+        placeholder="example.com or https://example.com/"
+        onkeydown={submitUrlCheckOnEnter}
+      />
       <button class="primary" onclick={onRunUrlCheck} disabled={urlChecking}>
         <Play size={17} aria-hidden="true" />
         <span>Check</span>
@@ -384,6 +239,7 @@
           bind:value={unlockReason}
           placeholder="Describe why this access is necessary"
           autocomplete="off"
+          onkeydown={submitUnlockOnEnter}
         />
       </label>
       <button class="primary" onclick={onRunUnlock} disabled={!canUnlock}>
@@ -393,8 +249,8 @@
     </div>
     {#if unlockResult}
       <p class="result-text">
-        Active until {new Date(unlockResult.expires_at).toLocaleTimeString()} for
-        {unlockResult.target}
+        Manual unlock granted for {unlockResult.target} for {unlockResult.minutes} minutes, until
+        {new Date(unlockResult.expires_at).toLocaleString()}. Reason: {unlockResult.reason}
       </p>
     {/if}
   </article>

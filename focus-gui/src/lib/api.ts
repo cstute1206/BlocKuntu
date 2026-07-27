@@ -18,9 +18,7 @@ import type {
   Rule,
   Schedule,
   SystemHealth,
-  Tier1EditKey,
   Tier1EditStatus,
-  UninstallConfirmation,
   UninstallResult,
   UnlockResult
 } from "./types";
@@ -101,11 +99,18 @@ export function deleteAppRule(id: string, socketPath?: string): Promise<ConfigMu
 
 export function upsertSchedule(
   schedule: Schedule,
-  socketPath?: string
+  socketPath?: string,
+  siteRuleIds?: string[],
+  appRuleIds?: string[]
 ): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "upsert_schedule",
-    { schedule, now: clientNow() },
+    {
+      schedule,
+      site_rule_ids: siteRuleIds,
+      app_rule_ids: appRuleIds,
+      now: clientNow()
+    },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -192,8 +197,12 @@ export function systemHealth(socketPath?: string): Promise<SystemHealth> {
   return invoke("system_health", { socketPath });
 }
 
-export function evaluateUrl(url: string, socketPath?: string): Promise<DecisionResult> {
-  return invoke("evaluate_url", { url, socketPath });
+export function evaluateUrl(
+  url: string,
+  socketPath?: string,
+  probe = false
+): Promise<DecisionResult> {
+  return invoke("evaluate_url", { url, socketPath, probe });
 }
 
 export function requestUnlock(
@@ -207,8 +216,30 @@ export function requestUnlock(
   });
 }
 
-export function tier1EditKey(): Promise<Tier1EditKey> {
-  return invoke("tier1_edit_key");
+export function configureTier1EditCredential(
+  phrase: string,
+  socketPath?: string
+): Promise<{ configured: boolean }> {
+  return daemonRpc("configure_tier1_edit_credential", { phrase }, socketPath) as Promise<{
+    configured: boolean;
+  }>;
+}
+
+export function uninstallPhraseConfigured(): Promise<boolean> {
+  return invoke("uninstall_phrase_configured");
+}
+
+export function configureUninstallPhrase(phrase: string): Promise<void> {
+  return invoke("configure_uninstall_phrase", { phrase });
+}
+
+export function setOperatorWindowRestriction(
+  enabled: boolean,
+  socketPath?: string
+): Promise<{ enabled: boolean }> {
+  return daemonRpc("set_operator_window_restriction", { enabled }, socketPath) as Promise<{
+    enabled: boolean;
+  }>;
 }
 
 export function tier1EditStatus(socketPath?: string): Promise<Tier1EditStatus> {
@@ -228,10 +259,6 @@ export function unlockTier1Edit(
     { phrase, now: clientNow() },
     socketPath
   ) as Promise<Tier1EditStatus>;
-}
-
-export function uninstallConfirmationPhrase(): Promise<UninstallConfirmation> {
-  return invoke("uninstall_confirmation_phrase");
 }
 
 export function installationInfo(): Promise<InstallationInfo> {

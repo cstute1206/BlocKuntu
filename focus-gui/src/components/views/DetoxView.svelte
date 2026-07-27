@@ -169,8 +169,8 @@
         <span>Name</span>
         <input bind:value={detoxName} />
       </label>
-      <fieldset class="duration-field">
-        <legend>Duration</legend>
+      <label class="duration-field">
+        <span>Duration</span>
         <div class="duration-input-row">
           <input
             aria-label="Detox duration"
@@ -186,7 +186,7 @@
             {/each}
           </select>
         </div>
-      </fieldset>
+      </label>
     </div>
 
     <div class="preset-row" aria-label="Duration presets">

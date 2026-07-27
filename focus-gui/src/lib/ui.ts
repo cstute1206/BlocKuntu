@@ -29,13 +29,13 @@ export const defaultApplicationUiPreferences: ApplicationUiPreferences = {
 };
 
 export const weekdays = [
-  { id: "mon", label: "Mon" },
-  { id: "tue", label: "Tue" },
-  { id: "wed", label: "Wed" },
-  { id: "thu", label: "Thu" },
-  { id: "fri", label: "Fri" },
-  { id: "sat", label: "Sat" },
-  { id: "sun", label: "Sun" }
+  { id: "mon", label: "Monday" },
+  { id: "tue", label: "Tuesday" },
+  { id: "wed", label: "Wednesday" },
+  { id: "thu", label: "Thursday" },
+  { id: "fri", label: "Friday" },
+  { id: "sat", label: "Saturday" },
+  { id: "sun", label: "Sunday" }
 ] as const;
 
 export const scheduleDayChoices: Array<{ id: ScheduleDay; label: string }> = [
@@ -45,12 +45,36 @@ export const scheduleDayChoices: Array<{ id: ScheduleDay; label: string }> = [
   ...weekdays
 ];
 
-export const patternKinds: Array<{ id: RulePattern["kind"]; label: string }> = [
-  { id: "domain", label: "Domain" },
-  { id: "exact_url", label: "Exact URL" },
-  { id: "url_prefix", label: "URL prefix" },
-  { id: "url_contains", label: "URL contains" },
-  { id: "path_prefix", label: "Path prefix" }
+export const patternKinds: Array<{
+  id: RulePattern["kind"];
+  label: string;
+  help: string;
+}> = [
+  {
+    id: "domain",
+    label: "Domain",
+    help: "Example: youtube.com. Matches that domain; enable Subdomains to also match www.youtube.com and music.youtube.com."
+  },
+  {
+    id: "exact_url",
+    label: "Exact URL",
+    help: "Example: https://example.com/watch. Matches only that complete URL."
+  },
+  {
+    id: "url_prefix",
+    label: "URL prefix",
+    help: "Example: https://example.com/shorts/. Matches URLs beginning with this address."
+  },
+  {
+    id: "url_contains",
+    label: "URL contains",
+    help: "Example: /watch?v=. Matches any URL containing this text."
+  },
+  {
+    id: "path_prefix",
+    label: "Path prefix",
+    help: "Example: /shorts (any domain) or example.com/shorts (one domain). Matches URLs whose path begins with it."
+  }
 ];
 
 export const appMatcherKinds: Array<{ id: AppMatcher["kind"]; label: string }> = [
@@ -62,7 +86,7 @@ export const appMatcherKinds: Array<{ id: AppMatcher["kind"]; label: string }> =
   { id: "window_title_exact", label: "Title exact" }
 ];
 
-export const defaultDailyAllowanceMinutes = 30;
+export const defaultDailyAllowanceMinutes = 0;
 
 interface AllowanceOwner {
   id: string;
@@ -140,11 +164,13 @@ export function normalizeRuleDraft(rule: Rule): Rule {
     enabled: true,
     allowance_id:
       rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
-    patterns: rule.patterns.map((pattern) => ({
-      ...pattern,
-      value: pattern.value.trim(),
-      match_subdomains: pattern.kind === "domain" ? pattern.match_subdomains : false
-    })),
+    patterns: rule.patterns
+      .map((pattern) => ({
+        ...pattern,
+        value: pattern.value.trim(),
+        match_subdomains: pattern.kind === "domain" ? pattern.match_subdomains : false
+      }))
+      .filter((pattern) => pattern.value.length > 0),
     schedule_ids: [...rule.schedule_ids]
   };
 }

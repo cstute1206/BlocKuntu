@@ -65,12 +65,10 @@ AppIndicator/KStatusNotifierItem support before the tray icon is visible; KDE
 Plasma, XFCE, Cinnamon, MATE, and Ubuntu-style GNOME sessions are typically the
 smoother path.
 
-For Debian-package installs, uninstall through the GUI Settings page when possible:
-type the first-run uninstall phrase or the system recovery phrase exactly and
-run the uninstall action. The Debian package creates the recovery phrase at
-`/etc/blockuntu/uninstall-recovery.txt` with `root:blockuntu` ownership and
-`0640` permissions. The GUI uses `pkexec` to execute the package purge. The
-equivalent terminal command is:
+For Debian-package installs, uninstall through the GUI Settings page when
+possible: type the saved per-user uninstall phrase and run the uninstall action.
+The GUI uses `pkexec` to execute the package purge. The equivalent terminal
+command is:
 
 ```bash
 sudo dpkg --purge blockuntu
@@ -83,13 +81,12 @@ Package purge stops and disables the BlocKuntu services, removes the managed
 See [UNINSTALL.md](UNINSTALL.md) for the full uninstall phrase and cleanup
 behavior.
 
-The Debian package also creates a Tier 1 edit key at
-`/etc/blockuntu/tier1-edit-key.txt` with `root:blockuntu` ownership and `0640`
-permissions. The GUI shows this key in the first-run panel. Enter it in the
-Settings page to unlock currently active Tier 1 site-list edits for five minutes.
+Set a Tier 1 credential in **Protected Changes and Uninstall** before you need
+to edit an active Tier 1 list. The daemon stores only the credential verifier;
+the credential is never displayed by the GUI.
 
 The package creates a random installation serial at
-`/etc/blockuntu/installation-id`. Settings displays it under Application UI.
+`/etc/blockuntu/installation-id`. Settings displays it in Health.
 Package upgrades preserve the serial, while removal or purge deletes it so a
 later reinstall receives a new identity.
 
@@ -366,8 +363,6 @@ The `.deb` installs:
 - Native Messaging manifests
 - the GUI desktop launcher and icons
 - a minimal config with only strict browser enforcement enabled
-- a system recovery uninstall phrase at `/etc/blockuntu/uninstall-recovery.txt`
-- a Tier 1 edit key at `/etc/blockuntu/tier1-edit-key.txt`
 - a random installation serial at `/etc/blockuntu/installation-id`
 - local extension artifacts used later as managed-policy install sources
 
@@ -380,12 +375,9 @@ sudo usermod -aG blockuntu "$USER"
 ```
 
 Then log out and back in, open the GUI once for the first-run overview, and
-store the uninstall phrase shown there. The package also keeps a system recovery
-phrase at `/etc/blockuntu/uninstall-recovery.txt`; either phrase can be typed
-into the GUI Settings uninstall field. Also store the Tier 1 edit key shown there;
-the Settings page can use it to unlock active Tier 1 site-list edits for five
-minutes. Install and enable the browser extension manually, then restart the
-browser. The daemon writes the matching managed policy after the first heartbeat.
+configure protected changes before editing Tier 1 rules. Install and enable the
+browser extension manually, then restart the browser. The daemon writes the
+matching managed policy after the first heartbeat.
 Closing the GUI window keeps BlocKuntu available from the tray icon. On vanilla
 GNOME, install or enable AppIndicator/KStatusNotifierItem support if the tray
 icon is not visible.
@@ -686,10 +678,8 @@ If policies or manifests changed, restart the affected browser.
 
 ## Uninstall
 
-For a Debian package install, use the GUI Settings uninstall action and type either
-the first-run uninstall phrase or the system recovery phrase exactly. The
-recovery phrase is stored at `/etc/blockuntu/uninstall-recovery.txt`. The GUI
-uses `pkexec` to run:
+For a Debian package install, use the GUI Settings uninstall action and type the
+saved per-user uninstall phrase. The GUI uses `pkexec` to run:
 
 ```bash
 dpkg --purge blockuntu

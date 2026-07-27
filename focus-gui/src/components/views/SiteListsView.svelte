@@ -68,6 +68,12 @@
     return (ruleDraftDetoxLocked || ruleDraftActive) && patternIsSaved(index);
   }
 
+  function ruleStatusIsActive(rule: Rule): boolean {
+    return (
+      ruleIsActive(rule, config?.schedules ?? []) || activeDetoxSiteRuleIds.includes(rule.id)
+    );
+  }
+
   function addPattern(): void {
     if (!ruleDraft) return;
     ruleDraft.patterns = [
@@ -130,10 +136,17 @@
       <Plus size={17} aria-hidden="true" />
       <span>New website</span>
     </button>
+    <p class="rule-status-legend">Status: red = active, yellow = inactive</p>
     <div class="rule-list">
       {#each config?.rules ?? [] as rule (rule.id)}
         <button class:active={ruleDraft?.id === rule.id} onclick={() => onSelectRule(rule)}>
-          <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
+          <span
+            class:active={ruleStatusIsActive(rule)}
+            class="rule-status-dot"
+            role="img"
+            aria-label={ruleStatusIsActive(rule) ? "Active" : "Inactive"}
+            title={ruleStatusIsActive(rule) ? "Active" : "Inactive"}
+          ></span>
           <span>{rule.name}</span>
           <em>{rule.tier === "hard" ? "Tier 1" : rule.tier === "scheduled_block" ? "Tier 2" : "Tier 3"}</em>
         </button>
@@ -232,9 +245,11 @@
         <table>
           <thead>
             <tr>
-              <th>Type</th>
+              <th title="Hover a type selector for an example.">Type</th>
               <th>Pattern</th>
-              <th>Subdomains</th>
+              <th title="For Domain patterns only: also match hosts such as www.example.com and app.example.com.">
+                Subdomains
+              </th>
               <th></th>
             </tr>
           </thead>
@@ -245,6 +260,7 @@
                   <select
                     bind:value={pattern.kind}
                     disabled={patternEditLocked(index)}
+                    title={patternKinds.find((kind) => kind.id === pattern.kind)?.help ?? ""}
                   >
                     {#each patternKinds as kind (kind.id)}
                       <option value={kind.id}>{kind.label}</option>

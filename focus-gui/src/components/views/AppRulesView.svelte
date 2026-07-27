@@ -1,20 +1,12 @@
 <script lang="ts">
-  import { AlertTriangle, Gamepad2, Plus, RefreshCw, Save, Trash2 } from "@lucide/svelte";
+  import { AlertTriangle, Gamepad2, Plus, Save, Trash2 } from "@lucide/svelte";
   import { tick } from "svelte";
   import { appMatcherKinds, appRuleIsActive, defaultAllowanceForRule } from "../../lib/ui";
-  import type {
-    Allowance,
-    AppRule,
-    ConfigSnapshot,
-    RunningApp,
-    WindowDetectionStatus
-  } from "../../lib/types";
+  import type { Allowance, AppRule, ConfigSnapshot, RunningApp } from "../../lib/types";
 
   interface Props {
     config: ConfigSnapshot | null;
     runningApps: RunningApp[];
-    runningAppsWindowDetection: WindowDetectionStatus | null;
-    runningAppsLoading: boolean;
     runningAppsError: string | null;
     appRuleDraft?: AppRule | null;
     appRuleAllowanceDraft?: Allowance | null;
@@ -22,10 +14,7 @@
     appRuleMessage: string | null;
     activeDetoxAppRuleIds?: string[];
     onSelectAppRule: (rule: AppRule) => void;
-    onStartNewAppRule: () => void;
-    onStartNewAppRuleFromRunningApp: (app: RunningApp) => void;
     onAddDetectedMatchers: (app: RunningApp) => void;
-    onRefreshRunningApps: () => void | Promise<void>;
     onSaveAppRuleDraft: () => void | Promise<void>;
     onRemoveAppRuleDraft: () => void | Promise<void>;
   }
@@ -33,8 +22,6 @@
   let {
     config,
     runningApps,
-    runningAppsWindowDetection,
-    runningAppsLoading,
     runningAppsError,
     appRuleDraft = $bindable<AppRule | null>(null),
     appRuleAllowanceDraft = $bindable<Allowance | null>(null),
@@ -42,10 +29,7 @@
     appRuleMessage,
     activeDetoxAppRuleIds = [],
     onSelectAppRule,
-    onStartNewAppRule,
-    onStartNewAppRuleFromRunningApp,
     onAddDetectedMatchers,
-    onRefreshRunningApps,
     onSaveAppRuleDraft,
     onRemoveAppRuleDraft
   }: Props = $props();
@@ -65,39 +49,6 @@
   );
   let savedMatcherCount = $derived(savedAppRule?.matchers.length ?? 0);
   let matcherValueInputs: HTMLInputElement[] = [];
-  let detectedSearch = $state("");
-  let detectedOpenWindowsRequested = $state(false);
-  let detectedOpenWindowsOnly = $derived(
-    Boolean(runningAppsWindowDetection?.available) && detectedOpenWindowsRequested
-  );
-  let detectedBlockedOnly = $state(false);
-
-  let filteredRunningApps = $derived.by(() => {
-    const query = detectedSearch.trim().toLowerCase();
-
-    return runningApps.filter((app) => {
-      if (detectedOpenWindowsOnly && app.window_titles.length === 0) {
-        return false;
-      }
-      if (detectedBlockedOnly && app.decision !== "block") {
-        return false;
-      }
-      if (!query) {
-        return true;
-      }
-
-      return [
-        app.display_name,
-        app.command_name,
-        app.executable_basename,
-        app.executable_path,
-        app.desktop_id,
-        ...app.window_titles
-      ]
-        .filter((value): value is string => Boolean(value))
-        .some((value) => value.toLowerCase().includes(query));
-    });
-  });
 
   function matcherIsSaved(index: number): boolean {
     return Boolean(savedAppRule && index < savedMatcherCount);
@@ -168,10 +119,6 @@
       <Gamepad2 size={18} aria-hidden="true" />
       <h2>Applications</h2>
     </div>
-    <button class="secondary wide-button" onclick={onStartNewAppRule}>
-      <Plus size={17} aria-hidden="true" />
-      <span>New application</span>
-    </button>
     <div class="rule-list">
       {#each config?.app_rules ?? [] as rule (rule.id)}
         <button
@@ -252,7 +199,7 @@
           <section class="inline-warning">
             <AlertTriangle size={17} aria-hidden="true" />
             <span>
-              No schedule is attached. This {ruleDraft.tier === "scheduled_block" ? "Tier 2" : "Tier 3"} list of websites stays inactive unless you select it for Detox or add it to a schedule.
+              No schedule is attached. This {appRuleDraft.tier === "scheduled_block" ? "Tier 2" : "Tier 3"} application stays inactive unless you select it for Detox or add it to a schedule.
             </span>
           </section>
         {/if}
@@ -355,39 +302,11 @@
       {/if}
     {/if}
     <div class="section-label section-label-tight">Detected apps</div>
-    <div class="detected-app-toolbar">
-      <label class="detected-search-field">
-        <input bind:value={detectedSearch} placeholder="Search" />
-      </label>
-      <label class="chip-check">
-        <input
-          type="checkbox"
-          checked={detectedOpenWindowsOnly}
-          disabled={!runningAppsWindowDetection?.available}
-          onchange={(event) => {
-            detectedOpenWindowsRequested = event.currentTarget.checked;
-          }}
-        />
-        <span>Open windows</span>
-      </label>
-      <label class="chip-check">
-        <input type="checkbox" bind:checked={detectedBlockedOnly} />
-        <span>Blocked</span>
-      </label>
-      <button class="secondary" onclick={onRefreshRunningApps} disabled={runningAppsLoading}>
-        <RefreshCw size={16} aria-hidden="true" />
-        <span>{runningAppsLoading ? "Refreshing" : "Refresh"}</span>
-      </button>
-      <span class="detected-app-summary">{filteredRunningApps.length} / {runningApps.length}</span>
-    </div>
     {#if runningAppsError}
       <p class="danger-text">{runningAppsError}</p>
     {/if}
-    {#if runningAppsWindowDetection && !runningAppsWindowDetection.available}
-      <p class="result-text detected-app-note">{runningAppsWindowDetection.detail}</p>
-    {/if}
     <div class="rule-list detected-app-list">
-      {#each filteredRunningApps as app (`${app.pid}-${app.display_name}`)}
+      {#each runningApps as app (`${app.pid}-${app.display_name}`)}
         <article class="detected-app-item">
           <div class="detected-app-header">
             <strong>{app.display_name}</strong>
@@ -413,23 +332,14 @@
             <p class="detected-app-meta">Rule: {app.blocking_rule_name}</p>
           {/if}
           <div class="button-row compact-row">
-            <button class="secondary" onclick={() => onStartNewAppRuleFromRunningApp(app)}>
+            <button class="secondary" onclick={() => onAddDetectedMatchers(app)}>
               <Plus size={16} aria-hidden="true" />
-              <span>New rule</span>
+              <span>Append</span>
             </button>
-            {#if appRuleDraft}
-              <button
-                class="secondary"
-                onclick={() => onAddDetectedMatchers(app)}
-              >
-                <Plus size={16} aria-hidden="true" />
-                <span>Merge</span>
-              </button>
-            {/if}
           </div>
         </article>
       {:else}
-        <p class="empty-state">No running apps match the current filters.</p>
+        <p class="empty-state">No running apps are currently detected.</p>
       {/each}
     </div>
   </article>

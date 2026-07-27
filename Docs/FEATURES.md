@@ -331,9 +331,9 @@ flags.
 - Additive edits to active hard rules are allowed where they do not weaken the  
 rule.
 - Removing or weakening active Tier 1 site rules requires a Tier 1 edit unlock.
-- Tier 1 edit key loaded from `/etc/blockuntu/tier1-edit-key.txt`.
-- Tier 1 edit unlock is available only during the operator window:  
-Sunday 20:00-23:59.
+- Daemon-owned Tier 1 credential; its value is never exposed by the GUI.
+- Optional operator window restriction for Tier 1 editing and uninstall:
+  Sunday 20:00-23:59 (disabled by default).
 - Tier 1 edit unlock lasts 5 minutes.
 - Tier 1 edit unlock state is stored in daemon service state.
 - Tier 1 edit unlock event logging.
@@ -381,7 +381,7 @@ Detox, URL blocks, and uninstall preparation.
 - Uninstall workflow through GUI with `pkexec`.
 - Package purge cleanup for services, runtime paths, browser policies, hosts  
 state, config, and database.
-- Recovery uninstall phrase support at `/etc/blockuntu/uninstall-recovery.txt`.
+- Per-user uninstall phrase support.
 
 ## Tests And Verification Assets
 

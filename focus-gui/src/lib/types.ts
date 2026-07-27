@@ -270,20 +270,14 @@ export interface UnlockResult {
   expires_at: string;
 }
 
-export interface Tier1EditKey {
-  key: string;
-}
-
 export interface Tier1EditStatus {
   active: boolean;
   expires_at?: string | null;
   remaining_seconds?: number | null;
+  credential_configured?: boolean;
+  operator_window_restriction_enabled?: boolean;
   operator_window_open?: boolean;
   operator_window_label?: string;
-}
-
-export interface UninstallConfirmation {
-  phrase: string;
 }
 
 export interface InstallationInfo {

@@ -1,8 +1,7 @@
 # Settings Implementation
 
-This document defines the Settings implementation for BlocKuntu. It replaces
-the current Admin page with a broader control center while keeping privileged
-actions protected. Changes to uninstall behavior are out of scope.
+This document defines the Settings implementation for BlocKuntu. It describes
+the current control center while keeping privileged actions protected.
 
 ## Scope
 
@@ -26,15 +25,12 @@ it does not invent configuration that the daemon cannot persist or enforce.
 | Area | Implemented now | Still required for the full design |
 | --- | --- | --- |
 | Naming and navigation | Visible `Admin` wording is `Settings` in the sidebar and tray menu. It is aligned at the bottom of the main sidebar and opens a fixed-size modal control centre with a sidebar of settings sections; the internal `admin` route and tray event remain unchanged. | Nothing for this scope. |
-| Health | Existing live health rows, technical detail, last health-check time, refresh, and copy-diagnostics action. | A dedicated structured last-successful-heartbeat value only if the daemon needs to expose more than the current health detail. |
-| Enforcement | Read-only live state for enforcement, Firefox and Chrome policy compliance, hosts immutability, unsupported-browser rule, and X11 window-title availability. | Daemon-backed settings for heartbeat grace period, stale-browser handling, scan interval, and any other enforcement behaviour. These must preserve the existing protected-change rules. |
-| Browser Integration | Existing Firefox/Chrome/Snap/Flatpak/Native Messaging health checks, extension IDs, managed paths supplied by the checks, and the confined-Firefox repair command. | A reviewed GUI action to run a repair helper, plus any additional daemon API needed for richer per-browser state. |
-| Policy and Recovery | TOML export and append/import, including the current result message. | Policy database and snapshot paths, recovery-snapshot creation, recovery-snapshot restore, and persistent transfer/snapshot history. |
-| Protected Changes | Sunday operator-window state, five-minute Tier 1 edit unlock, current unlock status, and expiry. | Nothing in this Settings scope. |
-| Application UI | Persistent local preferences for restoring the last selected page and the GUI refresh interval, plus restoring the first-run overview. | Start-on-login and configurable tray-close behaviour. |
+| Health | Live health rows including browser integration, refresh, build, and installation serial. | A dedicated structured last-successful-heartbeat value only if the daemon needs to expose more than the current health detail. |
+| Enforcement | Read-only live state for enforcement, hosts immutability, and unsupported-browser rule. | Daemon-backed settings for heartbeat grace period, stale-browser handling, scan interval, and any other enforcement behaviour. These must preserve the existing protected-change rules. |
+| Export and Import Rules | TOML export and append/import, including an explanation of append behavior. | Policy database and snapshot paths, recovery-snapshot creation, recovery-snapshot restore, and persistent transfer/snapshot history. |
+| Protected Changes and Uninstall | Daemon-owned Tier 1 credential setup, optional Sunday restriction, five-minute unlock, welcome-modal reset, and uninstall. | Nothing in this Settings scope. |
 | Notifications | Daemon-persisted master and per-event toggles for website/application blocks, allowance thresholds, schedule start/end, and Detox start/end. The tray process delivers expiring, deduplicated desktop notifications and records delivery outcomes in the event log. | Start-on-login if notifications must work before the GUI has been launched. |
 | Logging and statistics | The daemon appends each recorded event to `/etc/blockuntu/blockuntu.log`; Settings shows the path and terminal commands to inspect it, while Statistics gets its total and event-kind counts by parsing that file. | Nothing for this simplified scope. |
-| Maintenance | Reset first-run state and the existing restricted uninstall workflow. | Nothing for this simplified scope. |
 
 The event log is intentionally plain and append-only. It is primarily a
 terminal-facing diagnostic file: use `sudo tail -f /etc/blockuntu/blockuntu.log`
@@ -47,13 +43,10 @@ Settings is a single control-center page with these sections, in order:
 
 1. Health
 2. Enforcement
-3. Browser Integration
-4. Policy And Recovery
-5. Protected Changes
-6. Application UI
-7. Notifications
-8. Logging
-9. Maintenance
+3. Export and Import Rules
+4. Protected Changes and Uninstall
+5. Notifications
+6. Logging
 
 Settings opens as a fixed-size modal control centre over the current page. Its
 own sidebar selects one section at a time, so the user does not need to scroll
@@ -149,31 +142,25 @@ active policy must use the existing protected-change rules.
 
 ## Protected Changes
 
-This section retains the existing Tier 1 edit-unlock behavior.
+This section is named **Protected Changes and Uninstall**. It retains the Tier
+1 edit-unlock behavior, adds one-time daemon-owned credential setup, and holds
+the welcome-modal and uninstall actions.
 
 Show:
 
-- Operator-window state and label
+- Optional Sunday operator-window state and label
 - Protected-edit unlock state
 - Unlock expiration time
 
 Action:
 
-- Unlock protected edits for five minutes using the existing Tier 1 edit key
+- Unlock protected edits for five minutes using the saved Tier 1 credential
+- Enable or disable the Sunday 20:00-23:59 restriction after unlocking Tier 1
+- Show the welcome modal and run the protected uninstall action
 
-This section is the only place that exposes the edit-unlock workflow.
-
-## Application UI
-
-Application UI contains preferences that do not weaken enforcement.
-
-Settings:
-
-- Restore the last selected page on startup
-- Dashboard refresh interval
-- Show the first-run overview again
-
-Start-on-login and configurable tray-close behaviour remain future work.
+The credential is never displayed after setup. The Sunday restriction is
+disabled by default, so the credential remains required but protected actions
+are otherwise available at any time.
 
 ## Notifications
 
@@ -223,19 +210,6 @@ sudo cat /etc/blockuntu/blockuntu.log > ~/blockuntu.log
 No GUI viewer, filters, export, privacy mode, or log-redaction mode is part of
 this implementation.
 
-## Maintenance
-
-Maintenance is the final Settings section for disruptive actions.
-
-Actions:
-
-- Reset first-run/onboarding state
-- Uninstall BlocKuntu
-
-Uninstall keeps its current confirmation-phrase and Sunday 20:00-23:59
-operator-window restrictions. This Settings work does not change uninstall
-credentials, package-purge behavior, or browser-uninstall handoff.
-
 ## Event Log File
 
 There is no `Logs` main-navigation page. The plain daemon event log is kept at
@@ -248,12 +222,11 @@ the daemon's parsed total and event-kind counts from this same file.
 Completed:
 
 1. Change visible `Admin` wording to `Settings` in navigation and tray UI.
-2. Move Settings into a modal with a section sidebar, while retaining the
-   existing Health, Protected Changes, Policy And Recovery, and Maintenance
-   behavior.
-3. Add Browser Integration and Enforcement sections backed by existing health
-   and enforcement data, with explicit unavailable states.
-4. Add the supported Application UI preferences with persistent local storage.
+2. Move Settings into a modal with a section sidebar and consolidate protected
+   changes, uninstall, and welcome-modal maintenance into one section.
+3. Keep browser integration checks in Health and streamline Enforcement to its
+   essential enforcement state.
+4. Rename policy transfer to Export and Import Rules and explain append.
 5. Add the daemon-owned plain event log at `/etc/blockuntu/blockuntu.log` and
    show its location in Settings.
 6. Keep the Settings modal dimensions stable across sections, place the

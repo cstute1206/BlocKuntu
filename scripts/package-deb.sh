@@ -244,39 +244,8 @@ create_installation_serial() {
   rm -f "${legacy_serial_file}"
 }
 
-create_recovery_phrase() {
-  recovery_file="/etc/blockuntu/uninstall-recovery.txt"
-  if [ -s "${recovery_file}" ]; then
-    return 0
-  fi
-
-  random_hex="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
-  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
-  temp_file="$(mktemp)"
-  printf 'BLOCKUNTU-UNINSTALL-RECOVERY-%s\n' "${chunks}" >"${temp_file}"
-  install -d -o root -g root -m 0755 /etc/blockuntu
-  install -o root -g blockuntu -m 0640 "${temp_file}" "${recovery_file}"
-  rm -f "${temp_file}"
-}
-
-create_tier1_edit_key() {
-  key_file="/etc/blockuntu/tier1-edit-key.txt"
-  if [ -s "${key_file}" ]; then
-    return 0
-  fi
-
-  random_hex="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
-  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
-  temp_file="$(mktemp)"
-  printf 'BLOCKUNTU-TIER1-EDIT-%s\n' "${chunks}" >"${temp_file}"
-  install -d -o root -g root -m 0755 /etc/blockuntu
-  install -o root -g blockuntu -m 0640 "${temp_file}" "${key_file}"
-  rm -f "${temp_file}"
-}
-
 create_installation_serial
-create_recovery_phrase
-create_tier1_edit_key
+rm -f /etc/blockuntu/uninstall-recovery.txt /etc/blockuntu/tier1-edit-key.txt
 
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
@@ -303,16 +272,11 @@ If you use Firefox Snap or Flatpak, BlocKuntu configures its per-user browser
 integration automatically when the GUI starts. Restart that Firefox build
 after opening BlocKuntu.
 
-Open the GUI once after the first login and store the uninstall phrase shown
-in the First Run panel. The Admin uninstall action accepts that phrase or the
-system recovery phrase.
+Open the GUI once after the first login and configure protected changes before
+editing Tier 1 rules. Keep your uninstall phrase and Tier 1 credential secure.
 Closing the GUI window keeps BlocKuntu available from the tray icon. On vanilla
 GNOME, install or enable AppIndicator/KStatusNotifierItem support if the tray
 icon is not visible.
-A system recovery uninstall phrase is also stored at:
-  /etc/blockuntu/uninstall-recovery.txt
-The Tier 1 site-list edit key is stored at:
-  /etc/blockuntu/tier1-edit-key.txt
 MSG
 POSTINST
 

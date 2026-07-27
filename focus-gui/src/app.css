@@ -197,6 +197,7 @@ textarea {
 }
 
 input[type="checkbox"] {
+  accent-color: #2f6f62;
   min-height: auto;
   width: 16px;
 }
@@ -507,17 +508,15 @@ button:disabled {
 }
 
 .duration-field {
-  border: 0;
-  margin: 0;
+  display: grid;
+  gap: 6px;
   min-width: 0;
-  padding: 0;
 }
 
-.duration-field legend {
+.duration-field > span {
   color: #52615a;
   font-size: 0.82rem;
   font-weight: 700;
-  margin-bottom: 6px;
 }
 
 .duration-input-row {
@@ -526,8 +525,17 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) minmax(110px, 0.7fr);
 }
 
+.duration-input-row input,
+.duration-input-row select {
+  min-width: 0;
+}
+
 .schedule-form {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.schedule-action-row {
+  margin-top: 14px;
 }
 
 .result-text {
@@ -537,11 +545,6 @@ button:disabled {
 
 .danger-text {
   color: #8b1d1d;
-}
-
-.detected-app-note {
-  color: #5f6d67;
-  margin-top: 8px;
 }
 
 .split-view {
@@ -822,24 +825,6 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.detected-app-toolbar {
-  align-items: center;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(180px, 1fr) repeat(2, max-content) max-content max-content;
-}
-
-.detected-search-field input {
-  width: 100%;
-}
-
-.detected-app-summary {
-  color: #65746d;
-  font-size: 0.82rem;
-  font-variant-numeric: tabular-nums;
-  justify-self: end;
-}
-
 .tier-dot {
   background: #386dc0;
   border-radius: 999px;
@@ -848,6 +833,23 @@ button:disabled {
 }
 
 .tier-dot.hard {
+  background: #c94f4f;
+}
+
+.rule-status-legend {
+  color: #65746d;
+  font-size: 0.78rem;
+  margin: 10px 0 6px;
+}
+
+.rule-status-dot {
+  background: #d89b24;
+  border-radius: 999px;
+  height: 10px;
+  width: 10px;
+}
+
+.rule-status-dot.active {
   background: #c94f4f;
 }
 
@@ -1212,6 +1214,71 @@ pre {
   z-index: 100;
 }
 
+.onboarding-backdrop {
+  align-items: center;
+  background: rgb(20 29 25 / 48%);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 22px;
+  position: fixed;
+  z-index: 110;
+}
+
+.onboarding-modal {
+  background: #ffffff;
+  border: 1px solid #cbd6d0;
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgb(14 24 19 / 32%);
+  max-height: calc(100vh - 44px);
+  overflow: auto;
+  width: min(680px, calc(100vw - 44px));
+}
+
+.onboarding-modal-header {
+  align-items: center;
+  border-bottom: 1px solid #dce4df;
+  display: flex;
+  justify-content: space-between;
+  padding: 16px 18px;
+}
+
+.onboarding-modal-header .panel-title {
+  margin: 0;
+}
+
+.onboarding-copy {
+  color: #4f5e56;
+  display: grid;
+  gap: 14px;
+  line-height: 1.45;
+  padding: 18px;
+}
+
+.onboarding-copy p {
+  margin: 0;
+}
+
+.onboarding-copy ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.onboarding-credentials {
+  background: #f4f7f5;
+  border: 1px solid #dfe6e1;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.onboarding-actions {
+  justify-content: flex-end;
+}
+
 .settings-modal {
   background: #ffffff;
   border: 1px solid #cbd6d0;
@@ -1470,7 +1537,6 @@ pre {
     .split-view,
     .setup-grid,
     .allowance-editor,
-    .detected-app-toolbar,
     .detox-form,
     .policy-file-actions,
     .tier1-edit-form,
@@ -1485,10 +1551,6 @@ pre {
 
   .detox-session-meta {
     justify-items: start;
-  }
-
-  .detected-app-summary {
-    justify-self: start;
   }
 
   .topbar {
