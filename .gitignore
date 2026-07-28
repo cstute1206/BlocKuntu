@@ -14,9 +14,11 @@ focus-gui/src-tauri/gen/schemas/
 # Firefox extension package artifacts
 browser-extension-firefox/*.xpi
 browser-extension-firefox/*.zip
+browser-extension-firefox/README.md
 browser-extension-chrome/*.crx
 browser-extension-chrome/*.pem
 browser-extension-chrome/*.zip
+browser-extension-chrome/README.md
 
 # Local databases and runtime state
 *.sqlite
@@ -58,6 +60,9 @@ Thumbs.db
 .vscode/
 .env
 LICENSE
+
+## Old things
+Archive/
 
 # Local emergency-uninstall operator material
 /emergency-uninstall-tools/

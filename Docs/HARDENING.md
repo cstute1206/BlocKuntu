@@ -30,8 +30,9 @@ Uninstall handoff:
 - GUI uninstall retains the internal `prepare_uninstall` RPC so browser
   extensions can stand down before package purge removes the native host.
 - This is not a general stop mechanism. It creates a 30-second
-  `uninstalling` lease and the daemon itself rejects calls outside Sunday
-  20:00-23:59 or while clock integrity is tampered.
+  `uninstalling` lease. When the optional Sunday restriction is enabled, the
+  daemon rejects uninstall preparation outside Sunday 20:00-23:59; it always
+  rejects it while clock integrity is tampered.
 - If package purge fails, the lease expires and daemon repair loops restore
   browser policies, the managed hosts block, and process enforcement.
 
