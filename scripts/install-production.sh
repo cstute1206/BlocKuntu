@@ -29,12 +29,11 @@ Options:
   --user USER         Desktop user to add to the blockuntu socket group.
   -h, --help          Show this help.
 
-Browser extensions are not installed or force-installed for system Firefox,
-Firefox Snap, or Chrome by this script. It installs Native Messaging manifests
-and starts blockuntud with --defer-browser-policy-repair-until-heartbeat, so
-the user must install and enable those browser extensions manually before
-managed policy is written. Firefox Flatpak is configured with a per-user
-systemconfig policy because it cannot read the host /etc/firefox policy path.
+Firefox and Chrome policy repair is deferred until each extension's first
+verified heartbeat. This script installs the Native Messaging manifests
+required by both browsers. Firefox Flatpak uses a per-user systemconfig policy
+because it cannot read the host /etc/firefox policy path; it is written after
+the first verified Firefox heartbeat.
 USAGE
 }
 
@@ -248,7 +247,7 @@ warn_browser_prerequisites() {
     log "Firefox Snap detected; confined Firefox native-host setup will be installed for ${TARGET_USER}"
   fi
   if flatpak_firefox_installed; then
-    log "Firefox Flatpak detected; confined Firefox native-host and policy setup will be installed for ${TARGET_USER}"
+    log "Firefox Flatpak detected; confined Firefox native-host setup will be installed for ${TARGET_USER}"
   fi
   if ! has_cmd firefox; then
     log "warning: firefox was not found on PATH; install a system Firefox package before using the Firefox extension"
@@ -376,21 +375,11 @@ log "installing daemon and native host binaries"
 sudo install -Dm755 focusd/target/release/blockuntud /usr/local/bin/blockuntud
 sudo install -Dm755 native-host/target/release/blockuntu-native /usr/local/bin/blockuntu-native
 
-if [[ -f browser-extension-firefox/BlocKuntu-Signed.xpi ]]; then
-  log "installing Firefox extension artifact for deferred managed policy"
-  sudo install -Dm644 browser-extension-firefox/BlocKuntu-Signed.xpi \
-    /usr/local/share/blockuntu/BlocKuntu-Signed.xpi
-else
-  log "warning: browser-extension-firefox/BlocKuntu-Signed.xpi is missing; deferred Firefox policy cannot force-install a local XPI"
-fi
-
-chrome_crx_url="https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download"
-if [[ -f browser-extension-chrome/browser-extension-chrome.crx ]]; then
-  log "installing Chrome extension artifact for deferred managed policy"
-  sudo install -Dm644 browser-extension-chrome/browser-extension-chrome.crx \
-    /usr/local/share/blockuntu/browser-extension-chrome.crx
-  chrome_crx_url="file:///usr/local/share/blockuntu/browser-extension-chrome.crx"
-fi
+log "removing retired locally hosted browser-extension artifacts"
+sudo rm -f \
+  /usr/local/share/blockuntu/BlocKuntu-Signed.xpi \
+  /usr/local/share/blockuntu/browser-extension-chrome.crx \
+  /usr/local/share/blockuntu/chrome-extension-updates.xml
 
 if [[ "${OVERWRITE_CONFIG}" -eq 1 || ! -f /etc/blockuntu/config.toml ]]; then
   log "installing /etc/blockuntu/config.toml"
@@ -438,10 +427,10 @@ cat >"${override_file}" <<'OVERRIDE'
 ExecStart=
 OVERRIDE
 cat >>"${override_file}" <<OVERRIDE
-ExecStart=/usr/local/bin/blockuntud --extension-xpi /usr/local/share/blockuntu/BlocKuntu-Signed.xpi --chrome-extension-crx-url ${chrome_crx_url} --defer-browser-policy-repair-until-heartbeat serve
+ExecStart=/usr/local/bin/blockuntud --defer-browser-policy-repair-until-heartbeat serve
 OVERRIDE
 
-log "installing deferred browser-policy service override"
+log "installing browser-policy service override"
 sudo install -Dm644 "${override_file}" \
   /etc/systemd/system/blockuntu.service.d/90-defer-browser-policy.conf
 
@@ -536,12 +525,13 @@ Browser policy repair is deferred until the first extension heartbeat in:
 
 No system Firefox, Firefox Snap, or Chrome policy file is created until the
 matching browser extension sends its first heartbeat. Firefox Flatpak uses a
-per-user systemconfig policy that is written by the confined Firefox helper.
+per-user systemconfig policy that is written by the confined Firefox helper
+after that same verified Firefox heartbeat.
 
 Native Messaging manifests were installed, so the manually installed extension
 can reach /run/blockuntu/blockuntud.sock through blockuntu-native.
 If Firefox Snap is installed for ${TARGET_USER}, its per-user manifest and host
 copy were installed too. If Firefox Flatpak is installed, its per-user manifest,
-host copy, copied XPI, and systemconfig policy were installed. Restart those
-browsers before testing.
+and host copy were installed. Its systemconfig policy is added after the first
+verified Firefox heartbeat. Restart those browsers before testing.
 SUMMARY

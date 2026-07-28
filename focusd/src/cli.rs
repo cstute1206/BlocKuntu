@@ -9,15 +9,10 @@ pub const DEFAULT_POLICY_RECOVERY_PATH: &str = "/etc/blockuntu/policy-recovery.t
 pub const DEFAULT_SOCKET_PATH: &str = "/run/blockuntu/blockuntud.sock";
 pub const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.json";
 pub const DEFAULT_EXTENSION_ID: &str = "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}";
-pub const DEFAULT_EXTENSION_XPI_PATH: &str =
-    "/home/christian/Desktop/HostFileModifier/browser-extension-firefox/BlocKuntu-Signed.xpi";
+pub const DEFAULT_FIREFOX_EXTENSION_INSTALL_URL: &str =
+    "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi";
 pub const DEFAULT_CHROME_POLICY_PATH: &str = "/etc/opt/chrome/policies/managed/blockuntu.json";
-pub const DEFAULT_CHROME_UPDATE_MANIFEST_PATH: &str =
-    "/usr/local/share/blockuntu/chrome-extension-updates.xml";
-pub const DEFAULT_CHROME_EXTENSION_ID: &str = "odedgejjcdilkoibeljkeohekonmdfea";
-pub const DEFAULT_CHROME_EXTENSION_VERSION: &str = "0.2.1";
-pub const DEFAULT_CHROME_EXTENSION_CRX_URL: &str =
-    "https://nx57427.your-storageshare.de/s/EB9j77etxD4ojkC/download";
+pub const DEFAULT_CHROME_EXTENSION_ID: &str = "opfljaancedgklbpnbpjfhdbbhbfpnoc";
 pub const DEFAULT_HOSTS_PATH: &str = "/etc/hosts";
 
 #[derive(Debug, Clone, Parser)]
@@ -42,18 +37,12 @@ pub struct Args {
     pub firefox_policy: PathBuf,
     #[arg(long, default_value = DEFAULT_EXTENSION_ID)]
     pub extension_id: String,
-    #[arg(long, default_value = DEFAULT_EXTENSION_XPI_PATH)]
-    pub extension_xpi: PathBuf,
+    #[arg(long, default_value = DEFAULT_FIREFOX_EXTENSION_INSTALL_URL)]
+    pub firefox_extension_install_url: String,
     #[arg(long, default_value = DEFAULT_CHROME_POLICY_PATH)]
     pub chrome_policy: PathBuf,
-    #[arg(long, default_value = DEFAULT_CHROME_UPDATE_MANIFEST_PATH)]
-    pub chrome_update_manifest: PathBuf,
     #[arg(long, default_value = DEFAULT_CHROME_EXTENSION_ID)]
     pub chrome_extension_id: String,
-    #[arg(long, default_value = DEFAULT_CHROME_EXTENSION_VERSION)]
-    pub chrome_extension_version: String,
-    #[arg(long, default_value = DEFAULT_CHROME_EXTENSION_CRX_URL)]
-    pub chrome_extension_crx_url: String,
     #[arg(long, default_value = DEFAULT_HOSTS_PATH)]
     pub hosts: PathBuf,
     #[arg(long, conflicts_with = "no_hosts_immutable")]

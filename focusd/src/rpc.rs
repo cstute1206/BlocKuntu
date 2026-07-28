@@ -839,8 +839,6 @@ fn chrome_policy_status_json(context: &RpcContext) -> Result<Value> {
         if !context.manage_chrome_policy {
             object.insert("compliant".to_string(), json!(true));
             object.insert("force_install_configured".to_string(), json!(true));
-            object.insert("update_manifest_compliant".to_string(), json!(true));
-            object.insert("override_update_url".to_string(), json!(true));
             object.insert(
                 "detail".to_string(),
                 json!("Chrome policy management is disabled; install and enable the extension manually"),
@@ -848,8 +846,6 @@ fn chrome_policy_status_json(context: &RpcContext) -> Result<Value> {
         } else if deferred {
             object.insert("compliant".to_string(), json!(true));
             object.insert("force_install_configured".to_string(), json!(true));
-            object.insert("update_manifest_compliant".to_string(), json!(true));
-            object.insert("override_update_url".to_string(), json!(true));
             object.insert(
                 "detail".to_string(),
                 json!("Chrome policy repair is deferred until the first extension heartbeat"),
@@ -2535,7 +2531,7 @@ fn extension_component<'a>(
     }
 
     if extension_id
-        .map(|extension_id| extension_id == "odedgejjcdilkoibeljkeohekonmdfea")
+        .map(|extension_id| extension_id == "opfljaancedgklbpnbpjfhdbbhbfpnoc")
         .unwrap_or(false)
     {
         return CHROME_EXTENSION_HEARTBEAT_COMPONENT;
@@ -3770,14 +3766,11 @@ mod tests {
         let firefox_policy = FirefoxPolicyManager::new(
             temp.path().join("firefox/policies.json"),
             "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
-            temp.path().join("BlocKuntu-Signed.xpi"),
+            "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi",
         );
         let chrome_policy = ChromePolicyManager::new(
             temp.path().join("chrome/policies/managed/blockuntu.json"),
-            temp.path().join("chrome-extension-updates.xml"),
-            "odedgejjcdilkoibeljkeohekonmdfea",
-            "0.2.1",
-            "https://example.invalid/blockuntu.crx",
+            "opfljaancedgklbpnbpjfhdbbhbfpnoc",
         );
         let hosts = HostsManager::new(temp.path().join("hosts"));
         let context = context
@@ -4363,6 +4356,10 @@ mod tests {
 
         assert!(response.get("error").is_none(), "{response}");
         assert!(temp.path().join("firefox/policies.json").exists());
+        let firefox_policy = std::fs::read_to_string(temp.path().join("firefox/policies.json"))
+            .expect("Firefox policy should be readable");
+        assert!(firefox_policy
+            .contains("https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi"));
         assert!(!temp
             .path()
             .join("chrome/policies/managed/blockuntu.json")
@@ -4375,7 +4372,7 @@ mod tests {
             "params": {
                 "component": "chrome_extension",
                 "browser": "chrome",
-                "extension_id": "odedgejjcdilkoibeljkeohekonmdfea",
+                "extension_id": "opfljaancedgklbpnbpjfhdbbhbfpnoc",
                 "extension_version": "0.2.1"
             }
         });
@@ -4390,7 +4387,6 @@ mod tests {
             .path()
             .join("chrome/policies/managed/blockuntu.json")
             .exists());
-        assert!(temp.path().join("chrome-extension-updates.xml").exists());
     }
 
     #[test]
@@ -6127,7 +6123,7 @@ mod tests {
             "params": {
                 "browser": "chrome",
                 "component": "chrome_extension",
-                "extension_id": "odedgejjcdilkoibeljkeohekonmdfea",
+                "extension_id": "opfljaancedgklbpnbpjfhdbbhbfpnoc",
                 "extension_version": "0.2.1",
                 "now": "2026-05-22T10:00:00Z"
             }
@@ -6158,7 +6154,7 @@ mod tests {
         assert_eq!(response["component"], "chrome_extension");
         assert_eq!(response["state"], "active");
         assert_eq!(response["browser"], "chrome");
-        assert_eq!(response["extension_id"], "odedgejjcdilkoibeljkeohekonmdfea");
+        assert_eq!(response["extension_id"], "opfljaancedgklbpnbpjfhdbbhbfpnoc");
 
         let firefox_status = browser_extension_status_json(
             None,

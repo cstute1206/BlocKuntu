@@ -1,8 +1,7 @@
 # BlocKuntu Installation
 
-BlocKuntu currently supports Debian and Ubuntu package installations. The Debian  
-package is the supported path; the manual script is for development or controlled  
-administrator use.
+BlocKuntu currently supports Debian and Ubuntu package installations. The Debian
+package is the only supported installation and test path.
 
 ## Install the Debian package
 
@@ -17,25 +16,28 @@ Sign out and back in after changing group membership. The desktop user needs the
 `blockuntu` group to access `/run/blockuntu/blockuntud.sock` through the GUI and  
 the browser Native Messaging host.
 
-The package installs the daemon, GUI, Native Messaging host, systemd units,  
-default configuration, and browser-extension artifacts. It does **not** install  
-or enable a browser extension for you.
+The package installs the daemon, GUI, Native Messaging host, systemd units, and
+default configuration. It does **not** bundle, install, or enable browser
+extensions for you.
 
 ## First start
 
 1. Open BlocKuntu after signing in.
 2. Store the recovery uninstall phrase and Tier 1 edit key shown in the welcome
   modal somewhere secure. They are needed for protected actions.
-3. Install and enable the BlocKuntu extension in every Firefox or Chrome browser
-  you want BlocKuntu to protect, then restart that browser.
+3. Install and enable the BlocKuntu Firefox extension from AMO and the
+  BlocKuntu Chrome extension from the Chrome Web Store in every browser you
+  want BlocKuntu to protect, then restart each browser.
 4. Use **Settings → Health** to verify the browser and Native Messaging checks.
 
-The daemon defers managed browser-policy repair until it receives the first  
-extension heartbeat. A missing policy file directly after package installation is  
-therefore expected.
+Both browser policies are deferred until the matching extension sends its first
+verified heartbeat. BlocKuntu then writes a policy that force-installs and locks
+that same AMO or Chrome Web Store extension.
 
-For Firefox Snap or Flatpak, opening BlocKuntu starts the per-user setup. If it  
-does not complete, run this as the desktop user and restart Firefox:
+For Firefox Snap or Flatpak, opening BlocKuntu starts the per-user Native
+Messaging setup. Firefox Flatpak receives its store-extension policy after the
+first verified Firefox heartbeat. If setup does not complete, run this as the
+desktop user and restart Firefox:
 
 ```bash
 blockuntu-setup-confined-firefox
@@ -80,13 +82,28 @@ when needed:
 ./scripts/package-deb.sh --version <version>
 ```
 
-The build requires release binaries, the Tauri GUI, a signed Firefox XPI, and a  
-Chrome CRX. Inspect the resulting package before distribution:
+The build requires the release binaries and the Tauri GUI. Browser extensions
+are retrieved from AMO and the Chrome Web Store; neither an XPI nor a CRX is
+bundled. Inspect the resulting package before distribution:
 
 ```bash
 dpkg-deb -I target/debian/blockuntu_<version>_$(dpkg --print-architecture).deb
 dpkg-deb -c target/debian/blockuntu_<version>_$(dpkg --print-architecture).deb
 ```
+
+## Test a package in a virtual machine
+
+Test each build in a clean Debian or Ubuntu virtual machine. Copy the `.deb` from
+`target/debian/` into the VM, then install it there:
+
+```bash
+sudo apt install ./blockuntu_<version>_$(dpkg --print-architecture).deb
+sudo usermod -aG blockuntu "$USER"
+```
+
+Sign out and back in, then complete the checks in
+[Verify the installation](#verify-the-installation). Use this package
+installation as the only test path.
 
 ## Security boundary
 

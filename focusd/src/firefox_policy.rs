@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use url::Url;
 
 use crate::error::Result;
 
@@ -13,7 +12,7 @@ use crate::error::Result;
 pub struct FirefoxPolicyManager {
     policy_path: PathBuf,
     extension_id: String,
-    extension_xpi: PathBuf,
+    install_url: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,8 +28,6 @@ pub enum RepairStatus {
 pub struct FirefoxPolicyStatus {
     pub path: String,
     pub extension_id: String,
-    pub extension_xpi: String,
-    pub extension_xpi_exists: bool,
     pub policy_exists: bool,
     pub valid_json: bool,
     pub compliant: bool,
@@ -44,12 +41,12 @@ impl FirefoxPolicyManager {
     pub fn new(
         policy_path: impl Into<PathBuf>,
         extension_id: impl Into<String>,
-        extension_xpi: impl Into<PathBuf>,
+        install_url: impl Into<String>,
     ) -> Self {
         Self {
             policy_path: policy_path.into(),
             extension_id: extension_id.into(),
-            extension_xpi: extension_xpi.into(),
+            install_url: install_url.into(),
         }
     }
 
@@ -58,8 +55,6 @@ impl FirefoxPolicyManager {
     }
 
     pub fn expected_policy(&self) -> Value {
-        let install_url = file_url(&self.extension_xpi);
-
         json!({
             "policies": {
                 "BlockAboutConfig": true,
@@ -71,7 +66,7 @@ impl FirefoxPolicyManager {
                 "ExtensionSettings": {
                     self.extension_id.clone(): {
                         "installation_mode": "force_installed",
-                        "install_url": install_url,
+                        "install_url": self.install_url.clone(),
                         "default_area": "navbar",
                         "private_browsing": true
                     }
@@ -117,9 +112,7 @@ impl FirefoxPolicyManager {
 
     pub fn status(&self) -> FirefoxPolicyStatus {
         let expected = self.expected_policy();
-        let extension_xpi_exists = self.extension_xpi.exists();
         let path = self.policy_path.display().to_string();
-        let extension_xpi = self.extension_xpi.display().to_string();
 
         let contents = match fs::read(&self.policy_path) {
             Ok(contents) => contents,
@@ -127,8 +120,6 @@ impl FirefoxPolicyManager {
                 return FirefoxPolicyStatus {
                     path,
                     extension_id: self.extension_id.clone(),
-                    extension_xpi,
-                    extension_xpi_exists,
                     policy_exists: false,
                     valid_json: false,
                     compliant: false,
@@ -142,8 +133,6 @@ impl FirefoxPolicyManager {
                 return FirefoxPolicyStatus {
                     path,
                     extension_id: self.extension_id.clone(),
-                    extension_xpi,
-                    extension_xpi_exists,
                     policy_exists: true,
                     valid_json: false,
                     compliant: false,
@@ -161,8 +150,6 @@ impl FirefoxPolicyManager {
                 return FirefoxPolicyStatus {
                     path,
                     extension_id: self.extension_id.clone(),
-                    extension_xpi,
-                    extension_xpi_exists,
                     policy_exists: true,
                     valid_json: false,
                     compliant: false,
@@ -201,8 +188,6 @@ impl FirefoxPolicyManager {
         FirefoxPolicyStatus {
             path,
             extension_id: self.extension_id.clone(),
-            extension_xpi,
-            extension_xpi_exists,
             policy_exists: true,
             valid_json: true,
             compliant,
@@ -261,12 +246,6 @@ fn temporary_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{file_name}.blockuntu.{}.tmp", std::process::id()))
 }
 
-fn file_url(path: &Path) -> String {
-    Url::from_file_path(path)
-        .map(|url| url.to_string())
-        .unwrap_or_else(|_| format!("file://{}", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{FirefoxPolicyManager, RepairStatus};
@@ -278,7 +257,7 @@ mod tests {
         let manager = FirefoxPolicyManager::new(
             &policy_path,
             "blockuntu@example.local",
-            "/usr/local/share/blockuntu/BlocKuntu.xpi",
+            "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi",
         );
 
         assert_eq!(
@@ -297,6 +276,8 @@ mod tests {
         assert!(policy.contains("\"private_browsing\""));
         assert!(policy.contains("\"PrivateBrowsingModeAvailability\""));
         assert!(policy.contains("\"DisableDeveloperTools\""));
+        assert!(policy
+            .contains("https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi"));
 
         let status = manager.status();
         assert!(status.compliant);

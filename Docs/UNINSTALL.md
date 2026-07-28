@@ -1,7 +1,6 @@
 # BlocKuntu Uninstall
 
-The Debian package and the manual `/usr/local` installation are different
-installation types. Use the matching removal path.
+BlocKuntu is installed and removed as a Debian package.
 
 ## Debian package uninstall
 
@@ -46,24 +45,5 @@ including:
 - BlocKuntu-owned Firefox and Chrome policy files.
 
 Restart affected browsers after uninstall if they continue to show managed
-policy state. User-installed development manifests and per-user Firefox
-Snap/Flatpak integration may remain and can be removed manually if no longer
-needed.
-
-## Manual developer installation
-
-If the machine was installed with `./scripts/install-production.sh`, remove it
-with:
-
-```bash
-./scripts/uninstall-production.sh
-```
-
-Review the available cleanup options first:
-
-```bash
-./scripts/uninstall-production.sh --help
-```
-
-The script normally preserves configuration/data and browser policy files unless
-its explicit cleanup flags are used. Do not use it for a Debian package install.
+policy state. Per-user Firefox Snap/Flatpak integration may remain and can be
+removed manually if no longer needed.

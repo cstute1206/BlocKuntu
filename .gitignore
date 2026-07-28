@@ -15,8 +15,6 @@ focus-gui/src-tauri/gen/schemas/
 browser-extension-firefox/*.xpi
 browser-extension-firefox/*.zip
 browser-extension-firefox/README.md
-browser-extension-chrome/*.crx
-browser-extension-chrome/*.pem
 browser-extension-chrome/*.zip
 browser-extension-chrome/README.md
 

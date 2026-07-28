@@ -18,8 +18,9 @@ Usage: scripts/package-deb.sh [options]
 
 Build a full BlocKuntu Debian package. The package installs the daemon,
 native host, Tauri GUI, systemd units, Native Messaging manifests, default
-config, and extension artifacts. It does not create browser policies at install
-time; policy repair is deferred until the first browser-extension heartbeat.
+config, and no browser-extension artifacts. Install Firefox from AMO and
+Chrome from the Chrome Web Store. Their policies are written after each
+extension's first verified heartbeat, then lock the store-installed extension.
 
 Options:
   --no-build          Use existing release artifacts.
@@ -103,8 +104,6 @@ fi
 [[ -x focusd/target/release/blockuntud ]] || die "missing focusd/target/release/blockuntud"
 [[ -x native-host/target/release/blockuntu-native ]] || die "missing native-host/target/release/blockuntu-native"
 [[ -x focus-gui/src-tauri/target/release/blockuntu-gui ]] || die "missing focus-gui/src-tauri/target/release/blockuntu-gui"
-[[ -f browser-extension-firefox/BlocKuntu-Signed.xpi ]] || die "missing browser-extension-firefox/BlocKuntu-Signed.xpi"
-[[ -f browser-extension-chrome/browser-extension-chrome.crx ]] || die "missing browser-extension-chrome/browser-extension-chrome.crx"
 
 mkdir -p "${OUTPUT_DIR}"
 WORK_DIR="$(mktemp -d "${OUTPUT_DIR}/blockuntu-deb.XXXXXX")"
@@ -128,10 +127,6 @@ SH
 chmod 0755 "${PKG_ROOT}/usr/bin/blockuntu-setup-confined-firefox"
 
 install -Dm644 packaging/deb/blockuntu.toml "${PKG_ROOT}/etc/blockuntu/config.toml"
-install -Dm644 browser-extension-firefox/BlocKuntu-Signed.xpi \
-  "${PKG_ROOT}/usr/share/blockuntu/BlocKuntu-Signed.xpi"
-install -Dm644 browser-extension-chrome/browser-extension-chrome.crx \
-  "${PKG_ROOT}/usr/share/blockuntu/browser-extension-chrome.crx"
 
 install -Dm644 focus-gui/src-tauri/icons/32x32.png \
   "${PKG_ROOT}/usr/share/icons/hicolor/32x32/apps/blockuntu.png"
@@ -172,7 +167,7 @@ install -Dm644 packaging/systemd/blockuntu-hosts.service \
   "${PKG_ROOT}/lib/systemd/system/blockuntu-hosts.service"
 
 sed -i \
-  's#ExecStart=/usr/local/bin/blockuntud serve#ExecStart=/usr/bin/blockuntud --extension-xpi /usr/share/blockuntu/BlocKuntu-Signed.xpi --chrome-extension-crx-url file:///usr/share/blockuntu/browser-extension-chrome.crx --defer-browser-policy-repair-until-heartbeat serve#' \
+  's#ExecStart=/usr/local/bin/blockuntud serve#ExecStart=/usr/bin/blockuntud --defer-browser-policy-repair-until-heartbeat serve#' \
   "${PKG_ROOT}/lib/systemd/system/blockuntu.service"
 sed -i 's#ExecStart=/usr/local/bin/blockuntud repair-hosts#ExecStart=/usr/bin/blockuntud repair-hosts#' \
   "${PKG_ROOT}/lib/systemd/system/blockuntu-hosts.service"
@@ -199,9 +194,9 @@ Recommends: wmctrl
 Maintainer: BlocKuntu <local@blockuntu.invalid>
 Description: Local Linux focus blocker
  BlocKuntu installs a privileged daemon, Native Messaging bridge, and Tauri
- desktop GUI for local website and application blocking. Browser extensions
- are installed manually; managed browser policy is written only after the first
- extension heartbeat confirms the integration works.
+ desktop GUI for local website and application blocking. Firefox and Chrome
+ browser policies are deferred until each store-installed extension sends its
+ first verified heartbeat, then lock that extension against removal.
 CONTROL
 
 cat >"${DEBIAN_DIR}/conffiles" <<'CONFFILES'
@@ -283,12 +278,13 @@ BlocKuntu installed.
 Add the desktop user to the socket group, then log out and back in:
   sudo usermod -aG blockuntu "$USER"
 
-System Firefox, Firefox Snap, and Chrome policies are deferred. Install and
-enable the BlocKuntu browser extension manually; the daemon writes managed
-policy after the first heartbeat.
+Install and enable the BlocKuntu Firefox extension from AMO and the BlocKuntu
+Chrome extension from the Chrome Web Store. After each extension's first
+verified heartbeat, BlocKuntu writes its managed policy and locks that
+store-installed extension against removal.
 If you use Firefox Snap or Flatpak, BlocKuntu configures its per-user browser
-integration automatically when the GUI starts. Restart that Firefox build
-after opening BlocKuntu.
+integration automatically when the GUI starts. Its Flatpak policy is written
+after the first verified Firefox heartbeat.
 
 Open the GUI once after the first login and store the recovery credentials shown
 in the welcome modal. You can hide and remove them permanently from Settings.

@@ -196,8 +196,6 @@ export interface SystemHealth {
 export interface FirefoxPolicyStatus {
   path: string;
   extension_id: string;
-  extension_xpi: string;
-  extension_xpi_exists: boolean;
   policy_exists: boolean;
   valid_json: boolean;
   compliant: boolean;
@@ -212,21 +210,15 @@ export interface FirefoxPolicyStatus {
 
 export interface ChromePolicyStatus {
   path: string;
-  update_manifest_path: string;
   extension_id: string;
-  extension_version: string;
-  extension_crx_url: string;
   update_url: string;
   policy_exists: boolean;
-  update_manifest_exists: boolean;
   valid_json: boolean;
   compliant: boolean;
   managed?: boolean;
   deferred_until_heartbeat?: boolean;
   active_after_heartbeat?: boolean;
-  update_manifest_compliant: boolean;
   force_install_configured: boolean;
-  override_update_url: boolean;
   detail: string;
 }
 

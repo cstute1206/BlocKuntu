@@ -42,9 +42,10 @@ using Native Messaging. They fail closed for top-level HTTP/HTTPS navigation if
 they cannot verify the daemon connection. The daemon also monitors configured  
 applications and terminates matching processes.
 
-The Health section reports daemon, browser integration, policy, and hosts-file  
-checks. Browser extensions must be installed by the user and managed browser policy  
-is written after the first successful extension heartbeat.
+The Health section reports daemon, browser integration, policy, and hosts-file
+checks. Users install the Firefox and Chrome extensions from their official
+stores. After each extension's first successful heartbeat, BlocKuntu writes its
+managed policy and locks that same store-installed extension.
 
 ## Overview and Settings
 

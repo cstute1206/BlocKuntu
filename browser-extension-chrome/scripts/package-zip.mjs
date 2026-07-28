@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -24,11 +24,8 @@ for (const path of required) {
 rmSync(output, { force: true });
 
 const stagingDirectory = mkdtempSync(join(tmpdir(), "blockuntu-chrome-store-"));
-const storeManifest = JSON.parse(readFileSync("manifest.json", "utf8"));
-delete storeManifest.key;
-
 try {
-  writeFileSync(join(stagingDirectory, "manifest.json"), `${JSON.stringify(storeManifest, null, 2)}\n`);
+  cpSync("manifest.json", join(stagingDirectory, "manifest.json"));
   cpSync("blocked.html", join(stagingDirectory, "blocked.html"));
   cpSync("dist", join(stagingDirectory, "dist"), { recursive: true });
   cpSync("icons", join(stagingDirectory, "icons"), { recursive: true });

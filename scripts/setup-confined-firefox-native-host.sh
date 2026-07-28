@@ -8,24 +8,25 @@ TARGETS="auto"
 TARGET_USER="${SUDO_USER:-${USER:-}}"
 TARGET_HOME=""
 NATIVE_HOST=""
-FIREFOX_XPI=""
+FIREFOX_INSTALL_URL="https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi"
 APPLY_FLATPAK_OVERRIDE=1
+WRITE_FLATPAK_POLICY=0
 
 usage() {
   cat <<'USAGE'
 Usage: scripts/setup-confined-firefox-native-host.sh [options]
 
 Install BlocKuntu Native Messaging support for confined Firefox builds.
-For Firefox Flatpak this also installs the systemconfig policy extension that
-force-installs and locks the BlocKuntu extension.
+Firefox Flatpak policy installation is intentionally separate: BlocKuntu
+installs and locks the AMO extension only after its first verified heartbeat.
 
 Options:
   --targets LIST              Comma-separated list: auto, flatpak, snap, all.
                               Default: auto.
   --native-host PATH          Source blockuntu-native binary to copy into the
                               confined browser's writable app area.
-  --firefox-xpi PATH          Source signed Firefox XPI for Flatpak managed
-                              policy. Auto-detected when omitted.
+  --write-flatpak-policy      Write the Firefox Flatpak systemconfig policy
+                              that force-installs and locks the AMO extension.
   --user USER                 Desktop user whose confined Firefox profiles are
                               configured. Default: current sudo/user context.
   --home DIR                  Home directory for --user, if auto-detection is
@@ -101,8 +102,6 @@ EOF
 
 write_firefox_policy() {
   local policy_path="$1"
-  local xpi_path="$2"
-  local install_url="file://${xpi_path}"
   local temp_file
 
   install_user_dir "$(dirname -- "${policy_path}")"
@@ -119,7 +118,7 @@ write_firefox_policy() {
     "ExtensionSettings": {
       "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}": {
         "installation_mode": "force_installed",
-        "install_url": "${install_url}",
+        "install_url": "${FIREFOX_INSTALL_URL}",
         "default_area": "navbar",
         "private_browsing": true
       }
@@ -143,14 +142,6 @@ copy_native_host() {
 
   install_user_dir "$(dirname -- "${destination}")"
   install -m 0755 "${NATIVE_HOST}" "${destination}"
-  own_path_for_target_user "${destination}"
-}
-
-copy_firefox_xpi() {
-  local destination="$1"
-
-  install_user_dir "$(dirname -- "${destination}")"
-  install -m 0644 "${FIREFOX_XPI}" "${destination}"
   own_path_for_target_user "${destination}"
 }
 
@@ -191,32 +182,13 @@ resolve_native_host() {
   die "could not find blockuntu-native; pass --native-host PATH"
 }
 
-resolve_firefox_xpi() {
-  if [[ -n "${FIREFOX_XPI}" ]]; then
-    [[ -f "${FIREFOX_XPI}" ]] || die "Firefox XPI does not exist: ${FIREFOX_XPI}"
-    return 0
-  fi
-
-  local candidates=(
-    "/usr/share/blockuntu/BlocKuntu-Signed.xpi"
-    "/usr/local/share/blockuntu/BlocKuntu-Signed.xpi"
-    "${REPO_ROOT}/browser-extension-firefox/BlocKuntu-Signed.xpi"
-  )
-
-  local candidate
-  for candidate in "${candidates[@]}"; do
-    if [[ -f "${candidate}" ]]; then
-      FIREFOX_XPI="${candidate}"
-      return 0
-    fi
-  done
-
-  die "could not find BlocKuntu-Signed.xpi; pass --firefox-xpi PATH"
-}
-
 flatpak_arch() {
   if has_cmd flatpak; then
-    flatpak --default-arch 2>/dev/null && return 0
+    if has_cmd timeout; then
+      timeout 5 flatpak --default-arch 2>/dev/null && return 0
+    else
+      flatpak --default-arch 2>/dev/null && return 0
+    fi
   fi
   uname -m
 }
@@ -273,7 +245,6 @@ should_install_snap() {
 install_flatpak_firefox() {
   local app_root="${TARGET_HOME}/.var/app/org.mozilla.firefox"
   local host_path="${app_root}/data/blockuntu/blockuntu-native"
-  local xpi_path="${app_root}/data/blockuntu/BlocKuntu-Signed.xpi"
   local manifest_path="${app_root}/.mozilla/native-messaging-hosts/blockuntu_native.json"
   local systemconfig_root="$(target_xdg_data_home)/flatpak/extension/org.mozilla.firefox.systemconfig/$(flatpak_arch)/stable"
   local policy_path="${systemconfig_root}/policies/policies.json"
@@ -282,12 +253,13 @@ install_flatpak_firefox() {
 
   log "installing Firefox Flatpak native host copy"
   copy_native_host "${host_path}"
-  copy_firefox_xpi "${xpi_path}"
   write_manifest \
     "${manifest_path}" \
     "${host_path}" \
     "BlocKuntu Firefox Native Messaging bridge for Flatpak Firefox"
-  write_firefox_policy "${policy_path}" "${xpi_path}"
+  if [[ "${WRITE_FLATPAK_POLICY}" -eq 1 ]]; then
+    write_firefox_policy "${policy_path}"
+  fi
 
   if [[ "${APPLY_FLATPAK_OVERRIDE}" -eq 1 ]]; then
     if has_cmd flatpak; then
@@ -300,7 +272,9 @@ install_flatpak_firefox() {
   fi
 
   log "installed ${manifest_path}"
-  log "installed ${policy_path}"
+  if [[ "${WRITE_FLATPAK_POLICY}" -eq 1 ]]; then
+    log "installed ${policy_path}"
+  fi
 }
 
 install_snap_firefox() {
@@ -332,10 +306,9 @@ while [[ $# -gt 0 ]]; do
       NATIVE_HOST="$2"
       shift 2
       ;;
-    --firefox-xpi)
-      [[ $# -ge 2 ]] || die "--firefox-xpi requires a value"
-      FIREFOX_XPI="$2"
-      shift 2
+    --write-flatpak-policy)
+      WRITE_FLATPAK_POLICY=1
+      shift
       ;;
     --user)
       [[ $# -ge 2 ]] || die "--user requires a value"
@@ -364,9 +337,6 @@ done
 [[ -n "${TARGET_USER}" ]] || die "could not determine target user; pass --user USER"
 resolve_target_home
 resolve_native_host
-if should_install_flatpak; then
-  resolve_firefox_xpi
-fi
 
 case "${TARGETS}" in
   auto|all|flatpak|snap|flatpak,snap|snap,flatpak)
@@ -380,7 +350,7 @@ log "target user: ${TARGET_USER}"
 log "target home: ${TARGET_HOME}"
 log "native host source: ${NATIVE_HOST}"
 if should_install_flatpak; then
-  log "Firefox XPI source: ${FIREFOX_XPI}"
+  log "Firefox AMO install URL: ${FIREFOX_INSTALL_URL}"
 fi
 
 installed_any=0

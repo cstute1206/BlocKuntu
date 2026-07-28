@@ -1,8 +1,5 @@
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-
-const EXPECTED_EXTENSION_ID = "odedgejjcdilkoibeljkeohekonmdfea";
 
 const manifestPath = resolve("manifest.json");
 const backgroundPath = resolve("dist/background.js");
@@ -23,24 +20,12 @@ function assert(condition, message) {
   }
 }
 
-function extensionIdFromKey(key) {
-  const der = Buffer.from(key, "base64");
-  const hash = createHash("sha256").update(der).digest();
-  const alphabet = "abcdefghijklmnop";
-  return Array.from(hash.subarray(0, 16), (byte) => alphabet[byte >> 4] + alphabet[byte & 15]).join(
-    ""
-  );
-}
-
 assert(manifest.manifest_version === 3, "manifest_version must be 3");
 assert(
   manifest.background?.service_worker === "dist/background.js",
   "Chrome MV3 must use a service worker"
 );
-assert(
-  extensionIdFromKey(manifest.key) === EXPECTED_EXTENSION_ID,
-  "manifest key must produce the documented Chrome extension id"
-);
+assert(!Object.hasOwn(manifest, "key"), "manifest must not contain a self-hosted CRX key");
 for (const [size, path] of Object.entries(requiredIcons)) {
   assert(manifest.icons?.[size] === path, `manifest icon ${size} must be ${path}`);
   assert(existsSync(resolve(path)), `manifest icon is missing: ${path}`);
@@ -59,4 +44,4 @@ assert(existsSync(backgroundPath), "dist/background.js was not built");
 assert(existsSync(blockedScriptPath), "dist/blocked.js was not built");
 assert(existsSync(blockedPath), "blocked.html is missing");
 
-console.log(`Chrome extension manifest check passed (${EXPECTED_EXTENSION_ID})`);
+console.log("Chrome extension manifest check passed (Chrome Web Store source manifest)");

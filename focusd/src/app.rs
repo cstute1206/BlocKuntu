@@ -106,15 +106,10 @@ impl DaemonApp {
         let firefox_policy = FirefoxPolicyManager::new(
             &args.firefox_policy,
             &args.extension_id,
-            &args.extension_xpi,
+            &args.firefox_extension_install_url,
         );
-        let chrome_policy = ChromePolicyManager::new(
-            &args.chrome_policy,
-            &args.chrome_update_manifest,
-            &args.chrome_extension_id,
-            &args.chrome_extension_version,
-            &args.chrome_extension_crx_url,
-        );
+        let chrome_policy =
+            ChromePolicyManager::new(&args.chrome_policy, &args.chrome_extension_id);
         let hosts = HostsManager::new_with_immutable(&args.hosts, hosts_immutable_enabled(args));
         let rpc_context = rpc_context
             .with_enforcement_managers(firefox_policy.clone(), chrome_policy.clone(), hosts.clone())

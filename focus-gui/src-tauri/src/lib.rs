@@ -28,6 +28,8 @@ const FIREFOX_EXTENSION_IDS: [&str; 2] = [
     "blockuntu@example.local",
     "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
 ];
+const FIREFOX_EXTENSION_INSTALL_URL: &str =
+    "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi";
 const FIREFOX_COMMANDS: [&str; 2] = ["/usr/bin/firefox", "/bin/firefox"];
 const FIREFOX_USER_NATIVE_HOST_MANIFEST: &str =
     ".mozilla/native-messaging-hosts/blockuntu_native.json";
@@ -41,7 +43,7 @@ const FLATPAK_FIREFOX_SYSTEMCONFIG_ROOT: &str =
 const SNAP_FIREFOX_APP_ROOT: &str = "snap/firefox/common";
 const SNAP_FIREFOX_NATIVE_HOST_MANIFEST: &str =
     "snap/firefox/common/.mozilla/native-messaging-hosts/blockuntu_native.json";
-const CHROME_EXTENSION_ID: &str = "odedgejjcdilkoibeljkeohekonmdfea";
+const CHROME_EXTENSION_ID: &str = "opfljaancedgklbpnbpjfhdbbhbfpnoc";
 const CHROME_COMMANDS: [&str; 4] = [
     "/usr/bin/google-chrome",
     "/usr/bin/google-chrome-stable",
@@ -75,6 +77,7 @@ const CONFINED_FIREFOX_SETUP_COMMANDS: [&str; 2] = [
     "/usr/bin/blockuntu-setup-confined-firefox",
     "/bin/blockuntu-setup-confined-firefox",
 ];
+static CONFINED_FIREFOX_POLICY_SETUP_STARTED: AtomicBool = AtomicBool::new(false);
 const BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS: u64 = 6;
 const TRAY_REFRESH_INTERVAL_SECONDS: u64 = 5;
 const TRAY_OPEN_VIEW_EVENT: &str = "blockuntu-open-view";
@@ -389,6 +392,13 @@ fn system_health(socket_path: Option<String>) -> SystemHealth {
     let system_firefox_present = system_firefox_available();
     let chrome_family_present = chrome_family_available();
 
+    if enforcement
+        .as_ref()
+        .is_some_and(firefox_policy_activated_after_heartbeat)
+    {
+        start_confined_firefox_policy_setup();
+    }
+
     checks.push(socket_check(Path::new(&socket)));
     if using_dev_socket {
         checks.push(development_runtime_check());
@@ -499,6 +509,39 @@ fn start_confined_firefox_setup() {
 
     if let Err(error) = Command::new(helper).args(["--targets", "auto"]).spawn() {
         eprintln!("BlocKuntu confined Firefox setup could not start: {error}");
+    }
+}
+
+fn firefox_policy_activated_after_heartbeat(enforcement: &Value) -> bool {
+    enforcement
+        .get("firefox_policy")
+        .and_then(|policy| policy.get("active_after_heartbeat"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn start_confined_firefox_policy_setup() {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    if !home.join(FLATPAK_FIREFOX_APP_ROOT).exists()
+        || flatpak_firefox_policy_uses_amo_install_url(&home)
+        || CONFINED_FIREFOX_POLICY_SETUP_STARTED.swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+
+    let Some(helper) = command_path(&CONFINED_FIREFOX_SETUP_COMMANDS) else {
+        CONFINED_FIREFOX_POLICY_SETUP_STARTED.store(false, Ordering::SeqCst);
+        return;
+    };
+
+    if let Err(error) = Command::new(helper)
+        .args(["--targets", "flatpak", "--write-flatpak-policy"])
+        .spawn()
+    {
+        CONFINED_FIREFOX_POLICY_SETUP_STARTED.store(false, Ordering::SeqCst);
+        eprintln!("BlocKuntu Flatpak Firefox policy setup could not start: {error}");
     }
 }
 
@@ -808,7 +851,6 @@ fn policy_enforcement_check(status: &Value) -> HealthCheck {
     let compliant = bool_field(policy, "compliant");
     let private_browsing = bool_field(policy, "private_browsing_enabled");
     let private_browsing_available = bool_field(policy, "private_browsing_available");
-    let xpi_exists = bool_field(policy, "extension_xpi_exists");
     let path = string_field(policy, "path").unwrap_or("unknown");
     let detail = string_field(policy, "detail").unwrap_or("no policy detail");
     let state = if !active {
@@ -817,7 +859,7 @@ fn policy_enforcement_check(status: &Value) -> HealthCheck {
         HealthState::Ok
     } else if deferred && !active_after_heartbeat {
         HealthState::Warn
-    } else if compliant && private_browsing && private_browsing_available && xpi_exists {
+    } else if compliant && private_browsing && private_browsing_available {
         HealthState::Ok
     } else {
         HealthState::Error
@@ -846,8 +888,6 @@ fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
     let active_after_heartbeat = bool_field(policy, "active_after_heartbeat");
     let compliant = bool_field(policy, "compliant");
     let force_install = bool_field(policy, "force_install_configured");
-    let update_manifest = bool_field(policy, "update_manifest_compliant");
-    let override_update_url = bool_field(policy, "override_update_url");
     let path = string_field(policy, "path").unwrap_or("unknown");
     let detail = string_field(policy, "detail").unwrap_or("no Chrome policy detail");
     let state = if !active {
@@ -856,7 +896,7 @@ fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
         HealthState::Ok
     } else if deferred && !active_after_heartbeat {
         HealthState::Warn
-    } else if compliant && force_install && update_manifest && override_update_url {
+    } else if compliant && force_install {
         HealthState::Ok
     } else {
         HealthState::Error
@@ -977,15 +1017,27 @@ fn firefox_flatpak_policy_check(home: &Path) -> HealthCheck {
                 .and_then(|settings| settings.get("install_url"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            let xpi_exists = install_url
-                .strip_prefix("file://")
-                .map(|path| Path::new(path).exists())
-                .unwrap_or(false);
+            let private_browsing = extension_settings
+                .and_then(|settings| settings.get("private_browsing"))
+                .and_then(Value::as_bool)
+                == Some(true);
+            let private_browsing_available = parsed
+                .as_ref()
+                .ok()
+                .and_then(|value| value.get("policies"))
+                .and_then(|policies| policies.get("PrivateBrowsingModeAvailability"))
+                .and_then(Value::as_i64)
+                == Some(0);
 
             HealthCheck {
                 key: "firefox_flatpak_policy".to_string(),
                 label: "Firefox Flatpak policy".to_string(),
-                state: if parsed.is_ok() && force_installed && xpi_exists {
+                state: if parsed.is_ok()
+                    && force_installed
+                    && install_url == FIREFOX_EXTENSION_INSTALL_URL
+                    && private_browsing
+                    && private_browsing_available
+                {
                     HealthState::Ok
                 } else {
                     HealthState::Error
@@ -998,11 +1050,47 @@ fn firefox_flatpak_policy_check(home: &Path) -> HealthCheck {
             label: "Firefox Flatpak policy".to_string(),
             state: HealthState::Warn,
             detail: format!(
-                "{}: {err}; BlocKuntu automatically prepares this when the GUI starts. Restart Firefox Flatpak; if it remains unavailable, run `blockuntu-setup-confined-firefox` manually.",
+                "{}: {err}; BlocKuntu writes this after the first verified Firefox extension heartbeat. Restart Firefox Flatpak; if it remains unavailable, run `blockuntu-setup-confined-firefox` manually.",
                 candidate.display()
             ),
         },
     }
+}
+
+fn flatpak_firefox_policy_uses_amo_install_url(home: &Path) -> bool {
+    let candidate = flatpak_firefox_policy_path(home);
+    let Ok(contents) = fs::read_to_string(candidate) else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&contents) else {
+        return false;
+    };
+    let private_browsing_available = parsed
+        .get("policies")
+        .and_then(|policies| policies.get("PrivateBrowsingModeAvailability"))
+        .and_then(Value::as_i64)
+        == Some(0);
+    let extension_settings = parsed
+        .get("policies")
+        .and_then(|policies| policies.get("ExtensionSettings"))
+        .and_then(|settings| {
+            FIREFOX_EXTENSION_IDS
+                .iter()
+                .find_map(|id| settings.get(*id))
+        });
+    extension_settings
+        .and_then(|settings| settings.get("installation_mode"))
+        .and_then(Value::as_str)
+        == Some("force_installed")
+        && extension_settings
+            .and_then(|settings| settings.get("install_url"))
+            .and_then(Value::as_str)
+            == Some(FIREFOX_EXTENSION_INSTALL_URL)
+        && extension_settings
+            .and_then(|settings| settings.get("private_browsing"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        && private_browsing_available
 }
 
 fn flatpak_firefox_policy_path(home: &Path) -> PathBuf {

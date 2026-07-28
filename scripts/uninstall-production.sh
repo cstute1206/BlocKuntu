@@ -134,7 +134,6 @@ remove_browser_policies() {
 
   local firefox_policy="/etc/firefox/policies/policies.json"
   local chrome_policy="/etc/opt/chrome/policies/managed/blockuntu.json"
-  local chrome_update_manifest="/usr/local/share/blockuntu/chrome-extension-updates.xml"
 
   if [[ -f "${firefox_policy}" ]]; then
     if grep -q "blockuntu" "${firefox_policy}" 2>/dev/null; then
@@ -147,7 +146,7 @@ remove_browser_policies() {
   fi
 
   remove_path "${chrome_policy}"
-  remove_path "${chrome_update_manifest}"
+  remove_path "/usr/local/share/blockuntu/chrome-extension-updates.xml"
   remove_empty_dir "/etc/opt/chrome/policies/managed"
   remove_empty_dir "/etc/opt/chrome/policies"
 }
@@ -155,14 +154,15 @@ remove_browser_policies() {
 remove_confined_firefox_native_hosts() {
   local flatpak_manifest="${HOME}/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts/blockuntu_native.json"
   local flatpak_host="${HOME}/.var/app/org.mozilla.firefox/data/blockuntu/blockuntu-native"
-  local flatpak_xpi="${HOME}/.var/app/org.mozilla.firefox/data/blockuntu/BlocKuntu-Signed.xpi"
+  local legacy_flatpak_xpi="${HOME}/.var/app/org.mozilla.firefox/data/blockuntu/BlocKuntu-Signed.xpi"
   local flatpak_systemconfig="${XDG_DATA_HOME:-${HOME}/.local/share}/flatpak/extension/org.mozilla.firefox.systemconfig"
   local snap_manifest="${HOME}/snap/firefox/common/.mozilla/native-messaging-hosts/blockuntu_native.json"
   local snap_host="${HOME}/snap/firefox/common/.local/share/blockuntu/blockuntu-native"
 
   remove_path "${flatpak_manifest}"
   remove_path "${flatpak_host}"
-  remove_path "${flatpak_xpi}"
+  # Clean up the locally copied XPI used by releases before store delivery.
+  remove_path "${legacy_flatpak_xpi}"
   remove_empty_dir "${HOME}/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts"
   remove_empty_dir "${HOME}/.var/app/org.mozilla.firefox/data/blockuntu"
 
@@ -227,7 +227,7 @@ Removed by default:
   - /usr/local/bin/blockuntu-gui
   - system Native Messaging manifests
   - current-user Firefox Snap/Flatpak Native Messaging files
-  - current-user Firefox Flatpak copied XPI and systemconfig policy
+  - current-user Firefox Flatpak systemconfig policy (and a legacy copied XPI, if present)
   - GUI desktop launcher/icons
   - /run/blockuntu
   - BlocKuntu managed block in /etc/hosts
