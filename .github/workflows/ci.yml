@@ -1,0 +1,51 @@
+  name: CI
+
+  on:
+    pull_request:
+    push:
+      branches: [main]
+
+  jobs:
+    verify:
+      runs-on: ubuntu-24.04
+
+      steps:
+        - uses: actions/checkout@v4
+
+        - uses: actions/setup-node@v4
+          with:
+            node-version: 22
+
+        - name: Set up Rust
+          run: rustup update stable && rustup default stable
+
+        - name: Rust checks
+          run: |
+            cargo fmt --manifest-path focus-core/Cargo.toml --check
+            cargo test --manifest-path focus-core/Cargo.toml --all-targets
+            cargo fmt --manifest-path focusd/Cargo.toml --check
+            cargo test --manifest-path focusd/Cargo.toml --all-targets
+            cargo fmt --manifest-path native-host/Cargo.toml --check
+            cargo test --manifest-path native-host/Cargo.toml --all-targets
+
+        - name: GUI checks
+          working-directory: focus-gui
+          run: |
+            npm ci
+            npm run check
+            npm run build
+            cargo check --manifest-path src-tauri/Cargo.toml
+
+        - name: Firefox extension checks
+          working-directory: browser-extension-firefox
+          run: |
+            npm ci
+            npm run build
+            npm run check
+
+        - name: Chrome extension checks
+          working-directory: browser-extension-chrome
+          run: |
+            npm ci
+            npm run build
+            npm run check
