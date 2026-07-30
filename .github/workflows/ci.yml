@@ -21,6 +21,18 @@ jobs:
       - name: Set up Rust
         run: rustup update stable && rustup default stable
 
+      - name: Install Tauri Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev
+
       - name: Rust checks
         run: |
           cargo fmt --manifest-path focus-core/Cargo.toml --check
