@@ -1,51 +1,65 @@
-  name: CI
+name: CI
 
-  on:
-    pull_request:
-    push:
-      branches: [main]
+on:
+  pull_request:
+  push:
+    branches: [main]
 
-  jobs:
-    verify:
-      runs-on: ubuntu-24.04
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    env:
+      TZ: Europe/Berlin
 
-      steps:
-        - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v6
 
-        - uses: actions/setup-node@v4
-          with:
-            node-version: 22
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
 
-        - name: Set up Rust
-          run: rustup update stable && rustup default stable
+      - name: Set up Rust
+        run: rustup update stable && rustup default stable
 
-        - name: Rust checks
-          run: |
-            cargo fmt --manifest-path focus-core/Cargo.toml --check
-            cargo test --manifest-path focus-core/Cargo.toml --all-targets
-            cargo fmt --manifest-path focusd/Cargo.toml --check
-            cargo test --manifest-path focusd/Cargo.toml --all-targets
-            cargo fmt --manifest-path native-host/Cargo.toml --check
-            cargo test --manifest-path native-host/Cargo.toml --all-targets
+      - name: Install Tauri Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev
 
-        - name: GUI checks
-          working-directory: focus-gui
-          run: |
-            npm ci
-            npm run check
-            npm run build
-            cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Rust checks
+        run: |
+          cargo fmt --manifest-path focus-core/Cargo.toml --check
+          cargo test --manifest-path focus-core/Cargo.toml --all-targets
+          cargo fmt --manifest-path focusd/Cargo.toml --check
+          cargo test --manifest-path focusd/Cargo.toml --all-targets
+          cargo fmt --manifest-path native-host/Cargo.toml --check
+          cargo test --manifest-path native-host/Cargo.toml --all-targets
 
-        - name: Firefox extension checks
-          working-directory: browser-extension-firefox
-          run: |
-            npm ci
-            npm run build
-            npm run check
+      - name: GUI checks
+        working-directory: focus-gui
+        run: |
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
 
-        - name: Chrome extension checks
-          working-directory: browser-extension-chrome
-          run: |
-            npm ci
-            npm run build
-            npm run check
+      - name: Firefox extension checks
+        working-directory: browser-extension-firefox
+        run: |
+          npm ci
+          npm run build
+          npm run check
+
+      - name: Chrome extension checks
+        working-directory: browser-extension-chrome
+        run: |
+          npm ci
+          npm run build
+          npm run check
