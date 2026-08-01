@@ -1,0 +1,2 @@
+# Create the group used for desktop access to the BlocKuntu daemon socket.
+g blockuntu -

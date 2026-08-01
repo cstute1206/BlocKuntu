@@ -33,8 +33,10 @@ const FIREFOX_EXTENSION_INSTALL_URL: &str =
 const FIREFOX_COMMANDS: [&str; 2] = ["/usr/bin/firefox", "/bin/firefox"];
 const FIREFOX_USER_NATIVE_HOST_MANIFEST: &str =
     ".mozilla/native-messaging-hosts/blockuntu_native.json";
-const SYSTEM_NATIVE_HOST_MANIFEST: &str =
-    "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json";
+const SYSTEM_FIREFOX_NATIVE_HOST_MANIFESTS: [&str; 2] = [
+    "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json",
+    "/usr/lib64/mozilla/native-messaging-hosts/blockuntu_native.json",
+];
 const FLATPAK_FIREFOX_APP_ROOT: &str = ".var/app/org.mozilla.firefox";
 const FLATPAK_FIREFOX_NATIVE_HOST_MANIFEST: &str =
     ".var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts/blockuntu_native.json";
@@ -72,7 +74,7 @@ const BUILD_NUMBER: &str = match option_env!("BLOCKUNTU_BUILD_NUMBER") {
     Some(value) => value,
     None => env!("CARGO_PKG_VERSION"),
 };
-const DEBIAN_PACKAGE_NAME: &str = "blockuntu";
+const PACKAGE_NAME: &str = "blockuntu";
 const CONFINED_FIREFOX_SETUP_COMMANDS: [&str; 2] = [
     "/usr/bin/blockuntu-setup-confined-firefox",
     "/bin/blockuntu-setup-confined-firefox",
@@ -106,8 +108,53 @@ enum GuiError {
     InvalidInstallationSerial,
     #[error("GUI uninstall requires pkexec, but pkexec was not found")]
     MissingPkexec,
+    #[error("GUI uninstall requires {0}, but it was not found")]
+    MissingPackageCommand(&'static str),
+    #[error("BlocKuntu is not installed through a supported package manager")]
+    UnsupportedPackageInstallation,
     #[error("uninstall command failed: {0}")]
     UninstallCommand(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageManager {
+    Debian,
+    Rpm,
+    Pacman,
+}
+
+impl PackageManager {
+    fn uninstall_command_name(self) -> &'static str {
+        match self {
+            Self::Debian => "dpkg",
+            Self::Rpm => "dnf",
+            Self::Pacman => "pacman",
+        }
+    }
+
+    fn uninstall_command_label(self) -> &'static str {
+        match self {
+            Self::Debian => "dpkg --purge blockuntu",
+            Self::Rpm => "dnf remove --assumeyes blockuntu",
+            Self::Pacman => "pacman -R --noconfirm blockuntu",
+        }
+    }
+
+    fn command_candidates(self) -> &'static [&'static str] {
+        match self {
+            Self::Debian => &["/usr/bin/dpkg", "/bin/dpkg"],
+            Self::Rpm => &["/usr/bin/dnf", "/bin/dnf"],
+            Self::Pacman => &["/usr/bin/pacman", "/bin/pacman"],
+        }
+    }
+
+    fn uninstall_command_args(self) -> &'static [&'static str] {
+        match self {
+            Self::Debian => &["--purge", PACKAGE_NAME],
+            Self::Rpm => &["remove", "--assumeyes", PACKAGE_NAME],
+            Self::Pacman => &["-R", "--noconfirm", PACKAGE_NAME],
+        }
+    }
 }
 
 impl Serialize for GuiError {
@@ -345,32 +392,29 @@ fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
         }
     }
 
-    if !debian_package_installed()? {
-        return Err(GuiError::UninstallCommand(
-            "Debian package blockuntu is not installed on this system".to_string(),
-        ));
-    }
+    let package_manager =
+        installed_package_manager()?.ok_or(GuiError::UnsupportedPackageInstallation)?;
 
     let package_removal_lease = prepare_package_removal(emergency_authorized.then_some(candidate))?;
     std::thread::sleep(Duration::from_secs(BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS));
 
     let pkexec =
         command_path(&["/usr/bin/pkexec", "/bin/pkexec"]).ok_or(GuiError::MissingPkexec)?;
-    let dpkg = command_path(&["/usr/bin/dpkg", "/bin/dpkg"]).ok_or_else(|| {
-        GuiError::UninstallCommand("dpkg was not found on this system".to_string())
-    })?;
-    let output = Command::new(pkexec)
+    let package_command = command_path(package_manager.command_candidates())
+        .ok_or_else(|| GuiError::MissingPackageCommand(package_manager.uninstall_command_name()))?;
+    let mut command = Command::new(pkexec);
+    command
         .arg("/usr/bin/env")
         .arg(format!(
             "BLOCKUNTU_PACKAGE_REMOVAL_LEASE={package_removal_lease}"
         ))
-        .arg(dpkg)
-        .args(["--purge", DEBIAN_PACKAGE_NAME])
-        .output()?;
+        .arg(package_command)
+        .args(package_manager.uninstall_command_args());
+    let output = command.output()?;
 
     if !output.status.success() {
         return Err(GuiError::UninstallCommand(command_failure_detail(
-            "dpkg --purge blockuntu",
+            package_manager.uninstall_command_label(),
             &output,
         )));
     }
@@ -581,9 +625,42 @@ fn debian_package_installed() -> Result<bool, GuiError> {
         return Ok(false);
     };
     let output = Command::new(dpkg_query)
-        .args(["-W", "-f=${db:Status-Abbrev}", DEBIAN_PACKAGE_NAME])
+        .args(["-W", "-f=${db:Status-Abbrev}", PACKAGE_NAME])
         .output()?;
     Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).starts_with("ii"))
+}
+
+fn installed_package_manager() -> Result<Option<PackageManager>, GuiError> {
+    if debian_package_installed()? {
+        return Ok(Some(PackageManager::Debian));
+    }
+    if rpm_package_installed()? {
+        return Ok(Some(PackageManager::Rpm));
+    }
+    if pacman_package_installed()? {
+        return Ok(Some(PackageManager::Pacman));
+    }
+    Ok(None)
+}
+
+fn rpm_package_installed() -> Result<bool, GuiError> {
+    let Some(rpm) = command_path(&["/usr/bin/rpm", "/bin/rpm"]) else {
+        return Ok(false);
+    };
+    Ok(Command::new(rpm)
+        .args(["-q", "--quiet", PACKAGE_NAME])
+        .status()?
+        .success())
+}
+
+fn pacman_package_installed() -> Result<bool, GuiError> {
+    let Some(pacman) = command_path(&["/usr/bin/pacman", "/bin/pacman"]) else {
+        return Ok(false);
+    };
+    Ok(Command::new(pacman)
+        .args(["-Q", "--quiet", PACKAGE_NAME])
+        .status()?
+        .success())
 }
 
 fn command_path(candidates: &[&str]) -> Option<PathBuf> {
@@ -947,7 +1024,13 @@ fn native_host_manifest_check() -> HealthCheck {
 
     let candidate = user_manifest
         .filter(|path| path.exists())
-        .unwrap_or_else(|| PathBuf::from(SYSTEM_NATIVE_HOST_MANIFEST));
+        .or_else(|| {
+            SYSTEM_FIREFOX_NATIVE_HOST_MANIFESTS
+                .iter()
+                .map(PathBuf::from)
+                .find(|path| path.exists())
+        })
+        .unwrap_or_else(|| PathBuf::from(SYSTEM_FIREFOX_NATIVE_HOST_MANIFESTS[0]));
 
     firefox_manifest_check(
         "native_host_manifest",
@@ -1721,5 +1804,43 @@ mod tests {
             HealthState::Error
         );
         assert_eq!(browser_extension_health_state("stale"), HealthState::Error);
+    }
+
+    #[test]
+    fn package_managers_use_their_native_authorized_uninstall_commands() {
+        assert_eq!(PackageManager::Debian.uninstall_command_name(), "dpkg");
+        assert_eq!(
+            PackageManager::Debian.uninstall_command_label(),
+            "dpkg --purge blockuntu"
+        );
+        assert_eq!(PackageManager::Rpm.uninstall_command_name(), "dnf");
+        assert_eq!(
+            PackageManager::Rpm.uninstall_command_label(),
+            "dnf remove --assumeyes blockuntu"
+        );
+        assert_eq!(PackageManager::Pacman.uninstall_command_name(), "pacman");
+        assert_eq!(
+            PackageManager::Pacman.uninstall_command_label(),
+            "pacman -R --noconfirm blockuntu"
+        );
+        assert_eq!(
+            PackageManager::Pacman.command_candidates(),
+            ["/usr/bin/pacman", "/bin/pacman"]
+        );
+        assert_eq!(
+            PackageManager::Pacman.uninstall_command_args(),
+            ["-R", "--noconfirm", PACKAGE_NAME]
+        );
+    }
+
+    #[test]
+    fn firefox_system_manifest_candidates_cover_debian_and_fedora_library_paths() {
+        assert_eq!(
+            SYSTEM_FIREFOX_NATIVE_HOST_MANIFESTS,
+            [
+                "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json",
+                "/usr/lib64/mozilla/native-messaging-hosts/blockuntu_native.json",
+            ]
+        );
     }
 }

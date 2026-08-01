@@ -1,0 +1,152 @@
+# This recipe is executed through scripts/package-arch.sh for local Arch VM
+# validation. The helper stages a source archive and replaces the checksum
+# placeholder before invoking makepkg. A public release must replace the local
+# source with an immutable signed/tagged source URL and its recorded checksum.
+
+pkgname=blockuntu
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Local Linux focus blocker with systemd and Native Messaging integration'
+arch=('x86_64')
+url='https://github.com/AstuteCouch/BlocKuntu'
+license=('MIT')
+depends=(
+  'bash'
+  'e2fsprogs'
+  'glib2'
+  'gtk3'
+  'hicolor-icon-theme'
+  'libappindicator-gtk3'
+  'polkit'
+  'sqlite'
+  'systemd'
+  'webkit2gtk-4.1'
+)
+makedepends=(
+  'librsvg'
+  'nodejs'
+  'npm'
+  'openssl'
+  'pkgconf'
+  'rust'
+  'xdotool'
+)
+optdepends=(
+  'wmctrl: X11 window-title matching fallback'
+  'firefox: Firefox browser integration'
+  'chromium: Chromium Native Messaging integration'
+)
+backup=(
+  'etc/blockuntu/config.toml'
+  'etc/chromium/native-messaging-hosts/blockuntu_native.json'
+  'etc/opt/chrome/native-messaging-hosts/blockuntu_native.json'
+)
+install='blockuntu.install'
+source=("${pkgname}-${pkgver}.tar.gz")
+sha256sums=('ARCH_SOURCE_SHA256_PLACEHOLDER')
+
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+
+  # The project normally bundles SQLite. Arch packages must link the system
+  # library instead, so the package manager can track security updates.
+  export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+
+  cargo build --manifest-path focusd/Cargo.toml --release --locked
+  cargo build --manifest-path native-host/Cargo.toml --release --locked
+  (
+    cd focus-gui
+    npm ci
+    BLOCKUNTU_BUILD_NUMBER="${pkgver}-${pkgrel}" npm run tauri -- build --no-bundle
+  )
+}
+
+package() {
+  local source_root="${srcdir}/${pkgname}-${pkgver}"
+
+  cd "${source_root}"
+
+  install -Dm755 focusd/target/release/blockuntud \
+    "${pkgdir}/usr/bin/blockuntud"
+  install -Dm755 native-host/target/release/blockuntu-native \
+    "${pkgdir}/usr/bin/blockuntu-native"
+  install -Dm755 focus-gui/src-tauri/target/release/blockuntu-gui \
+    "${pkgdir}/usr/bin/blockuntu-gui"
+  install -Dm755 scripts/setup-confined-firefox-native-host.sh \
+    "${pkgdir}/usr/lib/blockuntu/setup-confined-firefox-native-host.sh"
+
+  install -d "${pkgdir}/usr/bin"
+  cat >"${pkgdir}/usr/bin/blockuntu-setup-confined-firefox" <<'EOF'
+#!/usr/bin/bash
+exec /usr/lib/blockuntu/setup-confined-firefox-native-host.sh "$@"
+EOF
+  chmod 0755 "${pkgdir}/usr/bin/blockuntu-setup-confined-firefox"
+
+  install -Dm644 packaging/deb/blockuntu.toml \
+    "${pkgdir}/etc/blockuntu/config.toml"
+
+  for size in 32 64 128; do
+    install -Dm644 "focus-gui/src-tauri/icons/${size}x${size}.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/blockuntu.png"
+    install -Dm644 "focus-gui/src-tauri/icons/${size}x${size}.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/blockuntu-gui.png"
+  done
+
+  install -d "${pkgdir}/usr/share/applications"
+  cat >"${pkgdir}/usr/share/applications/local.blockuntu.gui.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=BlocKuntu
+Comment=Linux focus blocker frontend
+Exec=/usr/bin/blockuntu-gui
+Icon=blockuntu-gui
+StartupWMClass=blockuntu-gui
+StartupNotify=true
+Terminal=false
+Categories=Utility;
+X-GNOME-UsesNotifications=true
+EOF
+  chmod 0644 "${pkgdir}/usr/share/applications/local.blockuntu.gui.desktop"
+
+  install -Dm644 packaging/systemd/blockuntu.socket \
+    "${pkgdir}/usr/lib/systemd/system/blockuntu.socket"
+  sed \
+    's#ExecStart=/usr/local/bin/blockuntud serve#ExecStart=/usr/bin/blockuntud --defer-browser-policy-repair-until-heartbeat serve#' \
+    packaging/systemd/blockuntu.service \
+    >"${pkgdir}/usr/lib/systemd/system/blockuntu.service"
+  install -m644 packaging/systemd/blockuntu-watchdog.service \
+    "${pkgdir}/usr/lib/systemd/system/blockuntu-watchdog.service"
+  install -Dm644 packaging/systemd/blockuntu-hosts.path \
+    "${pkgdir}/usr/lib/systemd/system/blockuntu-hosts.path"
+  sed 's#ExecStart=/usr/local/bin/blockuntud repair-hosts#ExecStart=/usr/bin/blockuntud repair-hosts#' \
+    packaging/systemd/blockuntu-hosts.service \
+    >"${pkgdir}/usr/lib/systemd/system/blockuntu-hosts.service"
+  chmod 0644 \
+    "${pkgdir}/usr/lib/systemd/system/blockuntu.service" \
+    "${pkgdir}/usr/lib/systemd/system/blockuntu-hosts.service"
+
+  install -Dm644 packaging/arch/blockuntu.sysusers \
+    "${pkgdir}/usr/lib/sysusers.d/blockuntu.conf"
+
+  install -d \
+    "${pkgdir}/usr/lib/mozilla/native-messaging-hosts" \
+    "${pkgdir}/etc/opt/chrome/native-messaging-hosts" \
+    "${pkgdir}/etc/chromium/native-messaging-hosts"
+  sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+    packaging/native-messaging/blockuntu_native.json \
+    >"${pkgdir}/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json"
+  chmod 0644 "${pkgdir}/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json"
+  sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+    packaging/native-messaging/blockuntu_native.chrome.json \
+    >"${pkgdir}/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json"
+  chmod 0644 "${pkgdir}/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json"
+  sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+    packaging/native-messaging/blockuntu_native.chrome.json \
+    >"${pkgdir}/etc/chromium/native-messaging-hosts/blockuntu_native.json"
+  chmod 0644 "${pkgdir}/etc/chromium/native-messaging-hosts/blockuntu_native.json"
+
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 Docs/INSTALLATION.md "${pkgdir}/usr/share/doc/${pkgname}/INSTALLATION.md"
+  install -Dm644 Docs/UNINSTALL.md "${pkgdir}/usr/share/doc/${pkgname}/UNINSTALL.md"
+}

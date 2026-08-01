@@ -155,7 +155,7 @@ gui_packages_for() {
       printf '%s\n' libappindicator-gtk3-devel librsvg2-devel libxdo-devel webkit2gtk4.1-devel
       ;;
     pacman)
-      printf '%s\n' appmenu-gtk-module libappindicator-gtk3 libxdo librsvg webkit2gtk-4.1 xdotool
+      printf '%s\n' appmenu-gtk-module libappindicator-gtk3 librsvg webkit2gtk-4.1 xdotool
       ;;
     zypper)
       printf '%s\n' libappindicator3-1 librsvg-devel webkit2gtk3-devel

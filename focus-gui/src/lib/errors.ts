@@ -364,15 +364,18 @@ function humanizeErrorMessage(message: string): string {
   }
 
   if (normalized === "GUI uninstall requires pkexec, but pkexec was not found") {
-    return "GUI uninstall requires pkexec, but pkexec is not installed. Install pkexec or run sudo dpkg --purge blockuntu from a terminal.";
+    return "GUI uninstall requires pkexec, but pkexec is not installed. Install pkexec, then retry the protected uninstall from the GUI.";
   }
 
-  if (normalized === "Debian package blockuntu is not installed on this system") {
-    return "The Debian package blockuntu is not installed on this system, so the GUI cannot purge it.";
+  if (normalized === "BlocKuntu is not installed through a supported package manager") {
+    return "BlocKuntu is not installed as a supported Debian or RPM package, so the GUI cannot remove it safely.";
   }
 
-  if (normalized === "dpkg was not found on this system") {
-    return "dpkg was not found on this system. Uninstall from the terminal with the package manager available on this machine.";
+  const missingPackageCommand = normalized.match(
+    /^GUI uninstall requires (dpkg|dnf), but it was not found$/
+  );
+  if (missingPackageCommand) {
+    return `GUI uninstall requires ${missingPackageCommand[1]}, but it is not installed. Install it, then retry the protected uninstall from the GUI.`;
   }
 
   if (normalized.startsWith("uninstall command failed: ")) {

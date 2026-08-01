@@ -5,7 +5,9 @@
 
 BlocKuntu is a local focus blocker for Debian and Ubuntu. A privileged daemon  
 enforces website and application rules, while Firefox and Chrome browser  
-extensions check browser navigation through the same policy engine.
+extensions check browser navigation through the same policy engine. A Fedora
+RPM build path is available for clean-VM validation; it is not yet a validated
+release path.
 
 > [!IMPORTANT]
 > BlocKuntu makes casual bypasses harder; it is not a security boundary against  
@@ -72,3 +74,8 @@ Test the resulting package in a clean Debian or Ubuntu virtual machine. Copy the
 `.deb` from `target/debian/` into that VM, install it with `apt`, and follow the
 [installation guide](Docs/INSTALLATION.md). Use this package installation as the
 only test path.
+
+For a Fedora candidate, build `./scripts/package-rpm.sh`, then test the RPM from
+`target/rpm/` in a clean Fedora Workstation VM with SELinux enforcing. The
+[installation guide](Docs/INSTALLATION.md#fedora-rpm-acceptance) contains the
+required acceptance checks.

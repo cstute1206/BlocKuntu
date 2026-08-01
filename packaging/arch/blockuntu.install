@@ -1,0 +1,209 @@
+unit_names='blockuntu.socket blockuntu.service blockuntu-watchdog.service blockuntu-hosts.path blockuntu-hosts.service'
+
+log() {
+  printf '%s\n' "[blockuntu] $*"
+}
+
+reject_package_uninstall() {
+  cat >&2 <<'EOF'
+BlocKuntu refuses direct Pacman removal.
+
+Open BlocKuntu Settings and use its uninstall action instead. That action
+prepares this package removal safely before it invokes pacman.
+EOF
+  return 1
+}
+
+ensure_system_group() {
+  if command -v systemd-sysusers >/dev/null 2>&1; then
+    systemd-sysusers /usr/lib/sysusers.d/blockuntu.conf >/dev/null 2>&1 || return 1
+  fi
+}
+
+create_installation_serial() {
+  serial_file='/etc/blockuntu/installation-id'
+  legacy_serial_file='/var/lib/blockuntu/installation-id'
+
+  if [ -s "${serial_file}" ] && \
+    grep -Eq '^BKI-[0-9A-F]{8}-[0-9A-F]{8}-[0-9A-F]{8}-[0-9A-F]{8}$' "${serial_file}"; then
+    rm -f "${legacy_serial_file}"
+    return 0
+  fi
+
+  install -d -o root -g root -m 0755 /etc/blockuntu
+  if [ -s "${legacy_serial_file}" ] && \
+    grep -Eq '^BKI-[0-9A-F]{8}-[0-9A-F]{8}-[0-9A-F]{8}-[0-9A-F]{8}$' "${legacy_serial_file}"; then
+    install -o root -g root -m 0644 "${legacy_serial_file}" "${serial_file}"
+    rm -f "${legacy_serial_file}"
+    return 0
+  fi
+
+  random_hex="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
+  temp_file="$(mktemp)"
+  printf 'BKI-%s\n' "${chunks}" >"${temp_file}"
+  install -o root -g root -m 0644 "${temp_file}" "${serial_file}"
+  rm -f "${temp_file}" "${legacy_serial_file}"
+}
+
+create_recovery_credential() {
+  credential_file="$1"
+  prefix="$2"
+
+  [ -s "${credential_file}" ] && return 0
+
+  random_hex="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')"
+  chunks="$(printf '%s' "${random_hex}" | sed 's/.\{8\}/&-/g; s/-$//')"
+  temp_file="$(mktemp)"
+  printf '%s-%s\n' "${prefix}" "${chunks}" >"${temp_file}"
+  install -d -o root -g root -m 0755 /etc/blockuntu
+  install -o root -g blockuntu -m 0640 "${temp_file}" "${credential_file}"
+  rm -f "${temp_file}"
+}
+
+create_or_preserve_recovery_state() {
+  ensure_system_group || return 1
+  create_installation_serial || return 1
+
+  if [ ! -e /var/lib/blockuntu/recovery-credentials-hidden ]; then
+    create_recovery_credential /etc/blockuntu/uninstall-recovery.txt BLOCKUNTU-UNINSTALL-RECOVERY || return 1
+    create_recovery_credential /etc/blockuntu/tier1-edit-key.txt BLOCKUNTU-TIER1-EDIT || return 1
+  fi
+}
+
+allow_systemd_stop() {
+  [ -d /run/systemd/system ] || return 0
+
+  install -d /run/systemd/system/blockuntu.service.d \
+    /run/systemd/system/blockuntu-watchdog.service.d
+  cat >/run/systemd/system/blockuntu.service.d/99-pacman-transaction.conf <<'EOF'
+[Unit]
+RefuseManualStop=no
+
+[Service]
+Restart=no
+EOF
+  cat >/run/systemd/system/blockuntu-watchdog.service.d/99-pacman-transaction.conf <<'EOF'
+[Unit]
+RefuseManualStop=no
+
+[Service]
+Restart=no
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+clear_systemd_stop_override() {
+  rm -f /run/systemd/system/blockuntu.service.d/99-pacman-transaction.conf
+  rm -f /run/systemd/system/blockuntu-watchdog.service.d/99-pacman-transaction.conf
+  rmdir /run/systemd/system/blockuntu.service.d >/dev/null 2>&1 || true
+  rmdir /run/systemd/system/blockuntu-watchdog.service.d >/dev/null 2>&1 || true
+}
+
+stop_units() {
+  [ -d /run/systemd/system ] || return 0
+  systemctl stop ${unit_names} >/dev/null 2>&1 || true
+}
+
+enable_and_start_units() {
+  [ -d /run/systemd/system ] || return 0
+  clear_systemd_stop_override
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now blockuntu.socket blockuntu.service blockuntu-watchdog.service blockuntu-hosts.path >/dev/null 2>&1 || true
+}
+
+remove_empty_dir() {
+  rmdir "$1" >/dev/null 2>&1 || true
+}
+
+remove_hosts_block() {
+  hosts_path='/etc/hosts'
+  [ -f "${hosts_path}" ] || return 0
+  grep -q 'BEGIN BLOCKUNTU MANAGED' "${hosts_path}" 2>/dev/null || return 0
+
+  if command -v chattr >/dev/null 2>&1; then
+    chattr -i "${hosts_path}" >/dev/null 2>&1 || true
+  fi
+
+  temp_hosts="$(mktemp)"
+  awk '
+    /BEGIN BLOCKUNTU MANAGED/ { skip = 1; next }
+    /END BLOCKUNTU MANAGED/ { skip = 0; next }
+    skip != 1 { print }
+  ' "${hosts_path}" >"${temp_hosts}"
+  install -m 0644 "${temp_hosts}" "${hosts_path}"
+  rm -f "${temp_hosts}"
+}
+
+remove_browser_policies() {
+  for policy in \
+    /etc/firefox/policies/policies.json \
+    /etc/opt/chrome/policies/managed/blockuntu.json \
+    /etc/chromium/policies/managed/blockuntu.json; do
+    if [ -f "${policy}" ] && grep -qi 'blockuntu' "${policy}" 2>/dev/null; then
+      rm -f "${policy}"
+    fi
+  done
+
+  remove_empty_dir /etc/firefox/policies
+  remove_empty_dir /etc/firefox
+  remove_empty_dir /etc/opt/chrome/policies/managed
+  remove_empty_dir /etc/opt/chrome/policies
+  remove_empty_dir /etc/chromium/policies/managed
+  remove_empty_dir /etc/chromium/policies
+}
+
+authorize_settings_uninstall() {
+  lease_path='/run/blockuntu/package-removal-lease'
+  lease_token="${BLOCKUNTU_PACKAGE_REMOVAL_LEASE:-}"
+
+  [ -n "${lease_token}" ] || reject_package_uninstall
+  [ -r "${lease_path}" ] || reject_package_uninstall
+
+  IFS=' ' read -r expected_token expires_at <"${lease_path}" || reject_package_uninstall
+  case "${expires_at}" in
+    ''|*[!0-9]*) reject_package_uninstall ;;
+  esac
+
+  now="$(date -u +%s)"
+  [ "${now}" -le "${expires_at}" ] || reject_package_uninstall
+  [ "${lease_token}" = "${expected_token}" ] || reject_package_uninstall
+
+  rm -f "${lease_path}"
+}
+
+post_install() {
+  create_or_preserve_recovery_state || log 'could not initialize recovery state'
+  enable_and_start_units
+}
+
+pre_upgrade() {
+  allow_systemd_stop
+  stop_units
+}
+
+post_upgrade() {
+  create_or_preserve_recovery_state || log 'could not preserve recovery state'
+  enable_and_start_units
+}
+
+pre_remove() {
+  authorize_settings_uninstall || return 1
+  remove_hosts_block
+  remove_browser_policies
+  allow_systemd_stop
+  stop_units
+  if [ -d /run/systemd/system ]; then
+    systemctl disable ${unit_names} >/dev/null 2>&1 || true
+  fi
+}
+
+post_remove() {
+  clear_systemd_stop_override
+  if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl reset-failed ${unit_names} >/dev/null 2>&1 || true
+  fi
+
+  rm -rf /etc/blockuntu /var/lib/blockuntu /run/blockuntu
+}

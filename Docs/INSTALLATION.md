@@ -1,7 +1,8 @@
 # BlocKuntu Installation
 
-BlocKuntu currently supports Debian and Ubuntu package installations. The Debian
-package is the only supported installation and test path.
+BlocKuntu supports Debian and Ubuntu package installations. A self-hosted Fedora
+RPM build path is available for clean-VM validation; it is not a supported
+release path until its Fedora acceptance checks have passed.
 
 ## Install the Debian package
 
@@ -91,6 +92,54 @@ dpkg-deb -I target/debian/blockuntu_<version>_$(dpkg --print-architecture).deb
 dpkg-deb -c target/debian/blockuntu_<version>_$(dpkg --print-architecture).deb
 ```
 
+## Build a Fedora RPM candidate
+
+Build the self-hosted RPM on Fedora, preferably in an isolated build
+environment or VM:
+
+```bash
+./scripts/package-rpm.sh
+```
+
+The RPM is written to `target/rpm`. Inspect it before distribution:
+
+```bash
+rpm -qpi target/rpm/blockuntu-<version>-<release>.<arch>.rpm
+rpm -qpl target/rpm/blockuntu-<version>-<release>.<arch>.rpm
+rpm -qpR target/rpm/blockuntu-<version>-<release>.<arch>.rpm
+rpm -Vvp target/rpm/blockuntu-<version>-<release>.<arch>.rpm
+```
+
+The build compiles the Tauri GUI with embedded frontend assets. It is a
+self-hosted release workflow, not a Fedora repository submission workflow:
+Fedora repository builds need offline/vendored Rust and npm dependencies.
+
+### Build on Ubuntu for a Fedora VM test
+
+Ubuntu can create the RPM artifact, but cannot satisfy the spec's Fedora RPM
+`BuildRequires` through its Debian package database. This is suitable only for
+producing a candidate to install and test in a clean Fedora VM; it does not
+make BlocKuntu an Ubuntu RPM target or replace Fedora acceptance testing.
+
+Install the Ubuntu-native toolchain and libraries (Rust and Node.js must also
+be available in `PATH`):
+
+```bash
+sudo apt update
+sudo apt install -y rpm build-essential libayatana-appindicator3-dev \
+  libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev libssl-dev libudev-dev \
+  pkg-config
+```
+
+Then explicitly bypass only RPM-database dependency verification:
+
+```bash
+./scripts/package-rpm.sh --ignore-buildrequires
+```
+
+The output is still a Fedora-targeted RPM. Do not install it on Ubuntu; copy
+it out of `target/rpm/` and install it only in the clean Fedora test VM.
+
 ## Test a package in a virtual machine
 
 Test each build in a clean Debian or Ubuntu virtual machine. Copy the `.deb` from
@@ -104,6 +153,31 @@ sudo usermod -aG blockuntu "$USER"
 Sign out and back in, then complete the checks in
 [Verify the installation](#verify-the-installation). Use this package
 installation as the only test path.
+
+### Fedora RPM acceptance
+
+Test each Fedora RPM candidate in a clean Fedora Workstation VM with SELinux
+enforcing. Copy the artifact from `target/rpm/` into the VM, inspect it, then
+install it with `dnf`:
+
+```bash
+rpm -qpi ./blockuntu-<version>-<release>.<arch>.rpm
+sudo dnf install ./blockuntu-<version>-<release>.<arch>.rpm
+sudo usermod -aG blockuntu "$USER"
+```
+
+Sign out and back in. Then complete the normal service, socket, browser
+heartbeat, and blocking checks, plus these Fedora-specific checks:
+
+```bash
+getenforce
+sudo ausearch -m AVC,USER_AVC -ts recent
+```
+
+Keep SELinux enforcing. Check for denials after hosts-file enforcement,
+policy-recovery writes, browser-policy repair, reboot, upgrade, rejected direct
+removal, and the authorized GUI uninstall. See the
+[Fedora RPM roadmap](FEDORA_RPM_ROADMAP.md) for the full acceptance sequence.
 
 ## Security boundary
 

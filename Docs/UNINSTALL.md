@@ -1,14 +1,18 @@
 # BlocKuntu Uninstall
 
-BlocKuntu is installed and removed as a Debian package.
+BlocKuntu is installed and removed as a package. Debian/Ubuntu use `.deb`; the
+Fedora validation path uses an RPM.
 
-## Debian package uninstall
+## Protected package uninstall
 
 Use **Settings → Protected Changes and Uninstall**. Enter the recovery uninstall
 phrase, then select **Uninstall BlocKuntu**. The GUI asks the daemon for a short,
-one-time removal lease before it runs `pkexec dpkg --purge blockuntu`.
+one-time removal lease before it runs the matching package-manager command:
 
-Direct `dpkg`, `apt remove`, and `apt purge` calls are intentionally refused
+- Debian/Ubuntu: `pkexec dpkg --purge blockuntu`
+- Fedora RPM: `pkexec dnf remove --assumeyes blockuntu`
+
+Direct `dpkg`, `apt`, `rpm`, and `dnf` removal calls are intentionally refused
 because they do not have that lease. This prevents a package-manager invocation
 from stopping enforcement without the protected GUI flow.
 
