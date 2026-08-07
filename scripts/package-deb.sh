@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-18"
+VERSION="0.1.0-19"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
@@ -18,13 +18,14 @@ Usage: scripts/package-deb.sh [options]
 
 Build a full BlocKuntu Debian package. The package installs the daemon,
 native host, Tauri GUI, systemd units, Native Messaging manifests, default
-config, and no browser-extension artifacts. Install Firefox from AMO and
-Chrome from the Chrome Web Store. Their policies are written after each
-extension's first verified heartbeat, then lock the store-installed extension.
+config, and no browser-extension artifacts. Install Firefox from AMO in Firefox, LibreWolf, or Waterfox,
+and the Chrome Web Store extension in Chrome, Chromium, Brave, Opera, Microsoft Edge, or Vivaldi. Their policies
+are written after each extension's first verified heartbeat, then lock the
+store-installed extension.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-18.
+  --version VERSION   Package version, default 0.1.0-19.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -174,14 +175,29 @@ sed -i 's#ExecStart=/usr/local/bin/blockuntud repair-hosts#ExecStart=/usr/bin/bl
 
 install -Dm644 packaging/native-messaging/blockuntu_native.json \
   "${PKG_ROOT}/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json"
+install -Dm644 packaging/native-messaging/blockuntu_native.json \
+  "${PKG_ROOT}/usr/lib/librewolf/native-messaging-hosts/blockuntu_native.json"
+install -Dm644 packaging/native-messaging/blockuntu_native.json \
+  "${PKG_ROOT}/usr/lib/waterfox/native-messaging-hosts/blockuntu_native.json"
 install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
   "${PKG_ROOT}/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json"
 install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
   "${PKG_ROOT}/etc/chromium/native-messaging-hosts/blockuntu_native.json"
+install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
+  "${PKG_ROOT}/etc/opt/edge/native-messaging-hosts/blockuntu_native.json"
+install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
+  "${PKG_ROOT}/etc/opt/vivaldi/native-messaging-hosts/blockuntu_native.json"
+install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
+  "${PKG_ROOT}/etc/vivaldi/native-messaging-hosts/blockuntu_native.json"
 sed -i 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
   "${PKG_ROOT}/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json" \
+  "${PKG_ROOT}/usr/lib/librewolf/native-messaging-hosts/blockuntu_native.json" \
+  "${PKG_ROOT}/usr/lib/waterfox/native-messaging-hosts/blockuntu_native.json" \
   "${PKG_ROOT}/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json" \
-  "${PKG_ROOT}/etc/chromium/native-messaging-hosts/blockuntu_native.json"
+  "${PKG_ROOT}/etc/chromium/native-messaging-hosts/blockuntu_native.json" \
+  "${PKG_ROOT}/etc/opt/edge/native-messaging-hosts/blockuntu_native.json" \
+  "${PKG_ROOT}/etc/opt/vivaldi/native-messaging-hosts/blockuntu_native.json" \
+  "${PKG_ROOT}/etc/vivaldi/native-messaging-hosts/blockuntu_native.json"
 
 cat >"${DEBIAN_DIR}/control" <<CONTROL
 Package: ${PACKAGE_NAME}
@@ -189,20 +205,24 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${ARCHITECTURE}
-Depends: systemd, passwd, e2fsprogs, pkexec, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, librsvg2-2
+Depends: systemd, passwd, e2fsprogs, pkexec, xdg-utils, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, librsvg2-2
 Recommends: wmctrl
 Maintainer: BlocKuntu <local@blockuntu.invalid>
 Description: Local Linux focus blocker
  BlocKuntu installs a privileged daemon, Native Messaging bridge, and Tauri
- desktop GUI for local website and application blocking. Firefox and Chrome
- browser policies are deferred until each store-installed extension sends its
- first verified heartbeat, then lock that extension against removal.
+ desktop GUI for local website and application blocking. Firefox, Chrome,
+ Chromium, Brave, Opera, Microsoft Edge, Vivaldi, LibreWolf, and Waterfox browser policies are deferred until each
+ store-installed extension sends its first verified heartbeat, then lock that
+ extension against removal.
 CONTROL
 
 cat >"${DEBIAN_DIR}/conffiles" <<'CONFFILES'
 /etc/blockuntu/config.toml
 /etc/opt/chrome/native-messaging-hosts/blockuntu_native.json
 /etc/chromium/native-messaging-hosts/blockuntu_native.json
+/etc/opt/edge/native-messaging-hosts/blockuntu_native.json
+/etc/opt/vivaldi/native-messaging-hosts/blockuntu_native.json
+/etc/vivaldi/native-messaging-hosts/blockuntu_native.json
 CONFFILES
 
 cat >"${DEBIAN_DIR}/postinst" <<'POSTINST'
@@ -278,10 +298,13 @@ BlocKuntu installed.
 Add the desktop user to the socket group, then log out and back in:
   sudo usermod -aG blockuntu "$USER"
 
-Install and enable the BlocKuntu Firefox extension from AMO and the BlocKuntu
-Chrome extension from the Chrome Web Store. After each extension's first
-verified heartbeat, BlocKuntu writes its managed policy and locks that
-store-installed extension against removal.
+Install and enable the BlocKuntu Firefox extension from AMO in Firefox, LibreWolf, or Waterfox,
+and the BlocKuntu Chrome Web Store extension in Chrome, Chromium, Brave, Opera, Microsoft Edge,
+or Vivaldi. After each
+extension's first verified heartbeat, BlocKuntu writes its managed policy and
+locks that store-installed extension against removal. In Opera and Edge, first
+turn on "Allow extensions from other stores". In Vivaldi, enable Web Store in
+Settings > Privacy and Security > Google Extensions first.
 If you use Firefox Snap or Flatpak, BlocKuntu configures its per-user browser
 integration automatically when the GUI starts. Its Flatpak policy is written
 after the first verified Firefox heartbeat.
@@ -370,6 +393,12 @@ remove_hosts_block() {
 remove_browser_policies() {
   firefox_policy="/etc/firefox/policies/policies.json"
   chrome_policy="/etc/opt/chrome/policies/managed/blockuntu.json"
+  chromium_policy="/etc/chromium/policies/managed/blockuntu.json"
+  brave_policy="/etc/brave/policies/managed/blockuntu.json"
+  opera_policy="/etc/opt/opera/policies/managed/blockuntu.json"
+  edge_policy="/etc/opt/edge/policies/managed/blockuntu.json"
+  vivaldi_policy="/etc/vivaldi/policies/managed/blockuntu.json"
+  legacy_vivaldi_policy="/etc/opt/vivaldi/policies/managed/blockuntu.json"
   chrome_update_manifest="/usr/local/share/blockuntu/chrome-extension-updates.xml"
 
   if [ -f "${firefox_policy}" ] && grep -qi "blockuntu" "${firefox_policy}" 2>/dev/null; then
@@ -378,10 +407,22 @@ remove_browser_policies() {
     remove_empty_dir "/etc/firefox"
   fi
 
-  rm -f "${chrome_policy}"
+  rm -f "${chrome_policy}" "${chromium_policy}" "${brave_policy}" "${opera_policy}" "${edge_policy}" "${vivaldi_policy}" "${legacy_vivaldi_policy}"
   rm -f "${chrome_update_manifest}"
   remove_empty_dir "/etc/opt/chrome/policies/managed"
   remove_empty_dir "/etc/opt/chrome/policies"
+  remove_empty_dir "/etc/chromium/policies/managed"
+  remove_empty_dir "/etc/chromium/policies"
+  remove_empty_dir "/etc/brave/policies/managed"
+  remove_empty_dir "/etc/brave/policies"
+  remove_empty_dir "/etc/opt/opera/policies/managed"
+  remove_empty_dir "/etc/opt/opera/policies"
+  remove_empty_dir "/etc/opt/edge/policies/managed"
+  remove_empty_dir "/etc/opt/edge/policies"
+  remove_empty_dir "/etc/vivaldi/policies/managed"
+  remove_empty_dir "/etc/vivaldi/policies"
+  remove_empty_dir "/etc/opt/vivaldi/policies/managed"
+  remove_empty_dir "/etc/opt/vivaldi/policies"
   remove_empty_dir "/usr/local/share/blockuntu"
 }
 

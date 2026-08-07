@@ -26,19 +26,43 @@ use crate::process_scan::{
     attach_detected_window_titles, kill_processes, scan_procfs, supported_browser_for_process,
     LinuxSignalKiller, ProcessInfo, SupportedBrowser,
 };
-use crate::rpc::{handle_payload, RpcContext};
+use crate::rpc::{
+    current_chromium_incognito_policy_settings,
+    ensure_chromium_incognito_url_blocklist_within_limit, handle_payload,
+    unsupported_browser_block_is_active, ChromiumIncognitoPolicySettings, ChromiumPolicyBinding,
+    GeckoPolicyBinding, RpcContext,
+};
 use crate::socket::listener_from_systemd_or_path;
 
 const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const UNSUPPORTED_BROWSER_RULE_ID: &str = "unsupported-browsers-hard";
-const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
-const CHROME_EXTENSION_HEARTBEAT_COMPONENT: &str = "chrome_extension";
 const STRICT_FIREFOX_MISSING_SINCE_KEY: &str = "strict_mode.firefox_missing_since";
+const STRICT_LIBREWOLF_MISSING_SINCE_KEY: &str = "strict_mode.librewolf_missing_since";
+const STRICT_WATERFOX_MISSING_SINCE_KEY: &str = "strict_mode.waterfox_missing_since";
 const STRICT_CHROME_MISSING_SINCE_KEY: &str = "strict_mode.chrome_missing_since";
+const STRICT_CHROMIUM_MISSING_SINCE_KEY: &str = "strict_mode.chromium_missing_since";
+const STRICT_BRAVE_MISSING_SINCE_KEY: &str = "strict_mode.brave_missing_since";
+const STRICT_OPERA_MISSING_SINCE_KEY: &str = "strict_mode.opera_missing_since";
+const STRICT_EDGE_MISSING_SINCE_KEY: &str = "strict_mode.edge_missing_since";
+const STRICT_VIVALDI_MISSING_SINCE_KEY: &str = "strict_mode.vivaldi_missing_since";
 const STRICT_FIREFOX_BROWSER_SESSION_STARTED_AT_KEY: &str =
     "strict_mode.firefox_browser_session_started_at";
+const STRICT_LIBREWOLF_BROWSER_SESSION_STARTED_AT_KEY: &str =
+    "strict_mode.librewolf_browser_session_started_at";
+const STRICT_WATERFOX_BROWSER_SESSION_STARTED_AT_KEY: &str =
+    "strict_mode.waterfox_browser_session_started_at";
 const STRICT_CHROME_BROWSER_SESSION_STARTED_AT_KEY: &str =
     "strict_mode.chrome_browser_session_started_at";
+const STRICT_CHROMIUM_BROWSER_SESSION_STARTED_AT_KEY: &str =
+    "strict_mode.chromium_browser_session_started_at";
+const STRICT_BRAVE_BROWSER_SESSION_STARTED_AT_KEY: &str =
+    "strict_mode.brave_browser_session_started_at";
+const STRICT_OPERA_BROWSER_SESSION_STARTED_AT_KEY: &str =
+    "strict_mode.opera_browser_session_started_at";
+const STRICT_EDGE_BROWSER_SESSION_STARTED_AT_KEY: &str =
+    "strict_mode.edge_browser_session_started_at";
+const STRICT_VIVALDI_BROWSER_SESSION_STARTED_AT_KEY: &str =
+    "strict_mode.vivaldi_browser_session_started_at";
 const MIN_BROWSER_STARTUP_HEARTBEAT_GRACE_SECONDS: i64 = 60;
 const NOTIFICATION_STATE_INTERVAL_SECONDS: u64 = 5;
 const ALLOWANCE_NOTIFICATION_TTL_MINUTES: i64 = 5;
@@ -48,8 +72,8 @@ const LIFECYCLE_NOTIFICATION_TTL_MINUTES: i64 = 10;
 pub struct DaemonApp {
     core: Arc<Mutex<FocusCore>>,
     rpc_context: RpcContext,
-    firefox_policy: FirefoxPolicyManager,
-    chrome_policy: ChromePolicyManager,
+    gecko_policies: Vec<GeckoPolicyBinding>,
+    chromium_policies: Vec<ChromiumPolicyBinding>,
     hosts: HostsManager,
     manage_firefox_policy: bool,
     manage_chrome_policy: bool,
@@ -103,16 +127,91 @@ impl DaemonApp {
             .with_policy_recovery(policy_recovery)
             .with_event_log_path(&args.event_log)
             .with_extension_heartbeat_timeout_seconds(args.extension_heartbeat_timeout_seconds);
-        let firefox_policy = FirefoxPolicyManager::new(
-            &args.firefox_policy,
-            &args.extension_id,
-            &args.firefox_extension_install_url,
-        );
-        let chrome_policy =
-            ChromePolicyManager::new(&args.chrome_policy, &args.chrome_extension_id);
+        let gecko_policies = vec![
+            GeckoPolicyBinding::new(
+                SupportedBrowser::Firefox,
+                FirefoxPolicyManager::for_browser(
+                    &args.firefox_policy,
+                    &args.extension_id,
+                    &args.firefox_extension_install_url,
+                ),
+            ),
+            GeckoPolicyBinding::new(
+                SupportedBrowser::LibreWolf,
+                FirefoxPolicyManager::merging_existing_policy(
+                    &args.librewolf_policy,
+                    &args.librewolf_extension_id,
+                    &args.librewolf_extension_install_url,
+                    &args.librewolf_policy_backup,
+                ),
+            ),
+            GeckoPolicyBinding::new(
+                SupportedBrowser::Waterfox,
+                FirefoxPolicyManager::merging_existing_policy(
+                    &args.waterfox_policy,
+                    &args.waterfox_extension_id,
+                    &args.waterfox_extension_install_url,
+                    &args.waterfox_policy_backup,
+                ),
+            ),
+        ];
+        let chromium_policies = vec![
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Chrome,
+                ChromePolicyManager::for_browser(
+                    &args.chrome_policy,
+                    &args.chrome_extension_id,
+                    "Chrome",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Chromium,
+                ChromePolicyManager::for_browser(
+                    &args.chromium_policy,
+                    &args.chromium_extension_id,
+                    "Chromium",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Brave,
+                ChromePolicyManager::for_browser(
+                    &args.brave_policy,
+                    &args.brave_extension_id,
+                    "Brave",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Opera,
+                ChromePolicyManager::for_browser(
+                    &args.opera_policy,
+                    &args.opera_extension_id,
+                    "Opera",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Edge,
+                ChromePolicyManager::for_browser(
+                    &args.edge_policy,
+                    &args.edge_extension_id,
+                    "Microsoft Edge",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Vivaldi,
+                ChromePolicyManager::for_browser(
+                    &args.vivaldi_policy,
+                    &args.vivaldi_extension_id,
+                    "Vivaldi",
+                ),
+            ),
+        ];
         let hosts = HostsManager::new_with_immutable(&args.hosts, hosts_immutable_enabled(args));
         let rpc_context = rpc_context
-            .with_enforcement_managers(firefox_policy.clone(), chrome_policy.clone(), hosts.clone())
+            .with_enforcement_managers(
+                gecko_policies.clone(),
+                chromium_policies.clone(),
+                hosts.clone(),
+            )
             .with_browser_policy_management(
                 args.manage_firefox_policy(),
                 args.manage_chrome_policy(),
@@ -125,8 +224,8 @@ impl DaemonApp {
         Ok(Self {
             core,
             rpc_context,
-            firefox_policy,
-            chrome_policy,
+            gecko_policies,
+            chromium_policies,
             hosts,
             manage_firefox_policy: args.manage_firefox_policy(),
             manage_chrome_policy: args.manage_chrome_policy(),
@@ -148,33 +247,110 @@ impl DaemonApp {
     }
 
     pub fn repair_firefox_policy(&self) -> Result<RepairStatus> {
+        self.repair_gecko_policy(SupportedBrowser::Firefox)
+    }
+
+    fn repair_gecko_policy(&self, browser: SupportedBrowser) -> Result<RepairStatus> {
+        debug_assert!(browser.is_firefox_based());
         if !self.manage_firefox_policy {
             return Ok(RepairStatus::SkippedDisabled);
         }
         if self.defer_firefox_policy_repair_until_heartbeat
-            && !self.has_extension_heartbeat(FIREFOX_EXTENSION_HEARTBEAT_COMPONENT)?
+            && !self.has_extension_heartbeat(browser.extension_component())?
         {
             return Ok(RepairStatus::SkippedDeferred);
         }
         if !self.enforcement_is_active()? {
             return Ok(RepairStatus::SkippedInactive);
         }
-        self.firefox_policy.verify_and_repair()
+        self.gecko_policies
+            .iter()
+            .find(|binding| binding.browser() == browser)
+            .ok_or_else(|| {
+                DaemonError::InvalidRequest(format!(
+                    "{} policy manager is not configured",
+                    browser.label()
+                ))
+            })?
+            .policy()
+            .verify_and_repair()
+    }
+
+    fn repair_gecko_policies(&self) -> Result<Vec<(SupportedBrowser, RepairStatus)>> {
+        SupportedBrowser::MANAGED
+            .into_iter()
+            .filter(|browser| browser.is_firefox_based())
+            .map(|browser| Ok((browser, self.repair_gecko_policy(browser)?)))
+            .collect()
     }
 
     pub fn repair_chrome_policy(&self) -> Result<ChromePolicyRepairStatus> {
+        self.repair_chromium_policy(SupportedBrowser::Chrome)
+    }
+
+    fn repair_chromium_policy(
+        &self,
+        browser: SupportedBrowser,
+    ) -> Result<ChromePolicyRepairStatus> {
+        let settings = self.chromium_incognito_policy_settings()?;
+        self.repair_chromium_policy_with_settings(browser, &settings)
+    }
+
+    fn repair_chromium_policy_with_settings(
+        &self,
+        browser: SupportedBrowser,
+        settings: &ChromiumIncognitoPolicySettings,
+    ) -> Result<ChromePolicyRepairStatus> {
+        debug_assert!(browser.is_chromium_based());
         if !self.manage_chrome_policy {
             return Ok(ChromePolicyRepairStatus::SkippedDisabled);
         }
         if self.defer_chrome_policy_repair_until_heartbeat
-            && !self.has_extension_heartbeat(CHROME_EXTENSION_HEARTBEAT_COMPONENT)?
+            && !self.has_extension_heartbeat(browser.extension_component())?
         {
             return Ok(ChromePolicyRepairStatus::SkippedDeferred);
         }
         if !self.enforcement_is_active()? {
             return Ok(ChromePolicyRepairStatus::SkippedInactive);
         }
-        self.chrome_policy.verify_and_repair()
+        ensure_chromium_incognito_url_blocklist_within_limit(settings)?;
+        self.chromium_policies
+            .iter()
+            .find(|binding| binding.browser() == browser)
+            .ok_or_else(|| {
+                DaemonError::InvalidRequest(format!(
+                    "{} policy manager is not configured",
+                    browser.label()
+                ))
+            })?
+            .policy()
+            .verify_and_repair_with(settings.mode, &settings.url_blocklist)
+    }
+
+    fn repair_chromium_policies(
+        &self,
+    ) -> Result<Vec<(SupportedBrowser, ChromePolicyRepairStatus)>> {
+        let settings = self.chromium_incognito_policy_settings()?;
+        SupportedBrowser::MANAGED
+            .into_iter()
+            .filter(|browser| browser.is_chromium_based())
+            .map(|browser| {
+                Ok((
+                    browser,
+                    self.repair_chromium_policy_with_settings(browser, &settings)?,
+                ))
+            })
+            .collect()
+    }
+
+    fn chromium_incognito_policy_settings(&self) -> Result<ChromiumIncognitoPolicySettings> {
+        let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        let guarded = clock_guard::guarded_now(core.database(), None, false)?;
+        current_chromium_incognito_policy_settings(
+            &core,
+            guarded.now,
+            guarded.integrity.state == "tampered",
+        )
     }
 
     pub fn repair_hosts(&self) -> Result<HostsRepairStatus> {
@@ -197,8 +373,8 @@ impl DaemonApp {
     }
 
     pub async fn serve(self, args: &Args) -> Result<()> {
-        self.repair_firefox_policy()?;
-        self.repair_chrome_policy()?;
+        self.repair_gecko_policies()?;
+        self.repair_chromium_policies()?;
         self.repair_hosts()?;
         self.spawn_repair_loop();
         self.spawn_process_scan_loop();
@@ -212,11 +388,11 @@ impl DaemonApp {
         let app = self.clone();
         tokio::spawn(async move {
             loop {
-                if let Err(err) = app.repair_firefox_policy() {
-                    eprintln!("Firefox policy repair failed: {err}");
+                if let Err(err) = app.repair_gecko_policies() {
+                    eprintln!("Firefox-family policy repair failed: {err}");
                 }
-                if let Err(err) = app.repair_chrome_policy() {
-                    eprintln!("Chrome policy repair failed: {err}");
+                if let Err(err) = app.repair_chromium_policies() {
+                    eprintln!("Chromium-family policy repair failed: {err}");
                 }
                 if let Err(err) = app.repair_hosts() {
                     eprintln!("hosts repair failed: {err}");
@@ -237,9 +413,31 @@ impl DaemonApp {
             return self.policy_repair_interval;
         }
 
-        next_tier2_site_schedule_boundary(core.config(), guarded.now)
+        let schedule_delay = next_tier2_site_schedule_boundary(core.config(), guarded.now)
             .map(|delay| delay.min(self.policy_repair_interval))
-            .unwrap_or(self.policy_repair_interval)
+            .unwrap_or(self.policy_repair_interval);
+        let detox_delay = core
+            .database()
+            .active_detox_sessions(guarded.now.with_timezone(&Utc))
+            .ok()
+            .and_then(|sessions| {
+                sessions
+                    .into_iter()
+                    .filter_map(|session| {
+                        (session.ends_at > guarded.now.with_timezone(&Utc))
+                            .then(|| {
+                                (session.ends_at - guarded.now.with_timezone(&Utc))
+                                    .to_std()
+                                    .ok()
+                            })
+                            .flatten()
+                    })
+                    .min()
+            });
+
+        detox_delay
+            .map(|delay| delay.min(schedule_delay))
+            .unwrap_or(schedule_delay)
     }
 
     fn spawn_process_scan_loop(&self) {
@@ -313,7 +511,20 @@ impl DaemonApp {
             if !clock_tampered {
                 sync_metered_app_usage_sessions(&core, &processes, now)?;
             }
-            let context = EvaluationContext::new(core.config(), core.database(), now)
+            let unsupported_browser_block_active =
+                unsupported_browser_block_is_active(&core, now, clock_tampered)?;
+            let config_without_inactive_browser_block =
+                (!unsupported_browser_block_active).then(|| {
+                    let mut config = core.config().clone();
+                    config
+                        .app_rules
+                        .retain(|rule| rule.id != UNSUPPORTED_BROWSER_RULE_ID);
+                    config
+                });
+            let evaluation_config = config_without_inactive_browser_block
+                .as_ref()
+                .unwrap_or_else(|| core.config());
+            let context = EvaluationContext::new(evaluation_config, core.database(), now)
                 .with_clock_tampered(clock_tampered);
             for process in &processes {
                 if process.pid <= 1
@@ -333,25 +544,35 @@ impl DaemonApp {
                 }
             }
 
-            let mut strict_mode = core.config().strict_mode.clone();
-            if self.defer_firefox_policy_repair_until_heartbeat
-                && !self
-                    .has_extension_heartbeat_locked(&core, FIREFOX_EXTENSION_HEARTBEAT_COMPONENT)?
-            {
-                strict_mode.require_firefox_extension = false;
+            let strict_mode = core.config().strict_mode.clone();
+            let mut deferred_browsers = HashSet::new();
+            if self.defer_firefox_policy_repair_until_heartbeat {
+                for browser in SupportedBrowser::MANAGED
+                    .into_iter()
+                    .filter(|browser| browser.is_firefox_based())
+                {
+                    if !self.has_extension_heartbeat_locked(&core, browser.extension_component())? {
+                        deferred_browsers.insert(browser);
+                    }
+                }
             }
-            if self.defer_chrome_policy_repair_until_heartbeat
-                && !self
-                    .has_extension_heartbeat_locked(&core, CHROME_EXTENSION_HEARTBEAT_COMPONENT)?
-            {
-                strict_mode.require_chrome_extension = false;
+            if self.defer_chrome_policy_repair_until_heartbeat {
+                for browser in SupportedBrowser::MANAGED
+                    .into_iter()
+                    .filter(|browser| browser.is_chromium_based())
+                {
+                    if !self.has_extension_heartbeat_locked(&core, browser.extension_component())? {
+                        deferred_browsers.insert(browser);
+                    }
+                }
             }
 
-            for (pid, detail) in strict_browser_kill_details(
+            for (pid, detail) in strict_browser_kill_details_except(
                 &processes,
                 strict_mode,
                 core.database(),
                 now.with_timezone(&Utc),
+                &deferred_browsers,
             )? {
                 if !blocked_pids.contains(&pid) {
                     blocked_pids.push(pid);
@@ -470,19 +691,11 @@ fn next_tier2_site_schedule_boundary(
     config: &focus_core::Config,
     now: DateTime<FixedOffset>,
 ) -> Option<Duration> {
-    let schedule_ids: HashSet<&str> = config
-        .rules
-        .iter()
-        .filter(|rule| rule.tier == RuleTier::ScheduledBlock)
-        .flat_map(|rule| rule.schedule_ids.iter().map(String::as_str))
-        .collect();
     let mut next: Option<DateTime<FixedOffset>> = None;
 
-    for schedule in config
-        .schedules
-        .iter()
-        .filter(|schedule| schedule_ids.contains(schedule.id.as_str()))
-    {
+    // Chromium private-browsing disablement can be scoped to any active
+    // schedule, including schedules used only by Controlled Access rules.
+    for schedule in &config.schedules {
         for day_offset in 0..=8 {
             let Some(date) = now.date_naive().checked_add_days(Days::new(day_offset)) else {
                 continue;
@@ -571,11 +784,22 @@ fn create_parent_dir(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn strict_browser_kill_details(
     processes: &[ProcessInfo],
     strict_mode: StrictModeConfig,
     database: &Database,
     now: DateTime<Utc>,
+) -> Result<HashMap<u32, String>> {
+    strict_browser_kill_details_except(processes, strict_mode, database, now, &HashSet::new())
+}
+
+fn strict_browser_kill_details_except(
+    processes: &[ProcessInfo],
+    strict_mode: StrictModeConfig,
+    database: &Database,
+    now: DateTime<Utc>,
+    deferred_browsers: &HashSet<SupportedBrowser>,
 ) -> Result<HashMap<u32, String>> {
     let mut kill_details = HashMap::new();
 
@@ -583,8 +807,10 @@ fn strict_browser_kill_details(
         return Ok(kill_details);
     }
 
-    for browser in [SupportedBrowser::Firefox, SupportedBrowser::Chrome] {
-        if !browser_required_by_strict_mode(browser, &strict_mode) {
+    for browser in SupportedBrowser::MANAGED {
+        if deferred_browsers.contains(&browser)
+            || !browser_required_by_strict_mode(browser, &strict_mode)
+        {
             continue;
         }
 
@@ -623,7 +849,7 @@ fn strict_browser_unhealthy_reason(
         .signed_duration_since(session_started_at)
         .num_seconds()
         .max(0);
-    let heartbeat = database.heartbeat(browser.heartbeat_component())?;
+    let heartbeat = database.heartbeat(browser.extension_component())?;
     let heartbeat_is_for_current_session = heartbeat
         .as_ref()
         .is_some_and(|heartbeat| heartbeat.last_seen_at >= session_started_at);
@@ -645,7 +871,7 @@ fn strict_browser_unhealthy_reason(
         return Ok(Some(format!(
             "browser={};component={};heartbeat_missing_since_launch_seconds={};startup_grace_seconds={}",
             browser.label(),
-            browser.heartbeat_component(),
+            browser.extension_component(),
             startup_elapsed_seconds,
             startup_grace_seconds
         )));
@@ -666,7 +892,7 @@ fn strict_browser_unhealthy_reason(
     Ok(Some(format!(
         "browser={};component={};heartbeat_age_seconds={};grace_seconds={}",
         browser.label(),
-        browser.heartbeat_component(),
+        browser.extension_component(),
         age_seconds,
         strict_mode.grace_seconds
     )))
@@ -701,31 +927,31 @@ pub(crate) fn browser_startup_grace_seconds(strict_mode: &StrictModeConfig) -> i
 }
 
 impl SupportedBrowser {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Firefox => "firefox",
-            Self::Chrome => "chrome",
-        }
-    }
-
-    fn heartbeat_component(self) -> &'static str {
-        match self {
-            Self::Firefox => FIREFOX_EXTENSION_HEARTBEAT_COMPONENT,
-            Self::Chrome => CHROME_EXTENSION_HEARTBEAT_COMPONENT,
-        }
-    }
-
     fn missing_since_key(self) -> &'static str {
         match self {
             Self::Firefox => STRICT_FIREFOX_MISSING_SINCE_KEY,
+            Self::LibreWolf => STRICT_LIBREWOLF_MISSING_SINCE_KEY,
+            Self::Waterfox => STRICT_WATERFOX_MISSING_SINCE_KEY,
             Self::Chrome => STRICT_CHROME_MISSING_SINCE_KEY,
+            Self::Chromium => STRICT_CHROMIUM_MISSING_SINCE_KEY,
+            Self::Brave => STRICT_BRAVE_MISSING_SINCE_KEY,
+            Self::Opera => STRICT_OPERA_MISSING_SINCE_KEY,
+            Self::Edge => STRICT_EDGE_MISSING_SINCE_KEY,
+            Self::Vivaldi => STRICT_VIVALDI_MISSING_SINCE_KEY,
         }
     }
 
     fn session_started_at_key(self) -> &'static str {
         match self {
             Self::Firefox => STRICT_FIREFOX_BROWSER_SESSION_STARTED_AT_KEY,
+            Self::LibreWolf => STRICT_LIBREWOLF_BROWSER_SESSION_STARTED_AT_KEY,
+            Self::Waterfox => STRICT_WATERFOX_BROWSER_SESSION_STARTED_AT_KEY,
             Self::Chrome => STRICT_CHROME_BROWSER_SESSION_STARTED_AT_KEY,
+            Self::Chromium => STRICT_CHROMIUM_BROWSER_SESSION_STARTED_AT_KEY,
+            Self::Brave => STRICT_BRAVE_BROWSER_SESSION_STARTED_AT_KEY,
+            Self::Opera => STRICT_OPERA_BROWSER_SESSION_STARTED_AT_KEY,
+            Self::Edge => STRICT_EDGE_BROWSER_SESSION_STARTED_AT_KEY,
+            Self::Vivaldi => STRICT_VIVALDI_BROWSER_SESSION_STARTED_AT_KEY,
         }
     }
 }
@@ -735,8 +961,15 @@ fn browser_required_by_strict_mode(
     strict_mode: &StrictModeConfig,
 ) -> bool {
     match browser {
-        SupportedBrowser::Firefox => strict_mode.require_firefox_extension,
-        SupportedBrowser::Chrome => strict_mode.require_chrome_extension,
+        SupportedBrowser::Firefox | SupportedBrowser::LibreWolf | SupportedBrowser::Waterfox => {
+            strict_mode.require_firefox_extension
+        }
+        SupportedBrowser::Chrome
+        | SupportedBrowser::Chromium
+        | SupportedBrowser::Brave
+        | SupportedBrowser::Opera
+        | SupportedBrowser::Edge
+        | SupportedBrowser::Vivaldi => strict_mode.require_chrome_extension,
     }
 }
 
@@ -899,41 +1132,6 @@ fn unsupported_browser_matchers() -> Vec<(AppMatcherKind, &'static str)> {
     use AppMatcherKind::{CommandName, DesktopId, ExecutableBasename, WindowTitleContains};
 
     vec![
-        (ExecutableBasename, "chromium"),
-        (CommandName, "chromium"),
-        (ExecutableBasename, "chromium-browser"),
-        (CommandName, "chromium-browser"),
-        (DesktopId, "chromium.desktop"),
-        (DesktopId, "org.chromium.Chromium.desktop"),
-        (ExecutableBasename, "brave"),
-        (CommandName, "brave"),
-        (ExecutableBasename, "brave-browser"),
-        (CommandName, "brave-browser"),
-        (DesktopId, "brave-browser.desktop"),
-        (DesktopId, "com.brave.Browser.desktop"),
-        (ExecutableBasename, "microsoft-edge"),
-        (CommandName, "microsoft-edge"),
-        (ExecutableBasename, "microsoft-edge-stable"),
-        (CommandName, "microsoft-edge-stable"),
-        (DesktopId, "microsoft-edge.desktop"),
-        (DesktopId, "com.microsoft.Edge.desktop"),
-        (ExecutableBasename, "opera"),
-        (CommandName, "opera"),
-        (DesktopId, "opera.desktop"),
-        (DesktopId, "com.opera.Opera.desktop"),
-        (ExecutableBasename, "vivaldi"),
-        (CommandName, "vivaldi"),
-        (ExecutableBasename, "vivaldi-stable"),
-        (CommandName, "vivaldi-stable"),
-        (DesktopId, "vivaldi-stable.desktop"),
-        (DesktopId, "com.vivaldi.Vivaldi.desktop"),
-        (ExecutableBasename, "librewolf"),
-        (CommandName, "librewolf"),
-        (DesktopId, "librewolf.desktop"),
-        (DesktopId, "io.gitlab.librewolf-community.desktop"),
-        (ExecutableBasename, "waterfox"),
-        (CommandName, "waterfox"),
-        (DesktopId, "waterfox.desktop"),
         (ExecutableBasename, "epiphany"),
         (CommandName, "epiphany"),
         (DesktopId, "org.gnome.Epiphany.desktop"),
@@ -1417,7 +1615,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_browser_rule_blocks_chromium_but_not_supported_browsers() {
+    fn unsupported_browser_rule_blocks_unmanaged_browsers_but_not_supported_browsers() {
         let mut config = Config::default();
         ensure_mandatory_app_rules(&mut config);
         let database = focus_core::Database::in_memory().expect("database should initialize");
@@ -1425,26 +1623,75 @@ mod tests {
         let now = chrono::Local::now().fixed_offset();
         let context = focus_core::EvaluationContext::new(core.config(), core.database(), now);
 
-        let chromium = process("chromium");
+        let epiphany = process("epiphany");
         let firefox = process("firefox");
+        let librewolf = process("librewolf");
+        let waterfox = process("waterfox");
         let chrome = process("google-chrome");
+        let chromium = process("chromium");
+        let brave = process("brave-browser");
+        let opera = process("opera");
+        let edge = process("microsoft-edge");
+        let vivaldi = process("vivaldi");
 
-        assert!(focus_core::evaluate_app(&chromium, &context).is_block());
+        assert!(focus_core::evaluate_app(&epiphany, &context).is_block());
         assert!(!focus_core::evaluate_app(&firefox, &context).is_block());
+        assert!(!focus_core::evaluate_app(&librewolf, &context).is_block());
+        assert!(!focus_core::evaluate_app(&waterfox, &context).is_block());
         assert!(!focus_core::evaluate_app(&chrome, &context).is_block());
+        assert!(!focus_core::evaluate_app(&chromium, &context).is_block());
+        assert!(!focus_core::evaluate_app(&brave, &context).is_block());
+        assert!(!focus_core::evaluate_app(&opera, &context).is_block());
+        assert!(!focus_core::evaluate_app(&edge, &context).is_block());
+        assert!(!focus_core::evaluate_app(&vivaldi, &context).is_block());
     }
 
     #[test]
-    fn supported_browser_detection_is_limited_to_managed_browsers() {
+    fn supported_browser_detection_covers_each_managed_browser() {
         assert_eq!(
             supported_browser_for_process(&process("firefox")),
             Some(SupportedBrowser::Firefox)
         );
         assert_eq!(
+            supported_browser_for_process(&process("librewolf")),
+            Some(SupportedBrowser::LibreWolf)
+        );
+        assert_eq!(
+            supported_browser_for_process(&process("waterfox")),
+            Some(SupportedBrowser::Waterfox)
+        );
+        assert_eq!(
             supported_browser_for_process(&process("google-chrome")),
             Some(SupportedBrowser::Chrome)
         );
-        assert_eq!(supported_browser_for_process(&process("chromium")), None);
+        assert_eq!(
+            supported_browser_for_process(&process("chromium")),
+            Some(SupportedBrowser::Chromium)
+        );
+        assert_eq!(
+            supported_browser_for_process(&process("brave-browser")),
+            Some(SupportedBrowser::Brave)
+        );
+        assert_eq!(
+            supported_browser_for_process(&process("opera")),
+            Some(SupportedBrowser::Opera)
+        );
+        assert_eq!(
+            supported_browser_for_process(&process("microsoft-edge")),
+            Some(SupportedBrowser::Edge)
+        );
+        assert_eq!(
+            supported_browser_for_process(&process("msedge")),
+            Some(SupportedBrowser::Edge)
+        );
+        assert_eq!(
+            supported_browser_for_process(&process("vivaldi")),
+            Some(SupportedBrowser::Vivaldi)
+        );
+        assert_eq!(
+            supported_browser_for_process(&process("vivaldi-bin")),
+            Some(SupportedBrowser::Vivaldi)
+        );
     }
 
     #[test]

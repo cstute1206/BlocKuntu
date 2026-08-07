@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -9,9 +9,10 @@ use chrono::{DateTime, Datelike, Duration, FixedOffset, Local, TimeZone, Timelik
 use focus_core::{
     emergency_uninstall_code_is_valid, evaluate_app, evaluate_url, installation_serial_is_valid,
     record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
-    site_usage_is_metered, AllowanceConfig, AppRuleConfig, BlockReason, Config,
-    ControlledBlockReason, Decision, DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore,
-    HeartbeatState, NotificationPreferences, RuleConfig, RuleTier, ScheduleConfig, UnlockState,
+    schedule_ids_are_active_at as schedule_ids_are_active_at_with_clock, site_usage_is_metered,
+    AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision,
+    DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState,
+    NotificationPreferences, RuleConfig, RulePatternKind, RuleTier, ScheduleConfig, UnlockState,
     VisitState, Weekday,
 };
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,7 @@ use crate::app::{
     browser_startup_grace_seconds, hosts_detox_sessions_for_clock, is_blockuntu_process,
     strict_browser_session_started_at,
 };
-use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
+use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus, ChromiumIncognitoMode};
 use crate::cli::DEFAULT_EVENT_LOG_PATH;
 use crate::clock_guard;
 use crate::error::{DaemonError, Result};
@@ -35,7 +36,14 @@ use crate::process_scan::{
 };
 
 const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
+const LIBREWOLF_EXTENSION_HEARTBEAT_COMPONENT: &str = "librewolf_extension";
+const WATERFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "waterfox_extension";
 const CHROME_EXTENSION_HEARTBEAT_COMPONENT: &str = "chrome_extension";
+const CHROMIUM_EXTENSION_HEARTBEAT_COMPONENT: &str = "chromium_extension";
+const BRAVE_EXTENSION_HEARTBEAT_COMPONENT: &str = "brave_extension";
+const OPERA_EXTENSION_HEARTBEAT_COMPONENT: &str = "opera_extension";
+const EDGE_EXTENSION_HEARTBEAT_COMPONENT: &str = "edge_extension";
+const VIVALDI_EXTENSION_HEARTBEAT_COMPONENT: &str = "vivaldi_extension";
 const DEFAULT_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS: u64 = 15;
 const CHROME_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS: u64 = 75;
 const ENFORCEMENT_ACTIVE: &str = "active";
@@ -54,7 +62,13 @@ const RECOVERY_CREDENTIALS_HIDDEN_MARKER_PATH: &str =
 const TIER1_EDIT_UNLOCK_UNTIL_KEY: &str = "tier1_edit_unlocked_until";
 const TIER1_EDIT_CREDENTIAL_SALT_KEY: &str = "tier1_edit_credential_salt";
 const TIER1_EDIT_CREDENTIAL_HASH_KEY: &str = "tier1_edit_credential_hash";
+const PROTECTED_ACCESS_MODE_KEY: &str = "protected_access_mode";
+const UNSUPPORTED_BROWSER_BLOCK_MODE_KEY: &str = "unsupported_browser_block_mode";
+const CHROMIUM_INCOGNITO_MODE_KEY: &str = "chromium_incognito_mode";
+const CHROMIUM_INCOGNITO_DISABLE_SCOPE_KEY: &str = "chromium_incognito_disable_scope";
+const CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY: &str = "chromium_incognito_change_access_mode";
 const OPERATOR_WINDOW_RESTRICTION_KEY: &str = "operator_window_restriction_enabled";
+const UNSUPPORTED_BROWSER_RULE_ID: &str = "unsupported-browsers-hard";
 const TIER1_EDIT_UNLOCK_MINUTES: i64 = 5;
 const OPERATOR_WINDOW_START_MINUTE: u16 = 20 * 60;
 const OPERATOR_WINDOW_END_MINUTE: u16 = 23 * 60 + 59;
@@ -68,11 +82,53 @@ const BLOCK_NOTIFICATION_TTL_MINUTES: i64 = 2;
 const LIFECYCLE_NOTIFICATION_TTL_MINUTES: i64 = 10;
 
 #[derive(Clone)]
+pub struct ChromiumPolicyBinding {
+    browser: SupportedBrowser,
+    policy: ChromePolicyManager,
+}
+
+impl ChromiumPolicyBinding {
+    pub fn new(browser: SupportedBrowser, policy: ChromePolicyManager) -> Self {
+        debug_assert!(browser.is_chromium_based());
+        Self { browser, policy }
+    }
+
+    pub(crate) fn browser(&self) -> SupportedBrowser {
+        self.browser
+    }
+
+    pub(crate) fn policy(&self) -> &ChromePolicyManager {
+        &self.policy
+    }
+}
+
+#[derive(Clone)]
+pub struct GeckoPolicyBinding {
+    browser: SupportedBrowser,
+    policy: FirefoxPolicyManager,
+}
+
+impl GeckoPolicyBinding {
+    pub fn new(browser: SupportedBrowser, policy: FirefoxPolicyManager) -> Self {
+        debug_assert!(browser.is_firefox_based());
+        Self { browser, policy }
+    }
+
+    pub(crate) fn browser(&self) -> SupportedBrowser {
+        self.browser
+    }
+
+    pub(crate) fn policy(&self) -> &FirefoxPolicyManager {
+        &self.policy
+    }
+}
+
+#[derive(Clone)]
 pub struct RpcContext {
     core: Arc<Mutex<FocusCore>>,
     extension_heartbeat_timeout_seconds: u64,
-    firefox_policy: Option<FirefoxPolicyManager>,
-    chrome_policy: Option<ChromePolicyManager>,
+    gecko_policies: Vec<GeckoPolicyBinding>,
+    chromium_policies: Vec<ChromiumPolicyBinding>,
     hosts: Option<HostsManager>,
     manage_firefox_policy: bool,
     manage_chrome_policy: bool,
@@ -90,8 +146,8 @@ impl RpcContext {
         Self {
             core,
             extension_heartbeat_timeout_seconds: DEFAULT_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS,
-            firefox_policy: None,
-            chrome_policy: None,
+            gecko_policies: Vec::new(),
+            chromium_policies: Vec::new(),
             hosts: None,
             manage_firefox_policy: true,
             manage_chrome_policy: true,
@@ -112,12 +168,12 @@ impl RpcContext {
 
     pub fn with_enforcement_managers(
         mut self,
-        firefox_policy: FirefoxPolicyManager,
-        chrome_policy: ChromePolicyManager,
+        gecko_policies: Vec<GeckoPolicyBinding>,
+        chromium_policies: Vec<ChromiumPolicyBinding>,
         hosts: HostsManager,
     ) -> Self {
-        self.firefox_policy = Some(firefox_policy);
-        self.chrome_policy = Some(chrome_policy);
+        self.gecko_policies = gecko_policies;
+        self.chromium_policies = chromium_policies;
         self.hosts = Some(hosts);
         self
     }
@@ -171,10 +227,17 @@ impl RpcContext {
         self
     }
 
-    fn firefox_policy(&self) -> Result<&FirefoxPolicyManager> {
-        self.firefox_policy.as_ref().ok_or_else(|| {
-            DaemonError::InvalidRequest("Firefox policy manager is not configured".to_string())
-        })
+    fn gecko_policy(&self, browser: SupportedBrowser) -> Result<&FirefoxPolicyManager> {
+        self.gecko_policies
+            .iter()
+            .find(|binding| binding.browser == browser)
+            .map(|binding| &binding.policy)
+            .ok_or_else(|| {
+                DaemonError::InvalidRequest(format!(
+                    "{} policy manager is not configured",
+                    browser.label()
+                ))
+            })
     }
 
     fn hosts(&self) -> Result<&HostsManager> {
@@ -183,10 +246,17 @@ impl RpcContext {
         })
     }
 
-    fn chrome_policy(&self) -> Result<&ChromePolicyManager> {
-        self.chrome_policy.as_ref().ok_or_else(|| {
-            DaemonError::InvalidRequest("Chrome policy manager is not configured".to_string())
-        })
+    fn chromium_policy(&self, browser: SupportedBrowser) -> Result<&ChromePolicyManager> {
+        self.chromium_policies
+            .iter()
+            .find(|binding| binding.browser == browser)
+            .map(|binding| &binding.policy)
+            .ok_or_else(|| {
+                DaemonError::InvalidRequest(format!(
+                    "{} policy manager is not configured",
+                    browser.label()
+                ))
+            })
     }
 }
 
@@ -238,6 +308,63 @@ struct Tier1EditUnlockParams {
 #[derive(Debug, Deserialize)]
 struct ConfigureTier1EditCredentialParams {
     phrase: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ProtectedAccessMode {
+    Sunday,
+    NoActiveScheduleOrDetox,
+    AllTime,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetProtectedAccessModeParams {
+    mode: ProtectedAccessMode,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetUnsupportedBrowserBlockModeParams {
+    mode: ProtectedAccessMode,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetChromiumIncognitoModeParams {
+    mode: ChromiumIncognitoMode,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ChromiumIncognitoDisableScope {
+    AllTime,
+    ActiveScheduleOrDetox,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetChromiumIncognitoDisableScopeParams {
+    scope: ChromiumIncognitoDisableScope,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetChromiumIncognitoChangeAccessModeParams {
+    mode: ProtectedAccessMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChromiumIncognitoPolicySettings {
+    /// The mode selected in Settings. `mode` below is the effective policy mode.
+    pub configured_mode: ChromiumIncognitoMode,
+    pub mode: ChromiumIncognitoMode,
+    pub disable_scope: ChromiumIncognitoDisableScope,
+    pub private_browsing_disabled: bool,
+    pub url_blocklist: Vec<String>,
+    pub unsupported_pattern_count: usize,
+}
+
+impl ChromiumIncognitoPolicySettings {
+    fn url_block_limit_exceeded(&self) -> bool {
+        self.url_blocklist.len() > 1_000
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -605,6 +732,26 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
             let params = parse_params::<SetOperatorWindowRestrictionParams>(params)?;
             set_operator_window_restriction_method(context, params)
         }
+        "set_protected_access_mode" => {
+            let params = parse_params::<SetProtectedAccessModeParams>(params)?;
+            set_protected_access_mode_method(context, params)
+        }
+        "set_unsupported_browser_block_mode" => {
+            let params = parse_params::<SetUnsupportedBrowserBlockModeParams>(params)?;
+            set_unsupported_browser_block_mode_method(context, params)
+        }
+        "set_chromium_incognito_mode" => {
+            let params = parse_params::<SetChromiumIncognitoModeParams>(params)?;
+            set_chromium_incognito_mode_method(context, params)
+        }
+        "set_chromium_incognito_disable_scope" => {
+            let params = parse_params::<SetChromiumIncognitoDisableScopeParams>(params)?;
+            set_chromium_incognito_disable_scope_method(context, params)
+        }
+        "set_chromium_incognito_change_access_mode" => {
+            let params = parse_params::<SetChromiumIncognitoChangeAccessModeParams>(params)?;
+            set_chromium_incognito_change_access_mode_method(context, params)
+        }
         "hide_recovery_credentials" => {
             let params = parse_params::<HideRecoveryCredentialsParams>(params)?;
             hide_recovery_credentials_method(context, params)
@@ -677,7 +824,9 @@ fn enforcement_status(context: &RpcContext) -> Result<Value> {
         "enforcement_state": enforcement_state,
         "clock_integrity": clock_integrity_status_method(context)?,
         "firefox_policy": firefox_policy_status_json(context)?,
+        "firefox_family_policies": gecko_policy_statuses_json(context)?,
         "chrome_policy": chrome_policy_status_json(context)?,
+        "chromium_policies": chromium_policy_statuses_json(context)?,
         "hosts_file": hosts.status_with_active_detox(
             &config,
             &active_detox_sessions,
@@ -699,7 +848,8 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
     let hosts = context.hosts()?;
     let operator_now = guarded_now(context, params.now.as_deref())?;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    let operator_window_restriction_enabled = operator_window_restriction_enabled(&core)?;
+    let protected_access_mode = protected_access_mode(&core)?;
+    let protected_access_open = protected_access_is_open(&core, operator_now, false)?;
     drop(core);
     let emergency_authorized = params
         .emergency_code
@@ -707,8 +857,11 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
         .is_some_and(|code| emergency_uninstall_code_matches(context, code));
     if !emergency_authorized {
         reject_if_clock_tampered(context)?;
-        if operator_window_restriction_enabled && !operator_window_open(operator_now) {
-            return Err(operator_window_closed_error("GUI uninstall"));
+        if !protected_access_open {
+            return Err(protected_access_closed_error(
+                "GUI uninstall",
+                protected_access_mode,
+            ));
         }
     }
     let now = Utc::now();
@@ -730,8 +883,8 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
         )?;
     }
 
-    let firefox_policy_repair = remove_firefox_policy_from_context(context)?;
-    let chrome_policy_repair = remove_chrome_policy_from_context(context)?;
+    let gecko_policy_repairs = remove_gecko_policies_from_context(context)?;
+    let chromium_policy_repairs = remove_chromium_policies_from_context(context)?;
     let hosts_repair = hosts.remove_managed_block()?;
     let enforcement = enforcement_status(context)?;
 
@@ -741,8 +894,12 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
             "uninstall_prepared",
             Some("system"),
             Some(&format!(
-                "authorization={};browser_extension_mode={BROWSER_EXTENSION_MODE_UNINSTALLING};until={};firefox_policy={firefox_policy_repair:?};chrome_policy={chrome_policy_repair:?};hosts={hosts_repair:?}",
-                if emergency_authorized { "emergency" } else if operator_window_restriction_enabled { "operator_window" } else { "phrase" },
+                "authorization={};browser_extension_mode={BROWSER_EXTENSION_MODE_UNINSTALLING};until={};gecko_policies={gecko_policy_repairs:?};chromium_policies={chromium_policy_repairs:?};hosts={hosts_repair:?}",
+                if emergency_authorized {
+                    "emergency".to_string()
+                } else {
+                    format!("protected_access:{}", protected_access_mode_name(protected_access_mode))
+                },
                 uninstalling_until.to_rfc3339()
             )),
             now,
@@ -798,9 +955,22 @@ fn load_installation_serial(path: &Path) -> Result<String> {
 }
 
 fn firefox_policy_status_json(context: &RpcContext) -> Result<Value> {
-    let mut status = serde_json::to_value(context.firefox_policy()?.status())?;
-    let heartbeat_seen = has_extension_heartbeat(context, FIREFOX_EXTENSION_HEARTBEAT_COMPONENT)?;
+    gecko_policy_status_json(context, SupportedBrowser::Firefox)
+}
+
+fn gecko_policy_statuses_json(context: &RpcContext) -> Result<Value> {
+    let mut statuses = BTreeMap::new();
+    for browser in [SupportedBrowser::LibreWolf, SupportedBrowser::Waterfox] {
+        statuses.insert(browser.label(), gecko_policy_status_json(context, browser)?);
+    }
+    serde_json::to_value(statuses).map_err(DaemonError::from)
+}
+
+fn gecko_policy_status_json(context: &RpcContext, browser: SupportedBrowser) -> Result<Value> {
+    let mut status = serde_json::to_value(context.gecko_policy(browser)?.status())?;
+    let heartbeat_seen = has_extension_heartbeat(context, browser.extension_component())?;
     let deferred = context.defer_firefox_policy_repair_until_heartbeat && !heartbeat_seen;
+    let browser_label = browser_display_name(browser);
     if let Some(object) = status.as_object_mut() {
         object.insert("managed".to_string(), json!(context.manage_firefox_policy));
         object.insert(
@@ -812,13 +982,17 @@ fn firefox_policy_status_json(context: &RpcContext) -> Result<Value> {
             object.insert("compliant".to_string(), json!(true));
             object.insert(
                 "detail".to_string(),
-                json!("Firefox policy management is disabled; install and enable the extension manually"),
+                json!(format!(
+                    "{browser_label} policy management is disabled; install and enable the extension manually"
+                )),
             );
         } else if deferred {
             object.insert("compliant".to_string(), json!(true));
             object.insert(
                 "detail".to_string(),
-                json!("Firefox policy repair is deferred until the first extension heartbeat"),
+                json!(format!(
+                    "{browser_label} policy repair is deferred until the first extension heartbeat"
+                )),
             );
         }
     }
@@ -826,9 +1000,36 @@ fn firefox_policy_status_json(context: &RpcContext) -> Result<Value> {
 }
 
 fn chrome_policy_status_json(context: &RpcContext) -> Result<Value> {
-    let mut status = serde_json::to_value(context.chrome_policy()?.status())?;
-    let heartbeat_seen = has_extension_heartbeat(context, CHROME_EXTENSION_HEARTBEAT_COMPONENT)?;
+    chromium_policy_status_json(context, SupportedBrowser::Chrome)
+}
+
+fn chromium_policy_statuses_json(context: &RpcContext) -> Result<Value> {
+    let mut statuses = BTreeMap::new();
+    for browser in [
+        SupportedBrowser::Chromium,
+        SupportedBrowser::Brave,
+        SupportedBrowser::Opera,
+        SupportedBrowser::Edge,
+        SupportedBrowser::Vivaldi,
+    ] {
+        statuses.insert(
+            browser.label(),
+            chromium_policy_status_json(context, browser)?,
+        );
+    }
+    serde_json::to_value(statuses).map_err(DaemonError::from)
+}
+
+fn chromium_policy_status_json(context: &RpcContext, browser: SupportedBrowser) -> Result<Value> {
+    let settings = current_chromium_incognito_policy_settings_from_context(context)?;
+    let mut status = serde_json::to_value(
+        context
+            .chromium_policy(browser)?
+            .status_with(settings.mode, &settings.url_blocklist),
+    )?;
+    let heartbeat_seen = has_extension_heartbeat(context, browser.extension_component())?;
     let deferred = context.defer_chrome_policy_repair_until_heartbeat && !heartbeat_seen;
+    let browser_label = browser_display_name(browser);
     if let Some(object) = status.as_object_mut() {
         object.insert("managed".to_string(), json!(context.manage_chrome_policy));
         object.insert(
@@ -836,42 +1037,154 @@ fn chrome_policy_status_json(context: &RpcContext) -> Result<Value> {
             json!(context.defer_chrome_policy_repair_until_heartbeat),
         );
         object.insert("active_after_heartbeat".to_string(), json!(heartbeat_seen));
+        object.insert(
+            "incognito_unsupported_pattern_count".to_string(),
+            json!(settings.unsupported_pattern_count),
+        );
+        object.insert(
+            "incognito_url_block_limit_exceeded".to_string(),
+            json!(settings.url_block_limit_exceeded()),
+        );
+        if settings.url_block_limit_exceeded() {
+            object.insert("compliant".to_string(), json!(false));
+            object.insert(
+                "detail".to_string(),
+                json!(format!(
+                    "{browser_label} private URL policy has {} active patterns, but browsers apply at most 1000",
+                    settings.url_blocklist.len()
+                )),
+            );
+        }
         if !context.manage_chrome_policy {
             object.insert("compliant".to_string(), json!(true));
             object.insert("force_install_configured".to_string(), json!(true));
             object.insert(
                 "detail".to_string(),
-                json!("Chrome policy management is disabled; install and enable the extension manually"),
+                json!(format!(
+                    "{browser_label} policy management is disabled; install and enable the extension manually"
+                )),
             );
         } else if deferred {
             object.insert("compliant".to_string(), json!(true));
             object.insert("force_install_configured".to_string(), json!(true));
             object.insert(
                 "detail".to_string(),
-                json!("Chrome policy repair is deferred until the first extension heartbeat"),
+                json!(format!(
+                    "{browser_label} policy repair is deferred until the first extension heartbeat"
+                )),
             );
         }
     }
     Ok(status)
 }
 
-fn remove_firefox_policy_from_context(context: &RpcContext) -> Result<RepairStatus> {
+fn remove_gecko_policies_from_context(
+    context: &RpcContext,
+) -> Result<BTreeMap<&'static str, RepairStatus>> {
     if !context.manage_firefox_policy {
-        return Ok(RepairStatus::SkippedDisabled);
+        return Ok(SupportedBrowser::MANAGED
+            .into_iter()
+            .filter(|browser| browser.is_firefox_based())
+            .map(|browser| (browser.label(), RepairStatus::SkippedDisabled))
+            .collect());
     }
-    context.firefox_policy()?.remove_policy()
+    SupportedBrowser::MANAGED
+        .into_iter()
+        .filter(|browser| browser.is_firefox_based())
+        .map(|browser| {
+            Ok((
+                browser.label(),
+                context.gecko_policy(browser)?.remove_policy()?,
+            ))
+        })
+        .collect()
 }
 
-fn remove_chrome_policy_from_context(context: &RpcContext) -> Result<ChromePolicyRepairStatus> {
+fn remove_chromium_policies_from_context(
+    context: &RpcContext,
+) -> Result<BTreeMap<&'static str, ChromePolicyRepairStatus>> {
     if !context.manage_chrome_policy {
-        return Ok(ChromePolicyRepairStatus::SkippedDisabled);
+        return Ok(SupportedBrowser::MANAGED
+            .into_iter()
+            .filter(|browser| browser.is_chromium_based())
+            .map(|browser| (browser.label(), ChromePolicyRepairStatus::SkippedDisabled))
+            .collect());
     }
-    context.chrome_policy()?.remove_policy()
+    SupportedBrowser::MANAGED
+        .into_iter()
+        .filter(|browser| browser.is_chromium_based())
+        .map(|browser| {
+            Ok((
+                browser.label(),
+                context.chromium_policy(browser)?.remove_policy()?,
+            ))
+        })
+        .collect()
 }
 
 fn has_extension_heartbeat(context: &RpcContext, component: &str) -> Result<bool> {
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     Ok(core.database().heartbeat(component)?.is_some())
+}
+
+fn current_chromium_incognito_policy_settings_from_context(
+    context: &RpcContext,
+) -> Result<ChromiumIncognitoPolicySettings> {
+    let guarded = guarded_now_with_status(context, None)?;
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    current_chromium_incognito_policy_settings(
+        &core,
+        guarded.now,
+        guarded.integrity.state == "tampered",
+    )
+}
+
+fn repair_chromium_policies_for_settings_change(
+    context: &RpcContext,
+    settings: &ChromiumIncognitoPolicySettings,
+) -> Result<BTreeMap<&'static str, ChromePolicyRepairStatus>> {
+    if context.chromium_policies.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    ensure_chromium_incognito_url_blocklist_within_limit(settings)?;
+    {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        if !enforcement_active_from_core(&core)? {
+            return Ok(SupportedBrowser::MANAGED
+                .into_iter()
+                .filter(|browser| browser.is_chromium_based())
+                .map(|browser| (browser.label(), ChromePolicyRepairStatus::SkippedInactive))
+                .collect());
+        }
+    }
+
+    SupportedBrowser::MANAGED
+        .into_iter()
+        .filter(|browser| browser.is_chromium_based())
+        .map(|browser| {
+            if !context.manage_chrome_policy {
+                return Ok((browser.label(), ChromePolicyRepairStatus::SkippedDisabled));
+            }
+            if context.defer_chrome_policy_repair_until_heartbeat
+                && !has_extension_heartbeat(context, browser.extension_component())?
+            {
+                return Ok((browser.label(), ChromePolicyRepairStatus::SkippedDeferred));
+            }
+            Ok((
+                browser.label(),
+                context
+                    .chromium_policy(browser)?
+                    .verify_and_repair_with(settings.mode, &settings.url_blocklist)?,
+            ))
+        })
+        .collect()
+}
+
+fn repair_chromium_policies_for_current_settings(
+    context: &RpcContext,
+) -> Result<BTreeMap<&'static str, ChromePolicyRepairStatus>> {
+    let settings = current_chromium_incognito_policy_settings_from_context(context)?;
+    repair_chromium_policies_for_settings_change(context, &settings)
 }
 
 fn repair_deferred_policy_after_heartbeat(context: &RpcContext, component: &str) -> Result<Value> {
@@ -883,19 +1196,31 @@ fn repair_deferred_policy_after_heartbeat(context: &RpcContext, component: &str)
     }
 
     match component {
-        FIREFOX_EXTENSION_HEARTBEAT_COMPONENT
+        component
             if context.manage_firefox_policy
-                && context.defer_firefox_policy_repair_until_heartbeat =>
+                && context.defer_firefox_policy_repair_until_heartbeat
+                && supported_browser_for_extension_component(component)
+                    .is_some_and(SupportedBrowser::is_firefox_based) =>
         {
-            let status = context.firefox_policy()?.verify_and_repair()?;
-            Ok(json!({ "firefox_policy": format!("{status:?}") }))
+            let browser = supported_browser_for_extension_component(component)
+                .expect("Firefox-family browser was checked above");
+            let status = context.gecko_policy(browser)?.verify_and_repair()?;
+            Ok(json!({ (format!("{}_policy", browser.label())): format!("{status:?}") }))
         }
-        CHROME_EXTENSION_HEARTBEAT_COMPONENT
+        component
             if context.manage_chrome_policy
-                && context.defer_chrome_policy_repair_until_heartbeat =>
+                && context.defer_chrome_policy_repair_until_heartbeat
+                && supported_browser_for_extension_component(component)
+                    .is_some_and(SupportedBrowser::is_chromium_based) =>
         {
-            let status = context.chrome_policy()?.verify_and_repair()?;
-            Ok(json!({ "chrome_policy": format!("{status:?}") }))
+            let browser = supported_browser_for_extension_component(component)
+                .expect("chromium browser was checked above");
+            let settings = current_chromium_incognito_policy_settings_from_context(context)?;
+            ensure_chromium_incognito_url_blocklist_within_limit(&settings)?;
+            let status = context
+                .chromium_policy(browser)?
+                .verify_and_repair_with(settings.mode, &settings.url_blocklist)?;
+            Ok(json!({ (format!("{}_policy", browser.label())): format!("{status:?}") }))
         }
         _ => Ok(json!({})),
     }
@@ -1797,39 +2122,47 @@ fn start_detox_method(context: &RpcContext, params: StartDetoxParams) -> Result<
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty());
     let ends_at = now_utc + Duration::minutes(i64::from(params.duration_minutes));
-    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let (session, hosts_repair) = {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
 
-    validate_detox_targets(core.config(), &site_rule_ids, &app_rule_ids)?;
-    let session = DetoxSession {
-        id: next_detox_session_id(&core, now_utc)?,
-        name,
-        starts_at: now_utc,
-        ends_at,
-        cancelled_at: None,
-        site_rule_ids,
-        app_rule_ids,
+        validate_detox_targets(core.config(), &site_rule_ids, &app_rule_ids)?;
+        let session = DetoxSession {
+            id: next_detox_session_id(&core, now_utc)?,
+            name,
+            starts_at: now_utc,
+            ends_at,
+            cancelled_at: None,
+            site_rule_ids,
+            app_rule_ids,
+        };
+        let session = core.database().insert_detox_session(&session)?;
+        core.database().record_event(
+            "detox_started",
+            Some(&session.id),
+            Some(&format!(
+                "duration_minutes={};site_rules={};app_rules={}",
+                params.duration_minutes,
+                session.site_rule_ids.join(","),
+                session.app_rule_ids.join(",")
+            )),
+            now_utc,
+        )?;
+        if let Err(error) = enqueue_detox_notification(&core, &session, true, false, now_utc) {
+            eprintln!("could not queue Detox start notification: {error}");
+        }
+        let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
+        (session, hosts_repair)
     };
-    let session = core.database().insert_detox_session(&session)?;
-    core.database().record_event(
-        "detox_started",
-        Some(&session.id),
-        Some(&format!(
-            "duration_minutes={};site_rules={};app_rules={}",
-            params.duration_minutes,
-            session.site_rule_ids.join(","),
-            session.app_rule_ids.join(",")
-        )),
-        now_utc,
-    )?;
-    if let Err(error) = enqueue_detox_notification(&core, &session, true, false, now_utc) {
-        eprintln!("could not queue Detox start notification: {error}");
-    }
-    let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
+    let chromium_policy_repairs = repair_chromium_policies_for_current_settings(context)?;
 
     Ok(json!({
         "status": "ok",
         "session": detox_session_to_json(&session, now_utc),
-        "hosts_repair": hosts_repair.map(|status| format!("{status:?}"))
+        "hosts_repair": hosts_repair.map(|status| format!("{status:?}")),
+        "chromium_policy_repairs": chromium_policy_repairs
+            .into_iter()
+            .map(|(browser, status)| (browser, format!("{status:?}")))
+            .collect::<BTreeMap<_, _>>(),
     }))
 }
 
@@ -1837,52 +2170,60 @@ fn cancel_detox_method(context: &RpcContext, params: CancelDetoxParams) -> Resul
     let now = guarded_now(context, params.now.as_deref())?;
     reject_if_clock_tampered(context)?;
     let now_utc = now.with_timezone(&Utc);
-    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    let Some(session) = core.database().detox_session(&params.id)? else {
-        return Err(DaemonError::InvalidRequest(format!(
-            "detox session '{}' does not exist",
-            params.id
-        )));
-    };
-    if session.cancelled_at.is_some() {
-        return Err(DaemonError::InvalidRequest(format!(
-            "detox session '{}' is already cancelled",
-            params.id
-        )));
-    }
-    if session.ends_at <= now_utc {
-        return Err(DaemonError::InvalidRequest(format!(
-            "detox session '{}' has already ended",
-            params.id
-        )));
-    }
-    if !tier1_edit_window_active(&core, now)? {
-        return Err(DaemonError::InvalidRequest(
-            "Tier 1 edit unlock is required to cancel detox".to_string(),
-        ));
-    }
+    let (session, hosts_repair) = {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        let Some(session) = core.database().detox_session(&params.id)? else {
+            return Err(DaemonError::InvalidRequest(format!(
+                "detox session '{}' does not exist",
+                params.id
+            )));
+        };
+        if session.cancelled_at.is_some() {
+            return Err(DaemonError::InvalidRequest(format!(
+                "detox session '{}' is already cancelled",
+                params.id
+            )));
+        }
+        if session.ends_at <= now_utc {
+            return Err(DaemonError::InvalidRequest(format!(
+                "detox session '{}' has already ended",
+                params.id
+            )));
+        }
+        if !tier1_edit_window_active(&core, now)? {
+            return Err(DaemonError::InvalidRequest(
+                "Tier 1 edit unlock is required to cancel detox".to_string(),
+            ));
+        }
 
-    let Some(session) = core.database().cancel_detox_session(&params.id, now_utc)? else {
-        return Err(DaemonError::InvalidRequest(format!(
-            "detox session '{}' does not exist",
-            params.id
-        )));
+        let Some(session) = core.database().cancel_detox_session(&params.id, now_utc)? else {
+            return Err(DaemonError::InvalidRequest(format!(
+                "detox session '{}' does not exist",
+                params.id
+            )));
+        };
+        core.database().record_event(
+            "detox_cancelled",
+            Some(&session.id),
+            Some("cancelled through privileged Tier 1 edit unlock"),
+            now_utc,
+        )?;
+        if let Err(error) = enqueue_detox_notification(&core, &session, false, true, now_utc) {
+            eprintln!("could not queue Detox end notification: {error}");
+        }
+        let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
+        (session, hosts_repair)
     };
-    core.database().record_event(
-        "detox_cancelled",
-        Some(&session.id),
-        Some("cancelled through privileged Tier 1 edit unlock"),
-        now_utc,
-    )?;
-    if let Err(error) = enqueue_detox_notification(&core, &session, false, true, now_utc) {
-        eprintln!("could not queue Detox end notification: {error}");
-    }
-    let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
+    let chromium_policy_repairs = repair_chromium_policies_for_current_settings(context)?;
 
     Ok(json!({
         "status": "ok",
         "session": detox_session_to_json(&session, now_utc),
-        "hosts_repair": hosts_repair.map(|status| format!("{status:?}"))
+        "hosts_repair": hosts_repair.map(|status| format!("{status:?}")),
+        "chromium_policy_repairs": chromium_policy_repairs
+            .into_iter()
+            .map(|(browser, status)| (browser, format!("{status:?}")))
+            .collect::<BTreeMap<_, _>>(),
     }))
 }
 
@@ -1958,7 +2299,19 @@ fn running_app_snapshots_from_processes(
     clock_tampered: bool,
 ) -> Result<Vec<RunningAppSnapshot>> {
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    let eval_context = EvaluationContext::new(core.config(), core.database(), now)
+    let unsupported_browser_block_active =
+        unsupported_browser_block_is_active(&core, now, clock_tampered)?;
+    let config_without_inactive_browser_block = (!unsupported_browser_block_active).then(|| {
+        let mut config = core.config().clone();
+        config
+            .app_rules
+            .retain(|rule| rule.id != UNSUPPORTED_BROWSER_RULE_ID);
+        config
+    });
+    let evaluation_config = config_without_inactive_browser_block
+        .as_ref()
+        .unwrap_or_else(|| core.config());
+    let eval_context = EvaluationContext::new(evaluation_config, core.database(), now)
         .with_clock_tampered(clock_tampered);
     let mut apps = processes
         .iter()
@@ -2168,8 +2521,12 @@ fn unlock_tier1_edit_method(context: &RpcContext, params: Tier1EditUnlockParams)
             "Tier 1 edit credential does not match".to_string(),
         ));
     }
-    if operator_window_restriction_enabled(&core)? && !operator_window_open(now) {
-        return Err(operator_window_closed_error("Tier 1 edits"));
+    let protected_access_mode = protected_access_mode(&core)?;
+    if !protected_access_is_open(&core, now, false)? {
+        return Err(protected_access_closed_error(
+            "Tier 1 edits",
+            protected_access_mode,
+        ));
     }
 
     let expires_at = now_utc + Duration::minutes(TIER1_EDIT_UNLOCK_MINUTES);
@@ -2226,29 +2583,191 @@ fn set_operator_window_restriction_method(
     context: &RpcContext,
     params: SetOperatorWindowRestrictionParams,
 ) -> Result<Value> {
+    let mode = if params.enabled {
+        ProtectedAccessMode::Sunday
+    } else {
+        ProtectedAccessMode::AllTime
+    };
+    set_protected_access_mode(context, mode)?;
+    Ok(json!({ "enabled": params.enabled }))
+}
+
+fn set_protected_access_mode_method(
+    context: &RpcContext,
+    params: SetProtectedAccessModeParams,
+) -> Result<Value> {
+    set_protected_access_mode(context, params.mode)?;
+    Ok(json!({ "mode": params.mode }))
+}
+
+fn set_protected_access_mode(context: &RpcContext, mode: ProtectedAccessMode) -> Result<()> {
     let now = Utc::now();
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    if !params.enabled && !operator_window_open(now.fixed_offset()) {
-        return Err(operator_window_closed_error(
-            "Deactivating the Sunday restriction",
-        ));
-    }
     core.database().set_service_state(
-        OPERATOR_WINDOW_RESTRICTION_KEY,
-        if params.enabled { "true" } else { "false" },
+        PROTECTED_ACCESS_MODE_KEY,
+        protected_access_mode_name(mode),
         now,
     )?;
     core.database().record_event(
-        "operator_window_restriction_updated",
+        "protected_access_mode_updated",
         Some("protected_changes"),
-        Some(if params.enabled {
-            "Sunday restriction enabled"
-        } else {
-            "Sunday restriction disabled"
-        }),
+        Some(&format!(
+            "Protected actions are available {}",
+            protected_access_mode_description(mode)
+        )),
         now,
     )?;
-    Ok(json!({ "enabled": params.enabled }))
+    Ok(())
+}
+
+fn set_unsupported_browser_block_mode_method(
+    context: &RpcContext,
+    params: SetUnsupportedBrowserBlockModeParams,
+) -> Result<Value> {
+    let now = Utc::now();
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    core.database().set_service_state(
+        UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
+        protected_access_mode_name(params.mode),
+        now,
+    )?;
+    let active = unsupported_browser_block_is_active(&core, now.fixed_offset(), false)?;
+    core.database().record_event(
+        "unsupported_browser_block_mode_updated",
+        Some(UNSUPPORTED_BROWSER_RULE_ID),
+        Some(&format!(
+            "Tier 1 blocked-browser list is active {}",
+            protected_access_mode_description(params.mode)
+        )),
+        now,
+    )?;
+    Ok(json!({ "mode": params.mode, "active": active }))
+}
+
+fn set_chromium_incognito_mode_method(
+    context: &RpcContext,
+    params: SetChromiumIncognitoModeParams,
+) -> Result<Value> {
+    let guarded = guarded_now_with_status(context, None)?;
+    let now = guarded.now;
+    let settings = {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        ensure_chromium_incognito_settings_change_allowed(
+            &core,
+            now,
+            guarded.integrity.state == "tampered",
+        )?;
+        let settings = chromium_incognito_policy_settings(
+            &core,
+            now,
+            guarded.integrity.state == "tampered",
+            params.mode,
+        )?;
+        ensure_chromium_incognito_url_blocklist_within_limit(&settings)?;
+        core.database().set_service_state(
+            CHROMIUM_INCOGNITO_MODE_KEY,
+            chromium_incognito_mode_name(params.mode),
+            now.with_timezone(&Utc),
+        )?;
+        core.database().record_event(
+            "chromium_incognito_mode_updated",
+            Some("browser_policy"),
+            Some(&format!(
+                "Chromium private browsing mode set to {}; {} URL policy pattern(s), {} unsupported pattern(s)",
+                chromium_incognito_mode_name(params.mode),
+                settings.url_blocklist.len(),
+                settings.unsupported_pattern_count
+            )),
+            now.with_timezone(&Utc),
+        )?;
+        settings
+    };
+
+    let policy_repair = repair_chromium_policies_for_settings_change(context, &settings)?;
+    Ok(json!({
+        "mode": params.mode,
+        "url_block_count": settings.url_blocklist.len(),
+        "unsupported_pattern_count": settings.unsupported_pattern_count,
+        "policy_repair": policy_repair
+            .into_iter()
+            .map(|(browser, status)| (browser, format!("{status:?}")))
+            .collect::<BTreeMap<_, _>>(),
+    }))
+}
+
+fn set_chromium_incognito_disable_scope_method(
+    context: &RpcContext,
+    params: SetChromiumIncognitoDisableScopeParams,
+) -> Result<Value> {
+    let guarded = guarded_now_with_status(context, None)?;
+    let now = guarded.now;
+    let settings = {
+        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        ensure_chromium_incognito_settings_change_allowed(
+            &core,
+            now,
+            guarded.integrity.state == "tampered",
+        )?;
+        core.database().set_service_state(
+            CHROMIUM_INCOGNITO_DISABLE_SCOPE_KEY,
+            chromium_incognito_disable_scope_name(params.scope),
+            now.with_timezone(&Utc),
+        )?;
+        let settings = current_chromium_incognito_policy_settings(
+            &core,
+            now,
+            guarded.integrity.state == "tampered",
+        )?;
+        core.database().record_event(
+            "chromium_incognito_disable_scope_updated",
+            Some("browser_policy"),
+            Some(&format!(
+                "Chromium private browsing is disabled {}",
+                chromium_incognito_disable_scope_description(params.scope)
+            )),
+            now.with_timezone(&Utc),
+        )?;
+        settings
+    };
+
+    let policy_repair = repair_chromium_policies_for_settings_change(context, &settings)?;
+    Ok(json!({
+        "scope": params.scope,
+        "private_browsing_disabled": settings.private_browsing_disabled,
+        "policy_repair": policy_repair
+            .into_iter()
+            .map(|(browser, status)| (browser, format!("{status:?}")))
+            .collect::<BTreeMap<_, _>>(),
+    }))
+}
+
+fn set_chromium_incognito_change_access_mode_method(
+    context: &RpcContext,
+    params: SetChromiumIncognitoChangeAccessModeParams,
+) -> Result<Value> {
+    let guarded = guarded_now_with_status(context, None)?;
+    let now = guarded.now;
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    ensure_chromium_incognito_settings_change_allowed(
+        &core,
+        now,
+        guarded.integrity.state == "tampered",
+    )?;
+    core.database().set_service_state(
+        CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY,
+        protected_access_mode_name(params.mode),
+        now.with_timezone(&Utc),
+    )?;
+    core.database().record_event(
+        "chromium_incognito_change_access_mode_updated",
+        Some("browser_policy"),
+        Some(&format!(
+            "Chromium private browsing settings can be changed {}",
+            protected_access_mode_description(params.mode)
+        )),
+        now.with_timezone(&Utc),
+    )?;
+    Ok(json!({ "mode": params.mode }))
 }
 
 fn hide_recovery_credentials_method(
@@ -2323,20 +2842,24 @@ fn extension_heartbeat_method(
     params: ExtensionHeartbeatParams,
 ) -> Result<Value> {
     let now = guarded_now(context, params.now.as_deref())?;
-    let component = extension_component(
+    let reported_component = extension_component(
         params.component.as_deref(),
         params.browser.as_deref(),
         params.extension_id.as_deref(),
     );
+    let component = resolve_extension_heartbeat_component(reported_component)?;
     let details = json!({
         "browser": params.browser,
         "extension_id": params.extension_id,
-        "extension_version": params.extension_version
+        "extension_version": params.extension_version,
+        "reported_component": reported_component,
+        "resolved_component": component,
+        "identity_resolution": if component == reported_component { "reported" } else { "process_inferred" }
     });
     let (enforcement_state, browser_extension_mode) = {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
         core.database().upsert_heartbeat(
-            component,
+            &component,
             Some(&details.to_string()),
             now.with_timezone(&Utc),
         )?;
@@ -2346,7 +2869,7 @@ fn extension_heartbeat_method(
         )
     };
 
-    let policy_repair = repair_deferred_policy_after_heartbeat(context, component)?;
+    let policy_repair = repair_deferred_policy_after_heartbeat(context, &component)?;
     Ok(json!({
         "status": "ok",
         "enforcement_state": enforcement_state,
@@ -2378,10 +2901,14 @@ fn browser_extension_status_from_core(
 ) -> Result<Value> {
     let heartbeat = core.database().heartbeat(component)?;
     let browser = supported_browser_for_extension_component(component);
-    let session_started_at = browser_running
-        .then(|| strict_browser_session_started_at(core.database(), browser))
-        .transpose()?
-        .flatten();
+    let session_started_at = if browser_running {
+        browser
+            .map(|browser| strict_browser_session_started_at(core.database(), browser))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     Ok(browser_extension_status_json(
         heartbeat.as_ref(),
         component,
@@ -2498,16 +3025,26 @@ fn browser_extension_status_json(
 }
 
 fn extension_browser_running(component: &str) -> Result<bool> {
-    let browser = supported_browser_for_extension_component(component);
+    let Some(browser) = supported_browser_for_extension_component(component) else {
+        return Ok(false);
+    };
     Ok(scan_procfs(Path::new("/proc"))?
         .iter()
         .any(|process| supported_browser_for_process(&process.identity()) == Some(browser)))
 }
 
-fn supported_browser_for_extension_component(component: &str) -> SupportedBrowser {
+fn supported_browser_for_extension_component(component: &str) -> Option<SupportedBrowser> {
     match component {
-        CHROME_EXTENSION_HEARTBEAT_COMPONENT => SupportedBrowser::Chrome,
-        _ => SupportedBrowser::Firefox,
+        FIREFOX_EXTENSION_HEARTBEAT_COMPONENT => Some(SupportedBrowser::Firefox),
+        LIBREWOLF_EXTENSION_HEARTBEAT_COMPONENT => Some(SupportedBrowser::LibreWolf),
+        WATERFOX_EXTENSION_HEARTBEAT_COMPONENT => Some(SupportedBrowser::Waterfox),
+        CHROME_EXTENSION_HEARTBEAT_COMPONENT => Some(SupportedBrowser::Chrome),
+        CHROMIUM_EXTENSION_HEARTBEAT_COMPONENT => Some(SupportedBrowser::Chromium),
+        BRAVE_EXTENSION_HEARTBEAT_COMPONENT => Some(SupportedBrowser::Brave),
+        OPERA_EXTENSION_HEARTBEAT_COMPONENT => Some(SupportedBrowser::Opera),
+        EDGE_EXTENSION_HEARTBEAT_COMPONENT => Some(SupportedBrowser::Edge),
+        VIVALDI_EXTENSION_HEARTBEAT_COMPONENT => Some(SupportedBrowser::Vivaldi),
+        _ => None,
     }
 }
 
@@ -2516,18 +3053,28 @@ fn extension_component<'a>(
     browser: Option<&str>,
     extension_id: Option<&str>,
 ) -> &'a str {
-    if let Some(
-        component @ (FIREFOX_EXTENSION_HEARTBEAT_COMPONENT | CHROME_EXTENSION_HEARTBEAT_COMPONENT),
-    ) = component
-    {
-        return component;
+    if let Some(component) = component {
+        if supported_browser_for_extension_component(component).is_some() {
+            return component;
+        }
     }
 
-    if browser
-        .map(|browser| browser.eq_ignore_ascii_case("chrome"))
-        .unwrap_or(false)
-    {
-        return CHROME_EXTENSION_HEARTBEAT_COMPONENT;
+    if let Some(browser) = browser {
+        let component = match browser.trim().to_ascii_lowercase().as_str() {
+            "firefox" => Some(FIREFOX_EXTENSION_HEARTBEAT_COMPONENT),
+            "librewolf" => Some(LIBREWOLF_EXTENSION_HEARTBEAT_COMPONENT),
+            "waterfox" => Some(WATERFOX_EXTENSION_HEARTBEAT_COMPONENT),
+            "chrome" => Some(CHROME_EXTENSION_HEARTBEAT_COMPONENT),
+            "chromium" => Some(CHROMIUM_EXTENSION_HEARTBEAT_COMPONENT),
+            "brave" => Some(BRAVE_EXTENSION_HEARTBEAT_COMPONENT),
+            "opera" => Some(OPERA_EXTENSION_HEARTBEAT_COMPONENT),
+            "edge" => Some(EDGE_EXTENSION_HEARTBEAT_COMPONENT),
+            "vivaldi" => Some(VIVALDI_EXTENSION_HEARTBEAT_COMPONENT),
+            _ => None,
+        };
+        if let Some(component) = component {
+            return component;
+        }
     }
 
     if extension_id
@@ -2540,8 +3087,60 @@ fn extension_component<'a>(
     FIREFOX_EXTENSION_HEARTBEAT_COMPONENT
 }
 
+fn resolve_extension_heartbeat_component(reported_component: &str) -> Result<String> {
+    let Some(reported_browser) = supported_browser_for_extension_component(reported_component)
+    else {
+        return Ok(reported_component.to_string());
+    };
+    if !matches!(
+        reported_browser,
+        SupportedBrowser::Chrome | SupportedBrowser::Firefox
+    ) {
+        return Ok(reported_component.to_string());
+    }
+
+    let running_browsers = scan_procfs(Path::new("/proc"))?
+        .iter()
+        .filter_map(|process| supported_browser_for_process(&process.identity()))
+        .collect::<Vec<_>>();
+    Ok(
+        infer_browser_from_running_browsers(reported_browser, &running_browsers)
+            .extension_component()
+            .to_string(),
+    )
+}
+
+fn infer_browser_from_running_browsers(
+    reported_browser: SupportedBrowser,
+    running_browsers: &[SupportedBrowser],
+) -> SupportedBrowser {
+    if !matches!(
+        reported_browser,
+        SupportedBrowser::Chrome | SupportedBrowser::Firefox
+    ) {
+        return reported_browser;
+    }
+
+    let mut candidates = Vec::new();
+    for browser in running_browsers.iter().copied() {
+        if browser.is_chromium_based() == reported_browser.is_chromium_based()
+            && !candidates.contains(&browser)
+        {
+            candidates.push(browser);
+        }
+    }
+
+    if candidates.len() == 1 {
+        candidates[0]
+    } else {
+        reported_browser
+    }
+}
+
 fn extension_heartbeat_timeout_seconds(context: &RpcContext, component: &str) -> u64 {
-    if component == CHROME_EXTENSION_HEARTBEAT_COMPONENT {
+    if supported_browser_for_extension_component(component)
+        .is_some_and(SupportedBrowser::is_chromium_based)
+    {
         context
             .extension_heartbeat_timeout_seconds
             .max(CHROME_EXTENSION_HEARTBEAT_TIMEOUT_SECONDS)
@@ -2551,9 +3150,22 @@ fn extension_heartbeat_timeout_seconds(context: &RpcContext, component: &str) ->
 }
 
 fn browser_name_for_component(component: &str) -> &'static str {
-    match component {
-        CHROME_EXTENSION_HEARTBEAT_COMPONENT => "Chrome",
-        _ => "Firefox",
+    supported_browser_for_extension_component(component)
+        .map(browser_display_name)
+        .unwrap_or("Unknown browser")
+}
+
+fn browser_display_name(browser: SupportedBrowser) -> &'static str {
+    match browser {
+        SupportedBrowser::Firefox => "Firefox",
+        SupportedBrowser::LibreWolf => "LibreWolf",
+        SupportedBrowser::Waterfox => "Waterfox",
+        SupportedBrowser::Chrome => "Chrome",
+        SupportedBrowser::Chromium => "Chromium",
+        SupportedBrowser::Brave => "Brave",
+        SupportedBrowser::Opera => "Opera",
+        SupportedBrowser::Edge => "Microsoft Edge",
+        SupportedBrowser::Vivaldi => "Vivaldi",
     }
 }
 
@@ -3125,15 +3737,36 @@ fn tier1_edit_status_json(core: &FocusCore, now: DateTime<FixedOffset>) -> Resul
         .filter(|expires_at| *expires_at > now_utc)
         .map(|expires_at| (expires_at - now_utc).num_seconds());
 
-    let operator_window_restricted = operator_window_restriction_enabled(core)?;
+    let protected_access_mode = protected_access_mode(core)?;
+    let protected_access_open = protected_access_is_open(core, now, clock_tampered)?;
+    let browser_block_mode = unsupported_browser_block_mode(core)?;
+    let browser_block_active = unsupported_browser_block_is_active(core, now, clock_tampered)?;
+    let chromium_incognito = current_chromium_incognito_policy_settings(core, now, clock_tampered)?;
+    let chromium_incognito_change_access_mode = chromium_incognito_change_access_mode(core)?;
+    let chromium_incognito_settings_change_allowed =
+        chromium_incognito_settings_change_allowed(core, now, clock_tampered)?;
     Ok(json!({
         "active": active,
         "expires_at": expires_at,
         "remaining_seconds": remaining_seconds,
         "credential_configured": tier1_edit_credential_configured(core)?,
-        "operator_window_restriction_enabled": operator_window_restricted,
-        "operator_window_open": (!operator_window_restricted || operator_window_open(now)) && !clock_tampered,
-        "operator_window_label": if operator_window_restricted { operator_window_label() } else { "Any time" },
+        "protected_access_mode": protected_access_mode,
+        "protected_access_open": protected_access_open,
+        "protected_access_label": protected_access_mode_label(protected_access_mode),
+        "unsupported_browser_block_mode": browser_block_mode,
+        "unsupported_browser_block_active": browser_block_active,
+        "chromium_incognito_mode": chromium_incognito.configured_mode,
+        "chromium_incognito_effective_mode": chromium_incognito.mode,
+        "chromium_incognito_disable_scope": chromium_incognito.disable_scope,
+        "chromium_incognito_private_browsing_disabled": chromium_incognito.private_browsing_disabled,
+        "chromium_incognito_change_access_mode": chromium_incognito_change_access_mode,
+        "chromium_incognito_settings_change_allowed": chromium_incognito_settings_change_allowed,
+        "chromium_incognito_url_block_count": chromium_incognito.url_blocklist.len(),
+        "chromium_incognito_unsupported_pattern_count": chromium_incognito.unsupported_pattern_count,
+        "chromium_incognito_url_block_limit_exceeded": chromium_incognito.url_block_limit_exceeded(),
+        "operator_window_restriction_enabled": protected_access_mode == ProtectedAccessMode::Sunday,
+        "operator_window_open": protected_access_open,
+        "operator_window_label": protected_access_mode_label(protected_access_mode),
         "clock_integrity": clock_integrity
     }))
 }
@@ -3144,23 +3777,354 @@ fn operator_window_open(now: DateTime<FixedOffset>) -> bool {
         && (OPERATOR_WINDOW_START_MINUTE..=OPERATOR_WINDOW_END_MINUTE).contains(&current_minute)
 }
 
-fn operator_window_label() -> &'static str {
-    "Sunday 20:00-23:59"
+fn protected_access_mode(core: &FocusCore) -> Result<ProtectedAccessMode> {
+    match core
+        .database()
+        .service_state(PROTECTED_ACCESS_MODE_KEY)?
+        .as_deref()
+    {
+        Some("sunday") => Ok(ProtectedAccessMode::Sunday),
+        Some("no_active_schedule_or_detox") => Ok(ProtectedAccessMode::NoActiveScheduleOrDetox),
+        Some("all_time") => Ok(ProtectedAccessMode::AllTime),
+        Some(mode) => Err(DaemonError::InvalidRequest(format!(
+            "invalid protected access mode '{mode}'"
+        ))),
+        None => Ok(
+            if core
+                .database()
+                .service_state(OPERATOR_WINDOW_RESTRICTION_KEY)?
+                .as_deref()
+                == Some("true")
+            {
+                ProtectedAccessMode::Sunday
+            } else {
+                ProtectedAccessMode::AllTime
+            },
+        ),
+    }
 }
 
-fn operator_window_closed_error(action: &str) -> DaemonError {
-    DaemonError::InvalidRequest(format!(
-        "{action} are only available during {}",
-        operator_window_label()
+fn unsupported_browser_block_mode(core: &FocusCore) -> Result<ProtectedAccessMode> {
+    match core
+        .database()
+        .service_state(UNSUPPORTED_BROWSER_BLOCK_MODE_KEY)?
+        .as_deref()
+    {
+        Some("sunday") => Ok(ProtectedAccessMode::Sunday),
+        Some("no_active_schedule_or_detox") => Ok(ProtectedAccessMode::NoActiveScheduleOrDetox),
+        Some("all_time") | None => Ok(ProtectedAccessMode::AllTime),
+        Some(mode) => Err(DaemonError::InvalidRequest(format!(
+            "invalid unsupported browser block mode '{mode}'"
+        ))),
+    }
+}
+
+pub(crate) fn chromium_incognito_policy_settings(
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+    configured_mode: ChromiumIncognitoMode,
+) -> Result<ChromiumIncognitoPolicySettings> {
+    let disable_scope = chromium_incognito_disable_scope(core)?;
+    let private_browsing_disabled = configured_mode == ChromiumIncognitoMode::Disabled
+        && chromium_incognito_private_browsing_disabled(core, disable_scope, now, clock_tampered)?;
+    let mode = if configured_mode == ChromiumIncognitoMode::Disabled && !private_browsing_disabled {
+        ChromiumIncognitoMode::ManualConsent
+    } else {
+        configured_mode
+    };
+    let (url_blocklist, unsupported_pattern_count) =
+        if mode == ChromiumIncognitoMode::PolicyUrlBlocking {
+            chromium_incognito_url_blocklist(core, now, clock_tampered)?
+        } else {
+            (Vec::new(), 0)
+        };
+
+    Ok(ChromiumIncognitoPolicySettings {
+        configured_mode,
+        mode,
+        disable_scope,
+        private_browsing_disabled,
+        url_blocklist,
+        unsupported_pattern_count,
+    })
+}
+
+pub(crate) fn current_chromium_incognito_policy_settings(
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> Result<ChromiumIncognitoPolicySettings> {
+    chromium_incognito_policy_settings(core, now, clock_tampered, chromium_incognito_mode(core)?)
+}
+
+fn chromium_incognito_mode(core: &FocusCore) -> Result<ChromiumIncognitoMode> {
+    match core
+        .database()
+        .service_state(CHROMIUM_INCOGNITO_MODE_KEY)?
+        .as_deref()
+    {
+        Some("disabled") => Ok(ChromiumIncognitoMode::Disabled),
+        Some("manual_consent") | None => Ok(ChromiumIncognitoMode::ManualConsent),
+        Some("policy_url_blocking") => Ok(ChromiumIncognitoMode::PolicyUrlBlocking),
+        Some(mode) => Err(DaemonError::InvalidRequest(format!(
+            "invalid Chromium private browsing mode '{mode}'"
+        ))),
+    }
+}
+
+fn chromium_incognito_mode_name(mode: ChromiumIncognitoMode) -> &'static str {
+    match mode {
+        ChromiumIncognitoMode::Disabled => "disabled",
+        ChromiumIncognitoMode::ManualConsent => "manual_consent",
+        ChromiumIncognitoMode::PolicyUrlBlocking => "policy_url_blocking",
+    }
+}
+
+fn chromium_incognito_url_blocklist(
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> Result<(Vec<String>, usize)> {
+    let config = core.config();
+    let detox_rule_ids = core
+        .database()
+        .active_detox_sessions(now.with_timezone(&Utc))?
+        .into_iter()
+        .flat_map(|session| session.site_rule_ids)
+        .collect::<BTreeSet<_>>();
+    let mut entries = BTreeSet::new();
+    let mut unsupported_pattern_count = 0;
+
+    for rule in config.rules.iter().filter(|rule| rule.enabled) {
+        let selected_by_detox = detox_rule_ids.contains(&rule.id);
+        let active = match rule.tier {
+            RuleTier::Hard => true,
+            RuleTier::ScheduledBlock | RuleTier::ControlledAccess => {
+                selected_by_detox
+                    || schedule_ids_are_active_at_with_clock(
+                        &rule.schedule_ids,
+                        config,
+                        now,
+                        clock_tampered,
+                    )
+            }
+        };
+        if !active {
+            continue;
+        }
+
+        for pattern in &rule.patterns {
+            let entry = match pattern.kind {
+                RulePatternKind::Domain => Some(if pattern.match_subdomains {
+                    pattern.value.clone()
+                } else {
+                    format!(".{}", pattern.value.trim_start_matches('.'))
+                }),
+                // Chrome and Edge URL blocklist policies use the same URL-filter grammar
+                // for exact URL and host/path patterns.
+                RulePatternKind::ExactUrl | RulePatternKind::UrlPrefix => {
+                    Some(pattern.value.clone())
+                }
+                RulePatternKind::UrlContains | RulePatternKind::PathPrefix => None,
+            };
+            if let Some(entry) = entry {
+                entries.insert(entry);
+            } else {
+                unsupported_pattern_count += 1;
+            }
+        }
+    }
+
+    Ok((entries.into_iter().collect(), unsupported_pattern_count))
+}
+
+fn chromium_incognito_disable_scope(core: &FocusCore) -> Result<ChromiumIncognitoDisableScope> {
+    match core
+        .database()
+        .service_state(CHROMIUM_INCOGNITO_DISABLE_SCOPE_KEY)?
+        .as_deref()
+    {
+        Some("all_time") | None => Ok(ChromiumIncognitoDisableScope::AllTime),
+        Some("active_schedule_or_detox") => {
+            Ok(ChromiumIncognitoDisableScope::ActiveScheduleOrDetox)
+        }
+        Some(scope) => Err(DaemonError::InvalidRequest(format!(
+            "invalid Chromium private browsing disable scope '{scope}'"
+        ))),
+    }
+}
+
+fn chromium_incognito_private_browsing_disabled(
+    core: &FocusCore,
+    scope: ChromiumIncognitoDisableScope,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> Result<bool> {
+    if clock_tampered {
+        return Ok(true);
+    }
+
+    match scope {
+        ChromiumIncognitoDisableScope::AllTime => Ok(true),
+        ChromiumIncognitoDisableScope::ActiveScheduleOrDetox => {
+            Ok(!no_active_schedule_or_detox(core, now)?)
+        }
+    }
+}
+
+fn chromium_incognito_disable_scope_name(scope: ChromiumIncognitoDisableScope) -> &'static str {
+    match scope {
+        ChromiumIncognitoDisableScope::AllTime => "all_time",
+        ChromiumIncognitoDisableScope::ActiveScheduleOrDetox => "active_schedule_or_detox",
+    }
+}
+
+fn chromium_incognito_disable_scope_description(
+    scope: ChromiumIncognitoDisableScope,
+) -> &'static str {
+    match scope {
+        ChromiumIncognitoDisableScope::AllTime => "at all times",
+        ChromiumIncognitoDisableScope::ActiveScheduleOrDetox => {
+            "only while a schedule or Detox is active"
+        }
+    }
+}
+
+fn chromium_incognito_change_access_mode(core: &FocusCore) -> Result<ProtectedAccessMode> {
+    match core
+        .database()
+        .service_state(CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY)?
+        .as_deref()
+    {
+        Some("sunday") => Ok(ProtectedAccessMode::Sunday),
+        Some("no_active_schedule_or_detox") => Ok(ProtectedAccessMode::NoActiveScheduleOrDetox),
+        Some("all_time") | None => Ok(ProtectedAccessMode::AllTime),
+        Some(mode) => Err(DaemonError::InvalidRequest(format!(
+            "invalid Chromium private browsing settings access mode '{mode}'"
+        ))),
+    }
+}
+
+fn chromium_incognito_settings_change_allowed(
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> Result<bool> {
+    if clock_tampered {
+        return Ok(false);
+    }
+
+    match chromium_incognito_change_access_mode(core)? {
+        ProtectedAccessMode::Sunday => Ok(operator_window_open(now)),
+        ProtectedAccessMode::NoActiveScheduleOrDetox => no_active_schedule_or_detox(core, now),
+        ProtectedAccessMode::AllTime => Ok(true),
+    }
+}
+
+fn ensure_chromium_incognito_settings_change_allowed(
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> Result<()> {
+    let access_mode = chromium_incognito_change_access_mode(core)?;
+    if chromium_incognito_settings_change_allowed(core, now, clock_tampered)? {
+        return Ok(());
+    }
+    Err(protected_access_closed_error(
+        "Chromium private browsing settings",
+        access_mode,
     ))
 }
 
-fn operator_window_restriction_enabled(core: &FocusCore) -> Result<bool> {
-    Ok(core
+pub(crate) fn ensure_chromium_incognito_url_blocklist_within_limit(
+    settings: &ChromiumIncognitoPolicySettings,
+) -> Result<()> {
+    if settings.mode == ChromiumIncognitoMode::PolicyUrlBlocking
+        && settings.url_block_limit_exceeded()
+    {
+        return Err(DaemonError::InvalidRequest(format!(
+            "Chromium private URL policy supports at most 1000 active patterns; this configuration has {}",
+            settings.url_blocklist.len()
+        )));
+    }
+    Ok(())
+}
+
+fn protected_access_is_open(
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> Result<bool> {
+    if clock_tampered {
+        return Ok(false);
+    }
+
+    match protected_access_mode(core)? {
+        ProtectedAccessMode::Sunday => Ok(operator_window_open(now)),
+        ProtectedAccessMode::NoActiveScheduleOrDetox => no_active_schedule_or_detox(core, now),
+        ProtectedAccessMode::AllTime => Ok(true),
+    }
+}
+
+pub(crate) fn unsupported_browser_block_is_active(
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> Result<bool> {
+    if !core.config().strict_mode.block_unsupported_browsers || clock_tampered {
+        return Ok(core.config().strict_mode.block_unsupported_browsers);
+    }
+
+    match unsupported_browser_block_mode(core)? {
+        ProtectedAccessMode::Sunday => Ok(operator_window_open(now)),
+        ProtectedAccessMode::NoActiveScheduleOrDetox => no_active_schedule_or_detox(core, now),
+        ProtectedAccessMode::AllTime => Ok(true),
+    }
+}
+
+fn no_active_schedule_or_detox(core: &FocusCore, now: DateTime<FixedOffset>) -> Result<bool> {
+    let schedule_active = core
+        .config()
+        .schedules
+        .iter()
+        .any(|schedule| schedule_is_active_at(schedule, now));
+    let detox_active = !core
         .database()
-        .service_state(OPERATOR_WINDOW_RESTRICTION_KEY)?
-        .as_deref()
-        == Some("true"))
+        .active_detox_sessions(now.with_timezone(&Utc))?
+        .is_empty();
+    Ok(!schedule_active && !detox_active)
+}
+
+fn protected_access_mode_name(mode: ProtectedAccessMode) -> &'static str {
+    match mode {
+        ProtectedAccessMode::Sunday => "sunday",
+        ProtectedAccessMode::NoActiveScheduleOrDetox => "no_active_schedule_or_detox",
+        ProtectedAccessMode::AllTime => "all_time",
+    }
+}
+
+fn protected_access_mode_label(mode: ProtectedAccessMode) -> &'static str {
+    match mode {
+        ProtectedAccessMode::Sunday => "Sunday 20:00-23:59",
+        ProtectedAccessMode::NoActiveScheduleOrDetox => "No active schedule or Detox",
+        ProtectedAccessMode::AllTime => "Any time",
+    }
+}
+
+fn protected_access_mode_description(mode: ProtectedAccessMode) -> &'static str {
+    match mode {
+        ProtectedAccessMode::Sunday => "during Sunday 20:00-23:59",
+        ProtectedAccessMode::NoActiveScheduleOrDetox => "while no schedule or Detox is active",
+        ProtectedAccessMode::AllTime => "at any time",
+    }
+}
+
+fn protected_access_closed_error(action: &str, mode: ProtectedAccessMode) -> DaemonError {
+    DaemonError::InvalidRequest(format!(
+        "{action} are only available {}",
+        protected_access_mode_description(mode)
+    ))
 }
 
 fn tier1_edit_credential_configured(core: &FocusCore) -> Result<bool> {
@@ -3605,15 +4569,20 @@ mod tests {
     use serde_json::{json, Value};
 
     use crate::chrome_policy::ChromePolicyManager;
+    use crate::chrome_policy::ChromiumIncognitoMode;
     use crate::firefox_policy::FirefoxPolicyManager;
     use crate::hosts::HostsManager;
     use crate::policy_recovery::PolicyRecoveryManager;
 
     use super::{
-        browser_extension_status_json, handle_payload, parse_optional_now,
-        running_app_snapshots_from_processes, RpcContext,
+        browser_extension_status_json, chromium_incognito_policy_settings,
+        chromium_incognito_settings_change_allowed, chromium_incognito_url_blocklist,
+        handle_payload, infer_browser_from_running_browsers, parse_optional_now,
+        running_app_snapshots_from_processes, ChromiumPolicyBinding, GeckoPolicyBinding,
+        RpcContext, CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY,
+        CHROMIUM_INCOGNITO_DISABLE_SCOPE_KEY,
     };
-    use crate::process_scan::ProcessInfo;
+    use crate::process_scan::{ProcessInfo, SupportedBrowser};
 
     fn rpc_context() -> RpcContext {
         rpc_context_with_config_toml(
@@ -3627,6 +4596,171 @@ mod tests {
             ]
             "#,
         )
+    }
+
+    #[test]
+    fn resolves_generic_extension_identity_when_one_browser_family_member_is_running() {
+        assert_eq!(
+            infer_browser_from_running_browsers(
+                SupportedBrowser::Chrome,
+                &[SupportedBrowser::Chromium],
+            ),
+            SupportedBrowser::Chromium
+        );
+        assert_eq!(
+            infer_browser_from_running_browsers(
+                SupportedBrowser::Firefox,
+                &[SupportedBrowser::LibreWolf],
+            ),
+            SupportedBrowser::LibreWolf
+        );
+        assert_eq!(
+            infer_browser_from_running_browsers(
+                SupportedBrowser::Chrome,
+                &[SupportedBrowser::Chrome, SupportedBrowser::Vivaldi],
+            ),
+            SupportedBrowser::Chrome,
+            "the daemon must not guess when multiple Chromium browsers are running"
+        );
+    }
+
+    #[test]
+    fn private_url_policy_converts_only_representable_active_rules() {
+        let config = Config::from_toml_str(
+            r#"
+            [[schedules]]
+            id = "monday"
+            windows = [{ weekday = "mon", start = "10:00", end = "11:00" }]
+
+            [[rules]]
+            id = "hard"
+            name = "Hard"
+            tier = "hard"
+            patterns = [
+              { kind = "domain", value = "blocked.example", match_subdomains = true },
+              { kind = "domain", value = "exact.example", match_subdomains = false },
+              { kind = "exact_url", value = "https://blocked.example/path", match_subdomains = false },
+              { kind = "url_contains", value = "watch", match_subdomains = false }
+            ]
+
+            [[rules]]
+            id = "scheduled"
+            name = "Scheduled"
+            tier = "scheduled_block"
+            schedule_ids = ["monday"]
+            patterns = [{ kind = "url_prefix", value = "https://scheduled.example/path", match_subdomains = false }]
+
+            [[rules]]
+            id = "controlled"
+            name = "Controlled"
+            tier = "controlled_access"
+            schedule_ids = ["monday"]
+            patterns = [{ kind = "domain", value = "controlled.example", match_subdomains = true }]
+            "#,
+        )
+        .expect("test policy should parse");
+        let now = parse_optional_now(Some("2026-08-03T08:30:00+00:00".to_string()))
+            .expect("test timestamp should parse");
+
+        let temp = tempfile::tempdir().expect("temporary database directory should exist");
+        let core = FocusCore::new(
+            config,
+            Database::open(temp.path().join("blockuntu.sqlite3"))
+                .expect("temporary database should open"),
+        )
+        .expect("test core should initialize");
+        let (entries, unsupported) = chromium_incognito_url_blocklist(&core, now, false)
+            .expect("private URL policy should build");
+
+        assert_eq!(
+            entries,
+            vec![
+                ".exact.example".to_string(),
+                "blocked.example".to_string(),
+                "controlled.example".to_string(),
+                "https://blocked.example/path".to_string(),
+                "https://scheduled.example/path".to_string(),
+            ]
+        );
+        assert_eq!(unsupported, 1);
+    }
+
+    #[test]
+    fn private_browsing_disable_scope_and_settings_access_follow_schedule_activity() {
+        let config = Config::from_toml_str(
+            r#"
+            [[schedules]]
+            id = "monday"
+            windows = [{ weekday = "mon", start = "10:00", end = "11:00" }]
+            "#,
+        )
+        .expect("test policy should parse");
+        let temp = tempfile::tempdir().expect("temporary database directory should exist");
+        let core = FocusCore::new(
+            config,
+            Database::open(temp.path().join("blockuntu.sqlite3"))
+                .expect("temporary database should open"),
+        )
+        .expect("test core should initialize");
+        let active = parse_optional_now(Some("2026-08-03T08:30:00+00:00".to_string()))
+            .expect("active timestamp should parse");
+        let inactive = parse_optional_now(Some("2026-08-03T12:30:00+00:00".to_string()))
+            .expect("inactive timestamp should parse");
+        core.database()
+            .set_service_state(
+                CHROMIUM_INCOGNITO_DISABLE_SCOPE_KEY,
+                "active_schedule_or_detox",
+                active.with_timezone(&Utc),
+            )
+            .expect("disable scope should persist");
+        core.database()
+            .set_service_state(
+                CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY,
+                "no_active_schedule_or_detox",
+                active.with_timezone(&Utc),
+            )
+            .expect("change access mode should persist");
+
+        let active_settings = chromium_incognito_policy_settings(
+            &core,
+            active,
+            false,
+            ChromiumIncognitoMode::Disabled,
+        )
+        .expect("active settings should build");
+        assert!(active_settings.private_browsing_disabled);
+        assert_eq!(active_settings.mode, ChromiumIncognitoMode::Disabled);
+        assert!(
+            !chromium_incognito_settings_change_allowed(&core, active, false)
+                .expect("change access should evaluate")
+        );
+
+        let inactive_settings = chromium_incognito_policy_settings(
+            &core,
+            inactive,
+            false,
+            ChromiumIncognitoMode::Disabled,
+        )
+        .expect("inactive settings should build");
+        assert!(!inactive_settings.private_browsing_disabled);
+        assert_eq!(inactive_settings.mode, ChromiumIncognitoMode::ManualConsent);
+        assert!(
+            chromium_incognito_settings_change_allowed(&core, inactive, false)
+                .expect("change access should evaluate")
+        );
+
+        let tampered_settings = chromium_incognito_policy_settings(
+            &core,
+            inactive,
+            true,
+            ChromiumIncognitoMode::Disabled,
+        )
+        .expect("tampered-clock settings should build");
+        assert!(tampered_settings.private_browsing_disabled);
+        assert!(
+            !chromium_incognito_settings_change_allowed(&core, inactive, true)
+                .expect("tampered clock should lock settings")
+        );
     }
 
     fn editable_rpc_context() -> RpcContext {
@@ -3763,18 +4897,87 @@ mod tests {
         manage_browser_policies: bool,
     ) -> (tempfile::TempDir, RpcContext) {
         let temp = tempfile::tempdir().expect("temp dir should be created");
-        let firefox_policy = FirefoxPolicyManager::new(
-            temp.path().join("firefox/policies.json"),
-            "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
-            "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi",
-        );
-        let chrome_policy = ChromePolicyManager::new(
-            temp.path().join("chrome/policies/managed/blockuntu.json"),
-            "opfljaancedgklbpnbpjfhdbbhbfpnoc",
-        );
+        let gecko_policies = vec![
+            GeckoPolicyBinding::new(
+                SupportedBrowser::Firefox,
+                FirefoxPolicyManager::new(
+                    temp.path().join("firefox/policies.json"),
+                    "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
+                    "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi",
+                ),
+            ),
+            GeckoPolicyBinding::new(
+                SupportedBrowser::LibreWolf,
+                FirefoxPolicyManager::merging_existing_policy(
+                    temp.path().join("librewolf/distribution/policies.json"),
+                    "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
+                    "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi",
+                    temp.path().join("backups/librewolf.json"),
+                ),
+            ),
+            GeckoPolicyBinding::new(
+                SupportedBrowser::Waterfox,
+                FirefoxPolicyManager::merging_existing_policy(
+                    temp.path().join("waterfox/distribution/policies.json"),
+                    "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
+                    "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi",
+                    temp.path().join("backups/waterfox.json"),
+                ),
+            ),
+        ];
+        let chromium_policies = vec![
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Chrome,
+                ChromePolicyManager::for_browser(
+                    temp.path().join("chrome/policies/managed/blockuntu.json"),
+                    "opfljaancedgklbpnbpjfhdbbhbfpnoc",
+                    "Chrome",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Chromium,
+                ChromePolicyManager::for_browser(
+                    temp.path().join("chromium/policies/managed/blockuntu.json"),
+                    "opfljaancedgklbpnbpjfhdbbhbfpnoc",
+                    "Chromium",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Brave,
+                ChromePolicyManager::for_browser(
+                    temp.path().join("brave/policies/managed/blockuntu.json"),
+                    "opfljaancedgklbpnbpjfhdbbhbfpnoc",
+                    "Brave",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Opera,
+                ChromePolicyManager::for_browser(
+                    temp.path().join("opera/policies/managed/blockuntu.json"),
+                    "opfljaancedgklbpnbpjfhdbbhbfpnoc",
+                    "Opera",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Edge,
+                ChromePolicyManager::for_browser(
+                    temp.path().join("edge/policies/managed/blockuntu.json"),
+                    "opfljaancedgklbpnbpjfhdbbhbfpnoc",
+                    "Microsoft Edge",
+                ),
+            ),
+            ChromiumPolicyBinding::new(
+                SupportedBrowser::Vivaldi,
+                ChromePolicyManager::for_browser(
+                    temp.path().join("vivaldi/policies/managed/blockuntu.json"),
+                    "opfljaancedgklbpnbpjfhdbbhbfpnoc",
+                    "Vivaldi",
+                ),
+            ),
+        ];
         let hosts = HostsManager::new(temp.path().join("hosts"));
         let context = context
-            .with_enforcement_managers(firefox_policy, chrome_policy, hosts)
+            .with_enforcement_managers(gecko_policies, chromium_policies, hosts)
             .with_browser_policy_management(manage_browser_policies, manage_browser_policies);
         (temp, context)
     }
@@ -4323,6 +5526,16 @@ mod tests {
             response["result"]["firefox_policy"]["active_after_heartbeat"],
             false
         );
+        for browser in ["librewolf", "waterfox"] {
+            assert_eq!(
+                response["result"]["firefox_family_policies"][browser]["deferred_until_heartbeat"],
+                true
+            );
+            assert_eq!(
+                response["result"]["firefox_family_policies"][browser]["active_after_heartbeat"],
+                false
+            );
+        }
         assert_eq!(
             response["result"]["chrome_policy"]["deferred_until_heartbeat"],
             true
@@ -4331,11 +5544,56 @@ mod tests {
             response["result"]["chrome_policy"]["active_after_heartbeat"],
             false
         );
+        for browser in ["chromium", "brave", "opera", "edge", "vivaldi"] {
+            assert_eq!(
+                response["result"]["chromium_policies"][browser]["deferred_until_heartbeat"],
+                true
+            );
+            assert_eq!(
+                response["result"]["chromium_policies"][browser]["active_after_heartbeat"],
+                false
+            );
+        }
         assert!(!temp.path().join("firefox/policies.json").exists());
         assert!(!temp
             .path()
             .join("chrome/policies/managed/blockuntu.json")
             .exists());
+
+        for (id, component, browser, policy_path) in [
+            (
+                741,
+                "librewolf_extension",
+                "librewolf",
+                "librewolf/distribution/policies.json",
+            ),
+            (
+                742,
+                "waterfox_extension",
+                "waterfox",
+                "waterfox/distribution/policies.json",
+            ),
+        ] {
+            let heartbeat = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "extension_heartbeat",
+                "params": {
+                    "component": component,
+                    "browser": browser,
+                    "extension_id": "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
+                    "extension_version": "0.2.4"
+                }
+            });
+            let response: Value = serde_json::from_slice(&handle_payload(
+                &context,
+                &serde_json::to_vec(&heartbeat).unwrap(),
+            ))
+            .expect("response should parse");
+
+            assert!(response.get("error").is_none(), "{response}");
+            assert!(temp.path().join(policy_path).exists());
+        }
 
         let firefox_heartbeat = json!({
             "jsonrpc": "2.0",
@@ -4387,6 +5645,59 @@ mod tests {
             .path()
             .join("chrome/policies/managed/blockuntu.json")
             .exists());
+
+        for (id, component, browser, policy_path) in [
+            (
+                75,
+                "chromium_extension",
+                "chromium",
+                "chromium/policies/managed/blockuntu.json",
+            ),
+            (
+                76,
+                "brave_extension",
+                "brave",
+                "brave/policies/managed/blockuntu.json",
+            ),
+            (
+                77,
+                "opera_extension",
+                "opera",
+                "opera/policies/managed/blockuntu.json",
+            ),
+            (
+                78,
+                "edge_extension",
+                "edge",
+                "edge/policies/managed/blockuntu.json",
+            ),
+            (
+                79,
+                "vivaldi_extension",
+                "vivaldi",
+                "vivaldi/policies/managed/blockuntu.json",
+            ),
+        ] {
+            let heartbeat = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "extension_heartbeat",
+                "params": {
+                    "component": component,
+                    "browser": browser,
+                    "extension_id": "opfljaancedgklbpnbpjfhdbbhbfpnoc",
+                    "extension_version": "0.2.1"
+                }
+            });
+            let response: Value = serde_json::from_slice(&handle_payload(
+                &context,
+                &serde_json::to_vec(&heartbeat).unwrap(),
+            ))
+            .expect("response should parse");
+
+            assert!(response.get("error").is_none(), "{response}");
+            assert!(temp.path().join(policy_path).exists());
+        }
     }
 
     #[test]
@@ -5240,6 +6551,171 @@ mod tests {
             "Sunday 20:00-23:59"
         );
         assert_eq!(status_response["result"]["operator_window_open"], true);
+    }
+
+    #[test]
+    fn protected_access_mode_can_require_an_idle_schedule_and_detox_state() {
+        let (_temp, idle_context) = rpc_context_with_tier1_edit_credential(rpc_context());
+        let set_idle_mode = json!({
+            "jsonrpc": "2.0",
+            "id": 129,
+            "method": "set_protected_access_mode",
+            "params": { "mode": "no_active_schedule_or_detox" }
+        });
+        let set_idle_response: Value = serde_json::from_slice(&handle_payload(
+            &idle_context,
+            &serde_json::to_vec(&set_idle_mode).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(
+            set_idle_response["result"]["mode"],
+            "no_active_schedule_or_detox"
+        );
+
+        let idle_unlock = json!({
+            "jsonrpc": "2.0",
+            "id": 130,
+            "method": "unlock_tier1_edit",
+            "params": {
+                "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
+                "now": "2026-05-22T10:00:00+02:00"
+            }
+        });
+        let idle_unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &idle_context,
+            &serde_json::to_vec(&idle_unlock).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(
+            idle_unlock_response.get("error").is_none(),
+            "{idle_unlock_response}"
+        );
+
+        let (_temp, active_context) =
+            rpc_context_with_tier1_edit_credential(active_scheduled_rpc_context());
+        let active_core = active_context.core.lock().expect("core should lock");
+        active_core
+            .database()
+            .set_service_state(
+                super::PROTECTED_ACCESS_MODE_KEY,
+                "no_active_schedule_or_detox",
+                Utc::now(),
+            )
+            .expect("protected access mode should persist");
+        drop(active_core);
+
+        let active_unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &active_context,
+            &serde_json::to_vec(&idle_unlock).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(active_unlock_response["error"]["code"], -32602);
+        assert!(active_unlock_response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("while no schedule or Detox is active"));
+
+        let (_temp, detox_context) = rpc_context_with_tier1_edit_credential(editable_rpc_context());
+        let detox_core = detox_context.core.lock().expect("core should lock");
+        detox_core
+            .database()
+            .set_service_state(
+                super::PROTECTED_ACCESS_MODE_KEY,
+                "no_active_schedule_or_detox",
+                Utc::now(),
+            )
+            .expect("protected access mode should persist");
+        drop(detox_core);
+        let start_detox = json!({
+            "jsonrpc": "2.0",
+            "id": 131,
+            "method": "start_detox",
+            "params": {
+                "duration_minutes": 90,
+                "site_rule_ids": ["controlled"],
+                "now": "2026-05-23T20:00:00+02:00"
+            }
+        });
+        let detox_start_response: Value = serde_json::from_slice(&handle_payload(
+            &detox_context,
+            &serde_json::to_vec(&start_detox).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(
+            detox_start_response.get("error").is_none(),
+            "{detox_start_response}"
+        );
+
+        let detox_unlock = json!({
+            "jsonrpc": "2.0",
+            "id": 132,
+            "method": "unlock_tier1_edit",
+            "params": {
+                "phrase": "BLOCKUNTU-TIER1-EDIT-TEST",
+                "now": "2026-05-23T20:00:00+02:00"
+            }
+        });
+        let detox_unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &detox_context,
+            &serde_json::to_vec(&detox_unlock).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(detox_unlock_response["error"]["code"], -32602);
+        assert!(detox_unlock_response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("while no schedule or Detox is active"));
+    }
+
+    #[test]
+    fn unsupported_browser_block_mode_uses_the_selected_activation_condition() {
+        let context = active_scheduled_rpc_context();
+        let core = context.core.lock().expect("core should lock");
+        let active_schedule_time =
+            parse_optional_now(Some("2026-05-22T10:00:00+02:00".to_string()))
+                .expect("time should parse");
+        let sunday_window = parse_optional_now(Some("2026-05-24T20:00:00+02:00".to_string()))
+            .expect("time should parse");
+
+        core.database()
+            .set_service_state(
+                super::UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
+                "no_active_schedule_or_detox",
+                Utc::now(),
+            )
+            .expect("browser block mode should persist");
+        assert!(
+            !super::unsupported_browser_block_is_active(&core, active_schedule_time, false)
+                .expect("browser block should evaluate")
+        );
+
+        core.database()
+            .set_service_state(
+                super::UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
+                "all_time",
+                Utc::now(),
+            )
+            .expect("browser block mode should persist");
+        assert!(
+            super::unsupported_browser_block_is_active(&core, active_schedule_time, false)
+                .expect("browser block should evaluate")
+        );
+
+        core.database()
+            .set_service_state(
+                super::UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
+                "sunday",
+                Utc::now(),
+            )
+            .expect("browser block mode should persist");
+        assert!(
+            !super::unsupported_browser_block_is_active(&core, active_schedule_time, false)
+                .expect("browser block should evaluate")
+        );
+        assert!(
+            super::unsupported_browser_block_is_active(&core, sunday_window, false)
+                .expect("browser block should evaluate")
+        );
     }
 
     #[test]

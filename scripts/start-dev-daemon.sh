@@ -25,7 +25,13 @@ echo "[blockuntud-dev] policy recovery: ${RUNTIME_DIR}/policy-recovery.toml"
 echo "[blockuntud-dev] socket: ${RUNTIME_DIR}/blockuntud.sock"
 echo "[blockuntud-dev] firefox policy sandbox: ${RUNTIME_DIR}/firefox/policies.json"
 echo "[blockuntud-dev] chrome policy sandbox: ${RUNTIME_DIR}/chrome/policies/managed/blockuntu.json"
-echo "[blockuntud-dev] chrome update manifest sandbox: ${RUNTIME_DIR}/chrome/updates.xml"
+echo "[blockuntud-dev] chromium policy sandbox: ${RUNTIME_DIR}/chromium/policies/managed/blockuntu.json"
+echo "[blockuntud-dev] brave policy sandbox: ${RUNTIME_DIR}/brave/policies/managed/blockuntu.json"
+echo "[blockuntud-dev] opera policy sandbox: ${RUNTIME_DIR}/opera/policies/managed/blockuntu.json"
+echo "[blockuntud-dev] edge policy sandbox: ${RUNTIME_DIR}/edge/policies/managed/blockuntu.json"
+echo "[blockuntud-dev] vivaldi policy sandbox: ${RUNTIME_DIR}/vivaldi/policies/managed/blockuntu.json"
+echo "[blockuntud-dev] LibreWolf policy sandbox: ${RUNTIME_DIR}/librewolf/policies.json"
+echo "[blockuntud-dev] Waterfox policy sandbox: ${RUNTIME_DIR}/waterfox/policies.json"
 echo "[blockuntud-dev] hosts sandbox: ${RUNTIME_DIR}/hosts"
 
 exec cargo run --manifest-path "${REPO_ROOT}/focusd/Cargo.toml" -- \
@@ -36,8 +42,16 @@ exec cargo run --manifest-path "${REPO_ROOT}/focusd/Cargo.toml" -- \
   --no-policy-recovery-immutable \
   --socket "${RUNTIME_DIR}/blockuntud.sock" \
   --firefox-policy "${RUNTIME_DIR}/firefox/policies.json" \
+  --librewolf-policy "${RUNTIME_DIR}/librewolf/policies.json" \
+  --librewolf-policy-backup "${RUNTIME_DIR}/librewolf/policy-backup.json" \
+  --waterfox-policy "${RUNTIME_DIR}/waterfox/policies.json" \
+  --waterfox-policy-backup "${RUNTIME_DIR}/waterfox/policy-backup.json" \
   --chrome-policy "${RUNTIME_DIR}/chrome/policies/managed/blockuntu.json" \
-  --chrome-update-manifest "${RUNTIME_DIR}/chrome/updates.xml" \
+  --chromium-policy "${RUNTIME_DIR}/chromium/policies/managed/blockuntu.json" \
+  --brave-policy "${RUNTIME_DIR}/brave/policies/managed/blockuntu.json" \
+  --opera-policy "${RUNTIME_DIR}/opera/policies/managed/blockuntu.json" \
+  --edge-policy "${RUNTIME_DIR}/edge/policies/managed/blockuntu.json" \
+  --vivaldi-policy "${RUNTIME_DIR}/vivaldi/policies/managed/blockuntu.json" \
   --hosts "${RUNTIME_DIR}/hosts" \
   --dev-bind-socket \
   serve

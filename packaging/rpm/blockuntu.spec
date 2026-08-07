@@ -32,6 +32,7 @@ Requires:       libayatana-appindicator-gtk3
 Requires:       polkit
 Requires:       shadow-utils
 Requires:       systemd
+Requires:       xdg-utils
 Recommends:     wmctrl
 
 %description
@@ -113,12 +114,25 @@ chmod 0644 %{buildroot}%{_unitdir}/blockuntu.service \
 
 install -d \
   %{buildroot}%{_libdir}/mozilla/native-messaging-hosts \
+  %{buildroot}%{_libdir}/librewolf/native-messaging-hosts \
+  %{buildroot}%{_libdir}/waterfox/native-messaging-hosts \
   %{buildroot}%{_sysconfdir}/opt/chrome/native-messaging-hosts \
-  %{buildroot}%{_sysconfdir}/chromium/native-messaging-hosts
+  %{buildroot}%{_sysconfdir}/chromium/native-messaging-hosts \
+  %{buildroot}%{_sysconfdir}/opt/edge/native-messaging-hosts \
+  %{buildroot}%{_sysconfdir}/opt/vivaldi/native-messaging-hosts \
+  %{buildroot}%{_sysconfdir}/vivaldi/native-messaging-hosts
 sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
   packaging/native-messaging/blockuntu_native.json \
   >%{buildroot}%{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json
 chmod 0644 %{buildroot}%{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json
+sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+  packaging/native-messaging/blockuntu_native.json \
+  >%{buildroot}%{_libdir}/librewolf/native-messaging-hosts/blockuntu_native.json
+chmod 0644 %{buildroot}%{_libdir}/librewolf/native-messaging-hosts/blockuntu_native.json
+sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+  packaging/native-messaging/blockuntu_native.json \
+  >%{buildroot}%{_libdir}/waterfox/native-messaging-hosts/blockuntu_native.json
+chmod 0644 %{buildroot}%{_libdir}/waterfox/native-messaging-hosts/blockuntu_native.json
 sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
   packaging/native-messaging/blockuntu_native.chrome.json \
   >%{buildroot}%{_sysconfdir}/opt/chrome/native-messaging-hosts/blockuntu_native.json
@@ -127,6 +141,18 @@ sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
   packaging/native-messaging/blockuntu_native.chrome.json \
   >%{buildroot}%{_sysconfdir}/chromium/native-messaging-hosts/blockuntu_native.json
 chmod 0644 %{buildroot}%{_sysconfdir}/chromium/native-messaging-hosts/blockuntu_native.json
+sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+  packaging/native-messaging/blockuntu_native.chrome.json \
+  >%{buildroot}%{_sysconfdir}/opt/edge/native-messaging-hosts/blockuntu_native.json
+chmod 0644 %{buildroot}%{_sysconfdir}/opt/edge/native-messaging-hosts/blockuntu_native.json
+sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+  packaging/native-messaging/blockuntu_native.chrome.json \
+  >%{buildroot}%{_sysconfdir}/opt/vivaldi/native-messaging-hosts/blockuntu_native.json
+chmod 0644 %{buildroot}%{_sysconfdir}/opt/vivaldi/native-messaging-hosts/blockuntu_native.json
+sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+  packaging/native-messaging/blockuntu_native.chrome.json \
+  >%{buildroot}%{_sysconfdir}/vivaldi/native-messaging-hosts/blockuntu_native.json
+chmod 0644 %{buildroot}%{_sysconfdir}/vivaldi/native-messaging-hosts/blockuntu_native.json
 
 %pre
 if ! getent group blockuntu >/dev/null 2>&1; then
@@ -272,7 +298,12 @@ remove_browser_policies() {
   for policy in \
     /etc/firefox/policies/policies.json \
     /etc/opt/chrome/policies/managed/blockuntu.json \
-    /etc/chromium/policies/managed/blockuntu.json; do
+    /etc/chromium/policies/managed/blockuntu.json \
+    /etc/brave/policies/managed/blockuntu.json \
+    /etc/opt/opera/policies/managed/blockuntu.json \
+    /etc/opt/edge/policies/managed/blockuntu.json \
+    /etc/vivaldi/policies/managed/blockuntu.json \
+    /etc/opt/vivaldi/policies/managed/blockuntu.json; do
     if [ -f "${policy}" ] && grep -qi "blockuntu" "${policy}" 2>/dev/null; then
       rm -f "${policy}"
     fi
@@ -283,6 +314,16 @@ remove_browser_policies() {
   remove_empty_dir /etc/opt/chrome/policies
   remove_empty_dir /etc/chromium/policies/managed
   remove_empty_dir /etc/chromium/policies
+  remove_empty_dir /etc/brave/policies/managed
+  remove_empty_dir /etc/brave/policies
+  remove_empty_dir /etc/opt/opera/policies/managed
+  remove_empty_dir /etc/opt/opera/policies
+  remove_empty_dir /etc/opt/edge/policies/managed
+  remove_empty_dir /etc/opt/edge/policies
+  remove_empty_dir /etc/vivaldi/policies/managed
+  remove_empty_dir /etc/vivaldi/policies
+  remove_empty_dir /etc/opt/vivaldi/policies/managed
+  remove_empty_dir /etc/opt/vivaldi/policies
 }
 
 if [ "$1" -eq 0 ]; then
@@ -348,7 +389,12 @@ fi
 %config(noreplace) %{_sysconfdir}/blockuntu/config.toml
 %config(noreplace) %{_sysconfdir}/opt/chrome/native-messaging-hosts/blockuntu_native.json
 %config(noreplace) %{_sysconfdir}/chromium/native-messaging-hosts/blockuntu_native.json
+%config(noreplace) %{_sysconfdir}/opt/edge/native-messaging-hosts/blockuntu_native.json
+%config(noreplace) %{_sysconfdir}/opt/vivaldi/native-messaging-hosts/blockuntu_native.json
+%config(noreplace) %{_sysconfdir}/vivaldi/native-messaging-hosts/blockuntu_native.json
 %{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json
+%{_libdir}/librewolf/native-messaging-hosts/blockuntu_native.json
+%{_libdir}/waterfox/native-messaging-hosts/blockuntu_native.json
 %{_unitdir}/blockuntu.socket
 %{_unitdir}/blockuntu.service
 %{_unitdir}/blockuntu-watchdog.service

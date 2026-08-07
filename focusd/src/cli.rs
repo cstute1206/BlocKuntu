@@ -11,8 +11,32 @@ pub const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.js
 pub const DEFAULT_EXTENSION_ID: &str = "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}";
 pub const DEFAULT_FIREFOX_EXTENSION_INSTALL_URL: &str =
     "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi";
+// LibreWolf's Debian package installs its application directory under
+// /usr/share/librewolf. Firefox-family policies are loaded from the
+// application's distribution directory, not from the Native Messaging path
+// under /usr/lib/librewolf.
+pub const DEFAULT_LIBREWOLF_POLICY_PATH: &str = "/usr/share/librewolf/distribution/policies.json";
+pub const DEFAULT_LIBREWOLF_POLICY_BACKUP_PATH: &str =
+    "/var/lib/blockuntu/browser-policy-backups/librewolf.json";
+pub const DEFAULT_LIBREWOLF_EXTENSION_ID: &str = DEFAULT_EXTENSION_ID;
+pub const DEFAULT_LIBREWOLF_EXTENSION_INSTALL_URL: &str = DEFAULT_FIREFOX_EXTENSION_INSTALL_URL;
+pub const DEFAULT_WATERFOX_POLICY_PATH: &str = "/usr/lib/waterfox/distribution/policies.json";
+pub const DEFAULT_WATERFOX_POLICY_BACKUP_PATH: &str =
+    "/var/lib/blockuntu/browser-policy-backups/waterfox.json";
+pub const DEFAULT_WATERFOX_EXTENSION_ID: &str = DEFAULT_EXTENSION_ID;
+pub const DEFAULT_WATERFOX_EXTENSION_INSTALL_URL: &str = DEFAULT_FIREFOX_EXTENSION_INSTALL_URL;
 pub const DEFAULT_CHROME_POLICY_PATH: &str = "/etc/opt/chrome/policies/managed/blockuntu.json";
 pub const DEFAULT_CHROME_EXTENSION_ID: &str = "opfljaancedgklbpnbpjfhdbbhbfpnoc";
+pub const DEFAULT_CHROMIUM_POLICY_PATH: &str = "/etc/chromium/policies/managed/blockuntu.json";
+pub const DEFAULT_CHROMIUM_EXTENSION_ID: &str = DEFAULT_CHROME_EXTENSION_ID;
+pub const DEFAULT_BRAVE_POLICY_PATH: &str = "/etc/brave/policies/managed/blockuntu.json";
+pub const DEFAULT_BRAVE_EXTENSION_ID: &str = DEFAULT_CHROME_EXTENSION_ID;
+pub const DEFAULT_OPERA_POLICY_PATH: &str = "/etc/opt/opera/policies/managed/blockuntu.json";
+pub const DEFAULT_OPERA_EXTENSION_ID: &str = DEFAULT_CHROME_EXTENSION_ID;
+pub const DEFAULT_EDGE_POLICY_PATH: &str = "/etc/opt/edge/policies/managed/blockuntu.json";
+pub const DEFAULT_EDGE_EXTENSION_ID: &str = DEFAULT_CHROME_EXTENSION_ID;
+pub const DEFAULT_VIVALDI_POLICY_PATH: &str = "/etc/vivaldi/policies/managed/blockuntu.json";
+pub const DEFAULT_VIVALDI_EXTENSION_ID: &str = DEFAULT_CHROME_EXTENSION_ID;
 pub const DEFAULT_HOSTS_PATH: &str = "/etc/hosts";
 
 #[derive(Debug, Clone, Parser)]
@@ -39,10 +63,46 @@ pub struct Args {
     pub extension_id: String,
     #[arg(long, default_value = DEFAULT_FIREFOX_EXTENSION_INSTALL_URL)]
     pub firefox_extension_install_url: String,
+    #[arg(long, default_value = DEFAULT_LIBREWOLF_POLICY_PATH)]
+    pub librewolf_policy: PathBuf,
+    #[arg(long, default_value = DEFAULT_LIBREWOLF_POLICY_BACKUP_PATH)]
+    pub librewolf_policy_backup: PathBuf,
+    #[arg(long, default_value = DEFAULT_LIBREWOLF_EXTENSION_ID)]
+    pub librewolf_extension_id: String,
+    #[arg(long, default_value = DEFAULT_LIBREWOLF_EXTENSION_INSTALL_URL)]
+    pub librewolf_extension_install_url: String,
+    #[arg(long, default_value = DEFAULT_WATERFOX_POLICY_PATH)]
+    pub waterfox_policy: PathBuf,
+    #[arg(long, default_value = DEFAULT_WATERFOX_POLICY_BACKUP_PATH)]
+    pub waterfox_policy_backup: PathBuf,
+    #[arg(long, default_value = DEFAULT_WATERFOX_EXTENSION_ID)]
+    pub waterfox_extension_id: String,
+    #[arg(long, default_value = DEFAULT_WATERFOX_EXTENSION_INSTALL_URL)]
+    pub waterfox_extension_install_url: String,
     #[arg(long, default_value = DEFAULT_CHROME_POLICY_PATH)]
     pub chrome_policy: PathBuf,
     #[arg(long, default_value = DEFAULT_CHROME_EXTENSION_ID)]
     pub chrome_extension_id: String,
+    #[arg(long, default_value = DEFAULT_CHROMIUM_POLICY_PATH)]
+    pub chromium_policy: PathBuf,
+    #[arg(long, default_value = DEFAULT_CHROMIUM_EXTENSION_ID)]
+    pub chromium_extension_id: String,
+    #[arg(long, default_value = DEFAULT_BRAVE_POLICY_PATH)]
+    pub brave_policy: PathBuf,
+    #[arg(long, default_value = DEFAULT_BRAVE_EXTENSION_ID)]
+    pub brave_extension_id: String,
+    #[arg(long, default_value = DEFAULT_OPERA_POLICY_PATH)]
+    pub opera_policy: PathBuf,
+    #[arg(long, default_value = DEFAULT_OPERA_EXTENSION_ID)]
+    pub opera_extension_id: String,
+    #[arg(long, default_value = DEFAULT_EDGE_POLICY_PATH)]
+    pub edge_policy: PathBuf,
+    #[arg(long, default_value = DEFAULT_EDGE_EXTENSION_ID)]
+    pub edge_extension_id: String,
+    #[arg(long, default_value = DEFAULT_VIVALDI_POLICY_PATH)]
+    pub vivaldi_policy: PathBuf,
+    #[arg(long, default_value = DEFAULT_VIVALDI_EXTENSION_ID)]
+    pub vivaldi_extension_id: String,
     #[arg(long, default_value = DEFAULT_HOSTS_PATH)]
     pub hosts: PathBuf,
     #[arg(long, conflicts_with = "no_hosts_immutable")]
@@ -103,5 +163,26 @@ impl Args {
     pub fn defer_chrome_policy_repair_until_heartbeat(&self) -> bool {
         self.defer_browser_policy_repair_until_heartbeat
             || self.defer_chrome_policy_repair_until_heartbeat
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Args, DEFAULT_LIBREWOLF_POLICY_PATH};
+
+    #[test]
+    fn librewolf_default_policy_uses_its_application_directory() {
+        let args = Args::try_parse_from(["blockuntud"]).expect("defaults should parse");
+
+        assert_eq!(
+            args.librewolf_policy,
+            std::path::PathBuf::from(DEFAULT_LIBREWOLF_POLICY_PATH)
+        );
+        assert_eq!(
+            DEFAULT_LIBREWOLF_POLICY_PATH,
+            "/usr/share/librewolf/distribution/policies.json"
+        );
     }
 }

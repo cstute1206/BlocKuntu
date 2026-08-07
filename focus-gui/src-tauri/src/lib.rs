@@ -22,20 +22,62 @@ const DEFAULT_SOCKET_PATH: &str = "/run/blockuntu/blockuntud.sock";
 const DEV_SOCKET_PATH: &str = "/tmp/blockuntu/blockuntud.sock";
 const DEFAULT_FIREFOX_POLICY_PATH: &str = "/etc/firefox/policies/policies.json";
 const DEV_FIREFOX_POLICY_PATH: &str = "/tmp/blockuntu/firefox/policies.json";
+const DEFAULT_LIBREWOLF_POLICY_PATH: &str = "/usr/share/librewolf/distribution/policies.json";
+const DEV_LIBREWOLF_POLICY_PATH: &str = "/tmp/blockuntu/librewolf/policies.json";
+const DEFAULT_WATERFOX_POLICY_PATH: &str = "/usr/lib/waterfox/distribution/policies.json";
+const DEV_WATERFOX_POLICY_PATH: &str = "/tmp/blockuntu/waterfox/policies.json";
 const DEFAULT_CHROME_POLICY_PATH: &str = "/etc/opt/chrome/policies/managed/blockuntu.json";
 const DEV_CHROME_POLICY_PATH: &str = "/tmp/blockuntu/chrome/policies/managed/blockuntu.json";
+const DEFAULT_CHROMIUM_POLICY_PATH: &str = "/etc/chromium/policies/managed/blockuntu.json";
+const DEV_CHROMIUM_POLICY_PATH: &str = "/tmp/blockuntu/chromium/policies/managed/blockuntu.json";
+const DEFAULT_BRAVE_POLICY_PATH: &str = "/etc/brave/policies/managed/blockuntu.json";
+const DEV_BRAVE_POLICY_PATH: &str = "/tmp/blockuntu/brave/policies/managed/blockuntu.json";
+const DEFAULT_OPERA_POLICY_PATH: &str = "/etc/opt/opera/policies/managed/blockuntu.json";
+const DEV_OPERA_POLICY_PATH: &str = "/tmp/blockuntu/opera/policies/managed/blockuntu.json";
+const DEFAULT_EDGE_POLICY_PATH: &str = "/etc/opt/edge/policies/managed/blockuntu.json";
+const DEV_EDGE_POLICY_PATH: &str = "/tmp/blockuntu/edge/policies/managed/blockuntu.json";
+const DEFAULT_VIVALDI_POLICY_PATH: &str = "/etc/vivaldi/policies/managed/blockuntu.json";
+const DEV_VIVALDI_POLICY_PATH: &str = "/tmp/blockuntu/vivaldi/policies/managed/blockuntu.json";
 const FIREFOX_EXTENSION_IDS: [&str; 2] = [
     "blockuntu@example.local",
     "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
 ];
 const FIREFOX_EXTENSION_INSTALL_URL: &str =
     "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi";
+const FIREFOX_EXTENSION_STORE_URL: &str =
+    "https://addons.mozilla.org/en-US/firefox/addon/blockuntu/";
+const CHROME_EXTENSION_STORE_URL: &str =
+    "https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc";
 const FIREFOX_COMMANDS: [&str; 2] = ["/usr/bin/firefox", "/bin/firefox"];
+const LIBREWOLF_COMMANDS: [&str; 3] = [
+    "/usr/bin/librewolf",
+    "/bin/librewolf",
+    "/usr/lib/librewolf/librewolf",
+];
+const WATERFOX_COMMANDS: [&str; 3] = [
+    "/usr/bin/waterfox",
+    "/bin/waterfox",
+    "/usr/lib/waterfox/waterfox",
+];
 const FIREFOX_USER_NATIVE_HOST_MANIFEST: &str =
     ".mozilla/native-messaging-hosts/blockuntu_native.json";
 const SYSTEM_FIREFOX_NATIVE_HOST_MANIFESTS: [&str; 2] = [
     "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json",
     "/usr/lib64/mozilla/native-messaging-hosts/blockuntu_native.json",
+];
+const LIBREWOLF_USER_NATIVE_HOST_MANIFEST: &str =
+    ".librewolf/native-messaging-hosts/blockuntu_native.json";
+const WATERFOX_USER_NATIVE_HOST_MANIFEST: &str =
+    ".waterfox/native-messaging-hosts/blockuntu_native.json";
+const SYSTEM_LIBREWOLF_NATIVE_HOST_MANIFESTS: [&str; 3] = [
+    "/usr/lib/librewolf/native-messaging-hosts/blockuntu_native.json",
+    "/usr/lib64/librewolf/native-messaging-hosts/blockuntu_native.json",
+    "/usr/share/librewolf/native-messaging-hosts/blockuntu_native.json",
+];
+const SYSTEM_WATERFOX_NATIVE_HOST_MANIFESTS: [&str; 3] = [
+    "/usr/lib/waterfox/native-messaging-hosts/blockuntu_native.json",
+    "/usr/lib64/waterfox/native-messaging-hosts/blockuntu_native.json",
+    "/usr/share/waterfox/native-messaging-hosts/blockuntu_native.json",
 ];
 const FLATPAK_FIREFOX_APP_ROOT: &str = ".var/app/org.mozilla.firefox";
 const FLATPAK_FIREFOX_NATIVE_HOST_MANIFEST: &str =
@@ -52,20 +94,55 @@ const CHROME_COMMANDS: [&str; 4] = [
     "/bin/google-chrome",
     "/bin/google-chrome-stable",
 ];
-const CHROMIUM_COMMANDS: [&str; 4] = [
+const CHROMIUM_COMMANDS: [&str; 5] = [
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
     "/bin/chromium",
     "/bin/chromium-browser",
+    "/snap/bin/chromium",
+];
+const BRAVE_COMMANDS: [&str; 3] = [
+    "/usr/bin/brave-browser",
+    "/bin/brave-browser",
+    "/snap/bin/brave",
+];
+const OPERA_COMMANDS: [&str; 3] = ["/usr/bin/opera", "/bin/opera", "/snap/bin/opera"];
+const EDGE_COMMANDS: [&str; 3] = [
+    "/usr/bin/microsoft-edge",
+    "/usr/bin/microsoft-edge-stable",
+    "/bin/microsoft-edge",
+];
+const VIVALDI_COMMANDS: [&str; 3] = [
+    "/usr/bin/vivaldi",
+    "/usr/bin/vivaldi-stable",
+    "/bin/vivaldi",
 ];
 const CHROME_USER_NATIVE_HOST_MANIFEST: &str =
     ".config/google-chrome/NativeMessagingHosts/blockuntu_native.json";
 const CHROMIUM_USER_NATIVE_HOST_MANIFEST: &str =
     ".config/chromium/NativeMessagingHosts/blockuntu_native.json";
+const BRAVE_USER_NATIVE_HOST_MANIFEST: &str =
+    ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts/blockuntu_native.json";
+const OPERA_USER_NATIVE_HOST_MANIFEST: &str =
+    ".config/opera/NativeMessagingHosts/blockuntu_native.json";
+const EDGE_USER_NATIVE_HOST_MANIFEST: &str =
+    ".config/microsoft-edge/NativeMessagingHosts/blockuntu_native.json";
+const VIVALDI_USER_NATIVE_HOST_MANIFEST: &str =
+    ".config/vivaldi/NativeMessagingHosts/blockuntu_native.json";
+const NATIVE_HOST_COMMANDS: [&str; 2] = [
+    "/usr/bin/blockuntu-native",
+    "/usr/local/bin/blockuntu-native",
+];
 const CHROME_SYSTEM_NATIVE_HOST_MANIFEST: &str =
     "/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json";
 const CHROMIUM_SYSTEM_NATIVE_HOST_MANIFEST: &str =
     "/etc/chromium/native-messaging-hosts/blockuntu_native.json";
+const EDGE_SYSTEM_NATIVE_HOST_MANIFEST: &str =
+    "/etc/opt/edge/native-messaging-hosts/blockuntu_native.json";
+const VIVALDI_SYSTEM_NATIVE_HOST_MANIFESTS: [&str; 2] = [
+    "/etc/opt/vivaldi/native-messaging-hosts/blockuntu_native.json",
+    "/etc/vivaldi/native-messaging-hosts/blockuntu_native.json",
+];
 const UNSUPPORTED_BROWSER_RULE_ID: &str = "unsupported-browsers-hard";
 const SYSTEM_UNINSTALL_RECOVERY_PHRASE_FILE: &str = "/etc/blockuntu/uninstall-recovery.txt";
 const TIER1_EDIT_KEY_FILE: &str = "/etc/blockuntu/tier1-edit-key.txt";
@@ -114,6 +191,10 @@ enum GuiError {
     UnsupportedPackageInstallation,
     #[error("uninstall command failed: {0}")]
     UninstallCommand(String),
+    #[error("unsupported extension store URL")]
+    UnsupportedExtensionStoreUrl,
+    #[error("opening an extension store requires xdg-open, but it was not found")]
+    MissingUrlOpener,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,6 +454,25 @@ fn installation_info() -> InstallationInfo {
     installation_info_from_path(Path::new(INSTALLATION_SERIAL_FILE))
 }
 
+#[tauri::command]
+fn open_extension_store(url: String) -> Result<(), GuiError> {
+    if !is_extension_store_url(&url) {
+        return Err(GuiError::UnsupportedExtensionStoreUrl);
+    }
+
+    let opener =
+        command_path(&["/usr/bin/xdg-open", "/bin/xdg-open"]).ok_or(GuiError::MissingUrlOpener)?;
+    Command::new(opener).arg(url).spawn()?;
+    Ok(())
+}
+
+fn is_extension_store_url(url: &str) -> bool {
+    matches!(
+        url,
+        FIREFOX_EXTENSION_STORE_URL | CHROME_EXTENSION_STORE_URL
+    )
+}
+
 fn installation_info_from_path(path: &Path) -> InstallationInfo {
     InstallationInfo {
         installation_serial: load_installation_serial_from_path(path).ok(),
@@ -434,7 +534,28 @@ fn system_health(socket_path: Option<String>) -> SystemHealth {
     let mut checks = Vec::new();
     let enforcement = call_daemon(&socket, "enforcement_status", json!({})).ok();
     let system_firefox_present = system_firefox_available();
-    let chrome_family_present = chrome_family_available();
+    let librewolf_present = librewolf_available();
+    let waterfox_present = waterfox_available();
+    let chrome_present = chrome_available();
+    let chromium_present = chromium_available();
+    let brave_present = brave_available();
+    let opera_present = opera_available();
+    let edge_present = edge_available();
+    let vivaldi_present = vivaldi_available();
+    let chromium_family_present = chrome_present
+        || chromium_present
+        || brave_present
+        || opera_present
+        || edge_present
+        || vivaldi_present;
+    let brave_native_host_setup_error = (!using_dev_socket && brave_present)
+        .then(|| ensure_chromium_user_native_host_manifest(BRAVE_USER_NATIVE_HOST_MANIFEST))
+        .transpose()
+        .err();
+    let vivaldi_native_host_setup_error = (!using_dev_socket && vivaldi_present)
+        .then(|| ensure_chromium_user_native_host_manifest(VIVALDI_USER_NATIVE_HOST_MANIFEST))
+        .transpose()
+        .err();
 
     if enforcement
         .as_ref()
@@ -457,36 +578,205 @@ fn system_health(socket_path: Option<String>) -> SystemHealth {
         if system_firefox_present {
             checks.push(policy_enforcement_check(enforcement));
         }
-        if chrome_family_present {
+        for (present, policy_key, label) in [
+            (librewolf_present, "librewolf", "LibreWolf"),
+            (waterfox_present, "waterfox", "Waterfox"),
+        ] {
+            if present {
+                let policy = enforcement
+                    .get("firefox_family_policies")
+                    .and_then(|policies| policies.get(policy_key))
+                    .unwrap_or(&Value::Null);
+                checks.push(firefox_family_policy_enforcement_check(
+                    enforcement,
+                    policy,
+                    &format!("{policy_key}_policy"),
+                    &format!("{label} policy"),
+                ));
+            }
+        }
+        if chrome_present {
             checks.push(chrome_policy_enforcement_check(enforcement));
+        }
+        for (present, policy_key, label) in [
+            (chromium_present, "chromium", "Chromium"),
+            (brave_present, "brave", "Brave"),
+            (opera_present, "opera", "Opera"),
+            (edge_present, "edge", "Microsoft Edge"),
+            (vivaldi_present, "vivaldi", "Vivaldi"),
+        ] {
+            if present {
+                let policy = enforcement
+                    .get("chromium_policies")
+                    .and_then(|policies| policies.get(policy_key))
+                    .unwrap_or(&Value::Null);
+                checks.push(chromium_policy_enforcement_check(
+                    enforcement,
+                    policy,
+                    &format!("{policy_key}_policy"),
+                    &format!("{label} policy"),
+                ));
+            }
         }
         checks.push(hosts_enforcement_check(enforcement));
     } else if using_dev_socket {
         if system_firefox_present {
             checks.push(policy_file_check(Path::new(DEV_FIREFOX_POLICY_PATH)));
         }
-        if chrome_family_present {
+        for (present, path, key, label) in [
+            (
+                librewolf_present,
+                DEV_LIBREWOLF_POLICY_PATH,
+                "librewolf_policy",
+                "LibreWolf policy",
+            ),
+            (
+                waterfox_present,
+                DEV_WATERFOX_POLICY_PATH,
+                "waterfox_policy",
+                "Waterfox policy",
+            ),
+        ] {
+            if present {
+                checks.push(policy_file_check_named(Path::new(path), key, label));
+            }
+        }
+        if chrome_present {
             checks.push(chrome_policy_file_check(Path::new(DEV_CHROME_POLICY_PATH)));
+        }
+        for (present, path, key, label) in [
+            (
+                chromium_present,
+                DEV_CHROMIUM_POLICY_PATH,
+                "chromium_policy",
+                "Chromium policy",
+            ),
+            (
+                brave_present,
+                DEV_BRAVE_POLICY_PATH,
+                "brave_policy",
+                "Brave policy",
+            ),
+            (
+                opera_present,
+                DEV_OPERA_POLICY_PATH,
+                "opera_policy",
+                "Opera policy",
+            ),
+            (
+                edge_present,
+                DEV_EDGE_POLICY_PATH,
+                "edge_policy",
+                "Microsoft Edge policy",
+            ),
+            (
+                vivaldi_present,
+                DEV_VIVALDI_POLICY_PATH,
+                "vivaldi_policy",
+                "Vivaldi policy",
+            ),
+        ] {
+            if present {
+                checks.push(chromium_policy_file_check(Path::new(path), key, label));
+            }
         }
         checks.push(hosts_file_check(Path::new("/tmp/blockuntu/hosts")));
     } else {
         if system_firefox_present {
             checks.push(policy_file_check(Path::new(DEFAULT_FIREFOX_POLICY_PATH)));
         }
-        if chrome_family_present {
+        for (present, path, key, label) in [
+            (
+                librewolf_present,
+                DEFAULT_LIBREWOLF_POLICY_PATH,
+                "librewolf_policy",
+                "LibreWolf policy",
+            ),
+            (
+                waterfox_present,
+                DEFAULT_WATERFOX_POLICY_PATH,
+                "waterfox_policy",
+                "Waterfox policy",
+            ),
+        ] {
+            if present {
+                checks.push(policy_file_check_named(Path::new(path), key, label));
+            }
+        }
+        if chrome_present {
             checks.push(chrome_policy_file_check(Path::new(
                 DEFAULT_CHROME_POLICY_PATH,
             )));
+        }
+        for (present, path, key, label) in [
+            (
+                chromium_present,
+                DEFAULT_CHROMIUM_POLICY_PATH,
+                "chromium_policy",
+                "Chromium policy",
+            ),
+            (
+                brave_present,
+                DEFAULT_BRAVE_POLICY_PATH,
+                "brave_policy",
+                "Brave policy",
+            ),
+            (
+                opera_present,
+                DEFAULT_OPERA_POLICY_PATH,
+                "opera_policy",
+                "Opera policy",
+            ),
+            (
+                edge_present,
+                DEFAULT_EDGE_POLICY_PATH,
+                "edge_policy",
+                "Microsoft Edge policy",
+            ),
+            (
+                vivaldi_present,
+                DEFAULT_VIVALDI_POLICY_PATH,
+                "vivaldi_policy",
+                "Vivaldi policy",
+            ),
+        ] {
+            if present {
+                checks.push(chromium_policy_file_check(Path::new(path), key, label));
+            }
         }
         checks.push(hosts_file_check(Path::new("/etc/hosts")));
     }
     if system_firefox_present {
         checks.push(native_host_manifest_check());
     }
+    if librewolf_present {
+        checks.push(librewolf_native_host_manifest_check());
+    }
+    if waterfox_present {
+        checks.push(waterfox_native_host_manifest_check());
+    }
     checks.extend(confined_firefox_native_host_checks());
     checks.extend(confined_firefox_policy_checks());
-    if chrome_family_present {
+    if chromium_family_present {
         checks.push(chrome_native_host_manifest_check());
+    }
+    if let Some(error) = brave_native_host_setup_error {
+        checks.push(HealthCheck {
+            key: "brave_native_host_setup".to_string(),
+            label: "Brave Native host setup".to_string(),
+            state: HealthState::Error,
+            detail: format!("Could not install the Brave user Native Messaging manifest: {error}"),
+        });
+    }
+    if let Some(error) = vivaldi_native_host_setup_error {
+        checks.push(HealthCheck {
+            key: "vivaldi_native_host_setup".to_string(),
+            label: "Vivaldi Native host setup".to_string(),
+            state: HealthState::Error,
+            detail: format!(
+                "Could not install the Vivaldi user Native Messaging manifest: {error}"
+            ),
+        });
     }
     checks.push(unsupported_browser_rule_check(&socket));
     if firefox_family_available() {
@@ -497,13 +787,40 @@ fn system_health(socket_path: Option<String>) -> SystemHealth {
             "Firefox extension",
         ));
     }
-    if chrome_family_present {
+    for (present, component, label) in [
+        (
+            librewolf_present,
+            "librewolf_extension",
+            "LibreWolf extension",
+        ),
+        (waterfox_present, "waterfox_extension", "Waterfox extension"),
+    ] {
+        if present {
+            checks.push(browser_extension_runtime_check(
+                &socket, component, component, label,
+            ));
+        }
+    }
+    if chrome_present {
         checks.push(browser_extension_runtime_check(
             &socket,
             "chrome_extension",
             "chrome_extension",
             "Chrome extension",
         ));
+    }
+    for (present, component, label) in [
+        (chromium_present, "chromium_extension", "Chromium extension"),
+        (brave_present, "brave_extension", "Brave extension"),
+        (opera_present, "opera_extension", "Opera extension"),
+        (edge_present, "edge_extension", "Microsoft Edge extension"),
+        (vivaldi_present, "vivaldi_extension", "Vivaldi extension"),
+    ] {
+        if present {
+            checks.push(browser_extension_runtime_check(
+                &socket, component, component, label,
+            ));
+        }
     }
 
     SystemHealth {
@@ -674,12 +991,80 @@ fn system_firefox_available() -> bool {
     command_path(&FIREFOX_COMMANDS).is_some()
 }
 
+fn librewolf_available() -> bool {
+    command_path(&LIBREWOLF_COMMANDS).is_some()
+}
+
+fn waterfox_available() -> bool {
+    command_path(&WATERFOX_COMMANDS).is_some()
+}
+
 fn firefox_family_available() -> bool {
     system_firefox_available() || flatpak_firefox_available() || snap_firefox_available()
 }
 
-fn chrome_family_available() -> bool {
-    command_path(&CHROME_COMMANDS).is_some() || command_path(&CHROMIUM_COMMANDS).is_some()
+fn chrome_available() -> bool {
+    command_path(&CHROME_COMMANDS).is_some()
+}
+
+fn chromium_available() -> bool {
+    command_path(&CHROMIUM_COMMANDS).is_some()
+}
+
+fn brave_available() -> bool {
+    command_path(&BRAVE_COMMANDS).is_some()
+}
+
+fn opera_available() -> bool {
+    command_path(&OPERA_COMMANDS).is_some()
+}
+
+fn edge_available() -> bool {
+    command_path(&EDGE_COMMANDS).is_some()
+}
+
+fn vivaldi_available() -> bool {
+    command_path(&VIVALDI_COMMANDS).is_some()
+}
+
+fn ensure_chromium_user_native_host_manifest(user_manifest: &str) -> std::io::Result<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is not set"))?;
+    let manifest_path = home.join(user_manifest);
+    let native_host = command_path(&NATIVE_HOST_COMMANDS).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "BlocKuntu native host is not installed",
+        )
+    })?;
+    let manifest = format!(
+        concat!(
+            "{{\n",
+            "  \"name\": \"blockuntu_native\",\n",
+            "  \"description\": \"BlocKuntu Chromium-family Native Messaging bridge\",\n",
+            "  \"path\": \"{}\",\n",
+            "  \"type\": \"stdio\",\n",
+            "  \"allowed_origins\": [\"chrome-extension://{}/\"]\n",
+            "}}\n"
+        ),
+        native_host.display(),
+        CHROME_EXTENSION_ID,
+    );
+
+    if fs::read_to_string(&manifest_path).ok().as_deref() == Some(manifest.as_str()) {
+        return Ok(());
+    }
+
+    let parent = manifest_path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Chromium-family Native Messaging manifest has no parent directory",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    fs::write(&manifest_path, manifest)?;
+    fs::set_permissions(manifest_path, fs::Permissions::from_mode(0o644))
 }
 
 fn flatpak_firefox_available() -> bool {
@@ -821,12 +1206,16 @@ fn systemd_check(unit: &str) -> HealthCheck {
 }
 
 fn policy_file_check(path: &Path) -> HealthCheck {
+    policy_file_check_named(path, "firefox_policy", "Firefox policy")
+}
+
+fn policy_file_check_named(path: &Path, key: &str, label: &str) -> HealthCheck {
     match fs::read_to_string(path) {
         Ok(contents) => {
             let valid_json = serde_json::from_str::<Value>(&contents).is_ok();
             HealthCheck {
-                key: "firefox_policy".to_string(),
-                label: "Firefox policy".to_string(),
+                key: key.to_string(),
+                label: label.to_string(),
                 state: if valid_json {
                     HealthState::Ok
                 } else {
@@ -836,8 +1225,8 @@ fn policy_file_check(path: &Path) -> HealthCheck {
             }
         }
         Err(err) => HealthCheck {
-            key: "firefox_policy".to_string(),
-            label: "Firefox policy".to_string(),
+            key: key.to_string(),
+            label: label.to_string(),
             state: HealthState::Warn,
             detail: format!("{}: {err}", path.display()),
         },
@@ -845,12 +1234,16 @@ fn policy_file_check(path: &Path) -> HealthCheck {
 }
 
 fn chrome_policy_file_check(path: &Path) -> HealthCheck {
+    chromium_policy_file_check(path, "chrome_policy", "Chrome policy")
+}
+
+fn chromium_policy_file_check(path: &Path, key: &str, label: &str) -> HealthCheck {
     match fs::read_to_string(path) {
         Ok(contents) => {
             let valid_json = serde_json::from_str::<Value>(&contents).is_ok();
             HealthCheck {
-                key: "chrome_policy".to_string(),
-                label: "Chrome policy".to_string(),
+                key: key.to_string(),
+                label: label.to_string(),
                 state: if valid_json {
                     HealthState::Ok
                 } else {
@@ -860,8 +1253,8 @@ fn chrome_policy_file_check(path: &Path) -> HealthCheck {
             }
         }
         Err(err) => HealthCheck {
-            key: "chrome_policy".to_string(),
-            label: "Chrome policy".to_string(),
+            key: key.to_string(),
+            label: label.to_string(),
             state: HealthState::Warn,
             detail: format!("{}: {err}", path.display()),
         },
@@ -913,12 +1306,25 @@ fn enforcement_mode_check(status: &Value) -> HealthCheck {
 }
 
 fn policy_enforcement_check(status: &Value) -> HealthCheck {
+    firefox_family_policy_enforcement_check(
+        status,
+        status.get("firefox_policy").unwrap_or(&Value::Null),
+        "firefox_policy",
+        "Firefox policy",
+    )
+}
+
+fn firefox_family_policy_enforcement_check(
+    status: &Value,
+    policy: &Value,
+    key: &str,
+    label: &str,
+) -> HealthCheck {
     let active = status
         .get("enforcement_state")
         .and_then(Value::as_str)
         .unwrap_or("active")
         == "active";
-    let policy = status.get("firefox_policy").unwrap_or(&Value::Null);
     let managed = policy
         .get("managed")
         .and_then(Value::as_bool)
@@ -943,20 +1349,33 @@ fn policy_enforcement_check(status: &Value) -> HealthCheck {
     };
 
     HealthCheck {
-        key: "firefox_policy".to_string(),
-        label: "Firefox policy".to_string(),
+        key: key.to_string(),
+        label: label.to_string(),
         state,
         detail: format!("{path}: {detail}"),
     }
 }
 
 fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
+    chromium_policy_enforcement_check(
+        status,
+        status.get("chrome_policy").unwrap_or(&Value::Null),
+        "chrome_policy",
+        "Chrome policy",
+    )
+}
+
+fn chromium_policy_enforcement_check(
+    status: &Value,
+    policy: &Value,
+    key: &str,
+    label: &str,
+) -> HealthCheck {
     let active = status
         .get("enforcement_state")
         .and_then(Value::as_str)
         .unwrap_or("active")
         == "active";
-    let policy = status.get("chrome_policy").unwrap_or(&Value::Null);
     let managed = policy
         .get("managed")
         .and_then(Value::as_bool)
@@ -965,13 +1384,28 @@ fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
     let active_after_heartbeat = bool_field(policy, "active_after_heartbeat");
     let compliant = bool_field(policy, "compliant");
     let force_install = bool_field(policy, "force_install_configured");
+    let incognito_mode = string_field(policy, "incognito_mode").unwrap_or("manual_consent");
+    let incognito_configured = policy
+        .get("incognito_mode_configured")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let incognito_unsupported_patterns = policy
+        .get("incognito_unsupported_pattern_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let incognito_url_block_limit_exceeded =
+        bool_field(policy, "incognito_url_block_limit_exceeded");
     let path = string_field(policy, "path").unwrap_or("unknown");
-    let detail = string_field(policy, "detail").unwrap_or("no Chrome policy detail");
+    let detail = string_field(policy, "detail").unwrap_or("no browser policy detail");
     let state = if !active {
         HealthState::Warn
     } else if !managed {
         HealthState::Ok
     } else if deferred && !active_after_heartbeat {
+        HealthState::Warn
+    } else if incognito_url_block_limit_exceeded || !incognito_configured {
+        HealthState::Error
+    } else if incognito_mode == "policy_url_blocking" && incognito_unsupported_patterns > 0 {
         HealthState::Warn
     } else if compliant && force_install {
         HealthState::Ok
@@ -980,8 +1414,8 @@ fn chrome_policy_enforcement_check(status: &Value) -> HealthCheck {
     };
 
     HealthCheck {
-        key: "chrome_policy".to_string(),
-        label: "Chrome policy".to_string(),
+        key: key.to_string(),
+        label: label.to_string(),
         state,
         detail: format!("{path}: {detail}"),
     }
@@ -1018,23 +1452,55 @@ fn hosts_enforcement_check(status: &Value) -> HealthCheck {
 }
 
 fn native_host_manifest_check() -> HealthCheck {
+    firefox_family_native_host_manifest_check(
+        "native_host_manifest",
+        "Firefox Native host",
+        FIREFOX_USER_NATIVE_HOST_MANIFEST,
+        &SYSTEM_FIREFOX_NATIVE_HOST_MANIFESTS,
+    )
+}
+
+fn librewolf_native_host_manifest_check() -> HealthCheck {
+    firefox_family_native_host_manifest_check(
+        "librewolf_native_host_manifest",
+        "LibreWolf Native host",
+        LIBREWOLF_USER_NATIVE_HOST_MANIFEST,
+        &SYSTEM_LIBREWOLF_NATIVE_HOST_MANIFESTS,
+    )
+}
+
+fn waterfox_native_host_manifest_check() -> HealthCheck {
+    firefox_family_native_host_manifest_check(
+        "waterfox_native_host_manifest",
+        "Waterfox Native host",
+        WATERFOX_USER_NATIVE_HOST_MANIFEST,
+        &SYSTEM_WATERFOX_NATIVE_HOST_MANIFESTS,
+    )
+}
+
+fn firefox_family_native_host_manifest_check(
+    key: &str,
+    label: &str,
+    user_manifest_path: &str,
+    system_manifests: &[&str],
+) -> HealthCheck {
     let user_manifest = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|home| home.join(FIREFOX_USER_NATIVE_HOST_MANIFEST));
+        .map(|home| home.join(user_manifest_path));
 
     let candidate = user_manifest
         .filter(|path| path.exists())
         .or_else(|| {
-            SYSTEM_FIREFOX_NATIVE_HOST_MANIFESTS
+            system_manifests
                 .iter()
                 .map(PathBuf::from)
                 .find(|path| path.exists())
         })
-        .unwrap_or_else(|| PathBuf::from(SYSTEM_FIREFOX_NATIVE_HOST_MANIFESTS[0]));
+        .unwrap_or_else(|| PathBuf::from(system_manifests[0]));
 
     firefox_manifest_check(
-        "native_host_manifest",
-        "Firefox Native host",
+        key,
+        label,
         &candidate,
         "Install the system Native Messaging manifest.",
     )
@@ -1264,9 +1730,19 @@ fn chrome_native_host_manifest_check() -> HealthCheck {
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         candidates.push(home.join(CHROME_USER_NATIVE_HOST_MANIFEST));
         candidates.push(home.join(CHROMIUM_USER_NATIVE_HOST_MANIFEST));
+        candidates.push(home.join(BRAVE_USER_NATIVE_HOST_MANIFEST));
+        candidates.push(home.join(OPERA_USER_NATIVE_HOST_MANIFEST));
+        candidates.push(home.join(EDGE_USER_NATIVE_HOST_MANIFEST));
+        candidates.push(home.join(VIVALDI_USER_NATIVE_HOST_MANIFEST));
     }
     candidates.push(PathBuf::from(CHROME_SYSTEM_NATIVE_HOST_MANIFEST));
     candidates.push(PathBuf::from(CHROMIUM_SYSTEM_NATIVE_HOST_MANIFEST));
+    candidates.push(PathBuf::from(EDGE_SYSTEM_NATIVE_HOST_MANIFEST));
+    candidates.extend(
+        VIVALDI_SYSTEM_NATIVE_HOST_MANIFESTS
+            .iter()
+            .map(PathBuf::from),
+    );
 
     let candidate = candidates
         .iter()
@@ -1291,8 +1767,8 @@ fn chrome_native_host_manifest_check() -> HealthCheck {
                 })
                 .unwrap_or(false);
             HealthCheck {
-                key: "chrome_native_host_manifest".to_string(),
-                label: "Chrome Native host".to_string(),
+                key: "chromium_native_host_manifest".to_string(),
+                label: "Chromium-family Native host".to_string(),
                 state: if valid_json && origin_allowed {
                     HealthState::Ok
                 } else {
@@ -1302,8 +1778,8 @@ fn chrome_native_host_manifest_check() -> HealthCheck {
             }
         }
         Err(err) => HealthCheck {
-            key: "chrome_native_host_manifest".to_string(),
-            label: "Chrome Native host".to_string(),
+            key: "chromium_native_host_manifest".to_string(),
+            label: "Chromium-family Native host".to_string(),
             state: HealthState::Warn,
             detail: format!("{}: {err}", candidate.display()),
         },
@@ -1733,6 +2209,7 @@ pub fn run() {
             evaluate_url,
             request_unlock,
             installation_info,
+            open_extension_store,
             recovery_credentials,
             uninstall_blockuntu,
             system_health
@@ -1842,5 +2319,12 @@ mod tests {
                 "/usr/lib64/mozilla/native-messaging-hosts/blockuntu_native.json",
             ]
         );
+    }
+
+    #[test]
+    fn extension_store_opener_accepts_only_the_official_store_urls() {
+        assert!(is_extension_store_url(FIREFOX_EXTENSION_STORE_URL));
+        assert!(is_extension_store_url(CHROME_EXTENSION_STORE_URL));
+        assert!(!is_extension_store_url("https://example.com/"));
     }
 }

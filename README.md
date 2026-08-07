@@ -4,8 +4,8 @@
 # BlocKuntu
 
 BlocKuntu is a local focus blocker for Debian and Ubuntu. A privileged daemon  
-enforces website and application rules, while Firefox and Chrome browser  
-extensions check browser navigation through the same policy engine. A Fedora
+enforces website and application rules, while Firefox, LibreWolf, Waterfox, Chrome, Chromium, Brave,
+Opera, Microsoft Edge, and Vivaldi extensions check browser navigation through the same policy engine. A Fedora
 RPM build path is available for clean-VM validation; it is not yet a validated
 release path.
 
@@ -40,10 +40,12 @@ sudo usermod -aG blockuntu "$USER"
 ```
 
 Open BlocKuntu after signing in, keep the recovery credentials displayed in the
-welcome modal somewhere safe, and install the matching Firefox extension from
-AMO and Chrome extension from the Chrome Web Store. After each first verified
-extension heartbeat, BlocKuntu locks that same store-installed extension through
-browser policy. Firefox Snap and Flatpak users can run
+welcome modal somewhere safe, and install the Firefox extension from AMO in Firefox, LibreWolf, or Waterfox,
+or the Chrome Web Store extension in Chrome, Chromium, Brave, Opera, Microsoft Edge, or Vivaldi.
+In Opera and Edge, first turn on **Allow extensions from other stores**; in Vivaldi, enable Web Store
+under **Settings → Privacy and Security → Google Extensions**. After each first
+verified extension heartbeat, BlocKuntu locks that same store-installed
+extension through browser policy. Firefox Snap and Flatpak users can run
 `blockuntu-setup-confined-firefox` as their desktop user if automatic setup does
 not complete.
 

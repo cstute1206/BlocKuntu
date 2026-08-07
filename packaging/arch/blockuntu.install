@@ -139,7 +139,12 @@ remove_browser_policies() {
   for policy in \
     /etc/firefox/policies/policies.json \
     /etc/opt/chrome/policies/managed/blockuntu.json \
-    /etc/chromium/policies/managed/blockuntu.json; do
+    /etc/chromium/policies/managed/blockuntu.json \
+    /etc/brave/policies/managed/blockuntu.json \
+    /etc/opt/opera/policies/managed/blockuntu.json \
+    /etc/opt/edge/policies/managed/blockuntu.json \
+    /etc/vivaldi/policies/managed/blockuntu.json \
+    /etc/opt/vivaldi/policies/managed/blockuntu.json; do
     if [ -f "${policy}" ] && grep -qi 'blockuntu' "${policy}" 2>/dev/null; then
       rm -f "${policy}"
     fi
@@ -151,6 +156,16 @@ remove_browser_policies() {
   remove_empty_dir /etc/opt/chrome/policies
   remove_empty_dir /etc/chromium/policies/managed
   remove_empty_dir /etc/chromium/policies
+  remove_empty_dir /etc/brave/policies/managed
+  remove_empty_dir /etc/brave/policies
+  remove_empty_dir /etc/opt/opera/policies/managed
+  remove_empty_dir /etc/opt/opera/policies
+  remove_empty_dir /etc/opt/edge/policies/managed
+  remove_empty_dir /etc/opt/edge/policies
+  remove_empty_dir /etc/vivaldi/policies/managed
+  remove_empty_dir /etc/vivaldi/policies
+  remove_empty_dir /etc/opt/vivaldi/policies/managed
+  remove_empty_dir /etc/opt/vivaldi/policies
 }
 
 authorize_settings_uninstall() {

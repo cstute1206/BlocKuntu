@@ -209,6 +209,7 @@ export interface FirefoxPolicyStatus {
 }
 
 export interface ChromePolicyStatus {
+  browser: string;
   path: string;
   extension_id: string;
   update_url: string;
@@ -219,6 +220,11 @@ export interface ChromePolicyStatus {
   deferred_until_heartbeat?: boolean;
   active_after_heartbeat?: boolean;
   force_install_configured: boolean;
+  incognito_mode?: ChromiumIncognitoMode;
+  incognito_mode_configured?: boolean;
+  incognito_url_block_count?: number;
+  incognito_unsupported_pattern_count?: number;
+  incognito_url_block_limit_exceeded?: boolean;
   detail: string;
 }
 
@@ -237,7 +243,12 @@ export interface EnforcementStatus {
   status: string;
   enforcement_state: "active" | "uninstalling";
   firefox_policy: FirefoxPolicyStatus;
+  firefox_family_policies: Record<"librewolf" | "waterfox", FirefoxPolicyStatus>;
   chrome_policy: ChromePolicyStatus;
+  chromium_policies: Record<
+    "chromium" | "brave" | "opera" | "edge" | "vivaldi",
+    ChromePolicyStatus
+  >;
   hosts_file: HostsFileStatus;
 }
 
@@ -267,10 +278,38 @@ export interface Tier1EditStatus {
   expires_at?: string | null;
   remaining_seconds?: number | null;
   credential_configured?: boolean;
+  protected_access_mode?: ProtectedAccessMode;
+  protected_access_open?: boolean;
+  protected_access_label?: string;
+  unsupported_browser_block_mode?: ProtectedAccessMode;
+  unsupported_browser_block_active?: boolean;
+  chromium_incognito_mode?: ChromiumIncognitoMode;
+  chromium_incognito_effective_mode?: ChromiumIncognitoMode;
+  chromium_incognito_disable_scope?: ChromiumIncognitoDisableScope;
+  chromium_incognito_private_browsing_disabled?: boolean;
+  chromium_incognito_change_access_mode?: ProtectedAccessMode;
+  chromium_incognito_settings_change_allowed?: boolean;
+  chromium_incognito_url_block_count?: number;
+  chromium_incognito_unsupported_pattern_count?: number;
+  chromium_incognito_url_block_limit_exceeded?: boolean;
   operator_window_restriction_enabled?: boolean;
   operator_window_open?: boolean;
   operator_window_label?: string;
 }
+
+export type ProtectedAccessMode =
+  | "sunday"
+  | "no_active_schedule_or_detox"
+  | "all_time";
+
+export type ChromiumIncognitoMode =
+  | "disabled"
+  | "manual_consent"
+  | "policy_url_blocking";
+
+export type ChromiumIncognitoDisableScope =
+  | "all_time"
+  | "active_schedule_or_detox";
 
 export interface InstallationInfo {
   installation_serial: string | null;

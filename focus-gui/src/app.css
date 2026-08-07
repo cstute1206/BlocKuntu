@@ -796,6 +796,22 @@ button:disabled {
   padding-right: 4px;
 }
 
+.detected-app-controls {
+  align-items: end;
+  display: flex;
+  gap: 14px;
+}
+
+.detected-app-search {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+}
+
+.detected-app-search input {
+  min-width: 0;
+}
+
 .detected-app-item {
   background: #f5f7f5;
   border: 1px solid #dfe6e1;
@@ -850,6 +866,10 @@ button:disabled {
 .table-wrap {
   margin-top: 14px;
   overflow-x: auto;
+}
+
+.table-wrap + .button-row {
+  padding-top: 14px;
 }
 
 table {
@@ -1363,6 +1383,45 @@ pre {
   font-size: 0.84rem;
   line-height: 1.45;
   margin-top: 4px;
+}
+
+.settings-subsection {
+  border-top: 1px solid #dce4df;
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 20px;
+}
+
+.settings-subsection-header h4 {
+  color: #29332f;
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.settings-subsection-header p,
+.settings-subsection .settings-note {
+  color: #63716b;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  margin: 4px 0 0;
+}
+
+.settings-subsection .log-file-note,
+.settings-subsection .log-command-list {
+  margin-top: 0;
+}
+
+.protected-changes-stack {
+  display: grid;
+  gap: 14px;
+  padding: 14px 0;
+}
+
+.protected-changes-stack .admin-action-form,
+.protected-changes-stack .settings-action-row,
+.protected-changes-stack .result-text {
+  margin-top: 0;
 }
 
 .panel-actions {

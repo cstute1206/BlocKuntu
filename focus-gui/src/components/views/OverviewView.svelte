@@ -9,6 +9,7 @@
     Wrench,
     XCircle
   } from "@lucide/svelte";
+  import { openExtensionStore } from "../../lib/api";
   import type {
     ConfigSnapshot,
     DaemonStatus,
@@ -61,6 +62,7 @@
   let canUnlock = $derived(
     Boolean(unlockTarget.trim() && unlockReasonLetterCount >= 20 && !unlocking)
   );
+  let extensionStoreError = $state<string | null>(null);
 
   let hardRules = $derived(config?.rules.filter((rule) => rule.tier === "hard") ?? []);
   let controlledRules = $derived(
@@ -93,6 +95,17 @@
     event.preventDefault();
     void onRunUnlock();
   }
+
+  async function openExtensionStoreLink(event: MouseEvent, url: string): Promise<void> {
+    event.preventDefault();
+    extensionStoreError = null;
+
+    try {
+      await openExtensionStore(url);
+    } catch {
+      extensionStoreError = "Unable to open the extension store in your default browser.";
+    }
+  }
 </script>
 
 {#if showFirstRunOverview}
@@ -120,8 +133,26 @@
           <li><strong>Tier 2</strong> blocks strictly during an attached schedule or Detox and cannot be manually unlocked.</li>
           <li><strong>Tier 3</strong> is also active during a schedule or Detox, but retains its daily allowance and manual unlock.</li>
           <li>Tier 2 and Tier 3 lists need a schedule or a Detox session to become active.</li>
-          <li>Install the Firefox and/or Chrome extension for browser blocking.</li>
+          <li>
+            Install the browser extension for browser blocking:
+            <a
+              href="https://addons.mozilla.org/en-US/firefox/addon/blockuntu/"
+              target="_blank"
+              rel="noreferrer"
+              onclick={(event) => void openExtensionStoreLink(event, "https://addons.mozilla.org/en-US/firefox/addon/blockuntu/")}
+            >Firefox Add-ons</a>
+            or
+            <a
+              href="https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc"
+              target="_blank"
+              rel="noreferrer"
+              onclick={(event) => void openExtensionStoreLink(event, "https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc")}
+            >Chrome Web Store</a> for Chrome, Chromium, Brave, Opera, Microsoft Edge, or Vivaldi. In Opera and Edge, first turn on “Allow extensions from other stores”; in Vivaldi, enable Web Store in Settings → Privacy and Security → Google Extensions. The Firefox Add-ons extension also supports LibreWolf and Waterfox.
+          </li>
         </ul>
+        {#if extensionStoreError}
+          <p class="danger-text">{extensionStoreError}</p>
+        {/if}
         <div class="onboarding-credentials">
           {#if uninstallPhrase && tier1EditKey}
             <p><strong>Recovery uninstall phrase</strong> — store this somewhere secure.</p>

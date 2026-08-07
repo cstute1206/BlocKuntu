@@ -196,7 +196,9 @@ export function normalizeAppRuleDraft(rule: AppRule): AppRule {
     enabled: true,
     allowance_id:
       rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
-    matchers: rule.matchers.map(normalizeAppMatcherDraft),
+    matchers: rule.matchers
+      .map(normalizeAppMatcherDraft)
+      .filter((matcher) => matcher.value.length > 0),
     schedule_ids: [...rule.schedule_ids]
   };
 }

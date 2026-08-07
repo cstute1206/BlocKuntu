@@ -6,21 +6,39 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
 RUNTIME_DIR="/tmp/blockuntu"
 INSTALL_DIR="${HOME}/.local/share/blockuntu"
 FIREFOX_MANIFEST_DIR="${HOME}/.mozilla/native-messaging-hosts"
+LIBREWOLF_MANIFEST_DIR="${HOME}/.librewolf/native-messaging-hosts"
+WATERFOX_MANIFEST_DIR="${HOME}/.waterfox/native-messaging-hosts"
 CHROME_EXTENSION_ID="${CHROME_EXTENSION_ID:-opfljaancedgklbpnbpjfhdbbhbfpnoc}"
 CHROME_MANIFEST_DIR="${HOME}/.config/google-chrome/NativeMessagingHosts"
 CHROMIUM_MANIFEST_DIR="${HOME}/.config/chromium/NativeMessagingHosts"
+BRAVE_MANIFEST_DIR="${HOME}/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+OPERA_MANIFEST_DIR="${HOME}/.config/opera/NativeMessagingHosts"
+EDGE_MANIFEST_DIR="${HOME}/.config/microsoft-edge/NativeMessagingHosts"
+VIVALDI_MANIFEST_DIR="${HOME}/.config/vivaldi/NativeMessagingHosts"
 WRAPPER_PATH="${INSTALL_DIR}/blockuntu-native-dev"
 MANIFEST_PATH="${FIREFOX_MANIFEST_DIR}/blockuntu_native.json"
+LIBREWOLF_MANIFEST_PATH="${LIBREWOLF_MANIFEST_DIR}/blockuntu_native.json"
+WATERFOX_MANIFEST_PATH="${WATERFOX_MANIFEST_DIR}/blockuntu_native.json"
 CHROME_MANIFEST_PATH="${CHROME_MANIFEST_DIR}/blockuntu_native.json"
 CHROMIUM_MANIFEST_PATH="${CHROMIUM_MANIFEST_DIR}/blockuntu_native.json"
+BRAVE_MANIFEST_PATH="${BRAVE_MANIFEST_DIR}/blockuntu_native.json"
+OPERA_MANIFEST_PATH="${OPERA_MANIFEST_DIR}/blockuntu_native.json"
+EDGE_MANIFEST_PATH="${EDGE_MANIFEST_DIR}/blockuntu_native.json"
+VIVALDI_MANIFEST_PATH="${VIVALDI_MANIFEST_DIR}/blockuntu_native.json"
 NATIVE_BIN="${REPO_ROOT}/native-host/target/debug/blockuntu-native"
 
 mkdir -p \
   "${RUNTIME_DIR}" \
   "${INSTALL_DIR}" \
   "${FIREFOX_MANIFEST_DIR}" \
+  "${LIBREWOLF_MANIFEST_DIR}" \
+  "${WATERFOX_MANIFEST_DIR}" \
   "${CHROME_MANIFEST_DIR}" \
-  "${CHROMIUM_MANIFEST_DIR}"
+  "${CHROMIUM_MANIFEST_DIR}" \
+  "${BRAVE_MANIFEST_DIR}" \
+  "${OPERA_MANIFEST_DIR}" \
+  "${EDGE_MANIFEST_DIR}" \
+  "${VIVALDI_MANIFEST_DIR}"
 
 echo "[native-host-dev] building native host"
 cargo build --manifest-path "${REPO_ROOT}/native-host/Cargo.toml"
@@ -33,7 +51,11 @@ exec "${NATIVE_BIN}" \\
 EOF
 chmod 0755 "${WRAPPER_PATH}"
 
-cat > "${MANIFEST_PATH}" <<EOF
+for firefox_manifest in \
+  "${MANIFEST_PATH}" \
+  "${LIBREWOLF_MANIFEST_PATH}" \
+  "${WATERFOX_MANIFEST_PATH}"; do
+cat > "${firefox_manifest}" <<EOF
 {
   "name": "blockuntu_native",
   "description": "BlocKuntu development Native Messaging bridge",
@@ -42,8 +64,15 @@ cat > "${MANIFEST_PATH}" <<EOF
   "allowed_extensions": ["blockuntu@example.local", "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}"]
 }
 EOF
+done
 
-for chrome_manifest in "${CHROME_MANIFEST_PATH}" "${CHROMIUM_MANIFEST_PATH}"; do
+for chrome_manifest in \
+  "${CHROME_MANIFEST_PATH}" \
+  "${CHROMIUM_MANIFEST_PATH}" \
+  "${BRAVE_MANIFEST_PATH}" \
+  "${OPERA_MANIFEST_PATH}" \
+  "${EDGE_MANIFEST_PATH}" \
+  "${VIVALDI_MANIFEST_PATH}"; do
 cat > "${chrome_manifest}" <<EOF
 {
   "name": "blockuntu_native",
@@ -56,7 +85,13 @@ EOF
 done
 
 echo "[native-host-dev] installed ${MANIFEST_PATH}"
+echo "[native-host-dev] installed ${LIBREWOLF_MANIFEST_PATH}"
+echo "[native-host-dev] installed ${WATERFOX_MANIFEST_PATH}"
 echo "[native-host-dev] installed ${CHROME_MANIFEST_PATH}"
 echo "[native-host-dev] installed ${CHROMIUM_MANIFEST_PATH}"
+echo "[native-host-dev] installed ${BRAVE_MANIFEST_PATH}"
+echo "[native-host-dev] installed ${OPERA_MANIFEST_PATH}"
+echo "[native-host-dev] installed ${EDGE_MANIFEST_PATH}"
+echo "[native-host-dev] installed ${VIVALDI_MANIFEST_PATH}"
 echo "[native-host-dev] wrapper uses socket ${RUNTIME_DIR}/blockuntud.sock"
-echo "[native-host-dev] restart Firefox/Chrome after installing or updating these manifests"
+echo "[native-host-dev] restart Firefox and Chromium-family browsers after installing or updating these manifests"

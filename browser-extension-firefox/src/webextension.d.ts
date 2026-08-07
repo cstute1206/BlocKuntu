@@ -17,11 +17,16 @@ declare namespace BlockuntuWebExtension {
     version: string;
   }
 
+  interface BrowserInfo {
+    name: string;
+  }
+
   interface RuntimeApi {
     id: string;
     lastError?: { message?: string };
     connectNative(name: string): RuntimePort;
     getManifest(): RuntimeManifest;
+    getBrowserInfo(): Promise<BrowserInfo>;
     getURL(path: string): string;
   }
 

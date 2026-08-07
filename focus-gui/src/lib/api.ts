@@ -20,6 +20,9 @@ import type {
   Schedule,
   SystemHealth,
   Tier1EditStatus,
+  ChromiumIncognitoDisableScope,
+  ChromiumIncognitoMode,
+  ProtectedAccessMode,
   UninstallResult,
   UnlockResult
 } from "./types";
@@ -225,12 +228,56 @@ export function hideRecoveryCredentials(socketPath?: string): Promise<{ hidden: 
   return daemonRpc("hide_recovery_credentials", {}, socketPath) as Promise<{ hidden: boolean }>;
 }
 
-export function setOperatorWindowRestriction(
-  enabled: boolean,
+export function setProtectedAccessMode(
+  mode: ProtectedAccessMode,
   socketPath?: string
-): Promise<{ enabled: boolean }> {
-  return daemonRpc("set_operator_window_restriction", { enabled }, socketPath) as Promise<{
-    enabled: boolean;
+): Promise<{ mode: ProtectedAccessMode }> {
+  return daemonRpc("set_protected_access_mode", { mode }, socketPath) as Promise<{
+    mode: ProtectedAccessMode;
+  }>;
+}
+
+export function setUnsupportedBrowserBlockMode(
+  mode: ProtectedAccessMode,
+  socketPath?: string
+): Promise<{ mode: ProtectedAccessMode; active: boolean }> {
+  return daemonRpc("set_unsupported_browser_block_mode", { mode }, socketPath) as Promise<{
+    mode: ProtectedAccessMode;
+    active: boolean;
+  }>;
+}
+
+export function setChromiumIncognitoMode(
+  mode: ChromiumIncognitoMode,
+  socketPath?: string
+): Promise<{
+  mode: ChromiumIncognitoMode;
+  url_block_count: number;
+  unsupported_pattern_count: number;
+}> {
+  return daemonRpc("set_chromium_incognito_mode", { mode }, socketPath) as Promise<{
+    mode: ChromiumIncognitoMode;
+    url_block_count: number;
+    unsupported_pattern_count: number;
+  }>;
+}
+
+export function setChromiumIncognitoDisableScope(
+  scope: ChromiumIncognitoDisableScope,
+  socketPath?: string
+): Promise<{ scope: ChromiumIncognitoDisableScope; private_browsing_disabled: boolean }> {
+  return daemonRpc("set_chromium_incognito_disable_scope", { scope }, socketPath) as Promise<{
+    scope: ChromiumIncognitoDisableScope;
+    private_browsing_disabled: boolean;
+  }>;
+}
+
+export function setChromiumIncognitoChangeAccessMode(
+  mode: ProtectedAccessMode,
+  socketPath?: string
+): Promise<{ mode: ProtectedAccessMode }> {
+  return daemonRpc("set_chromium_incognito_change_access_mode", { mode }, socketPath) as Promise<{
+    mode: ProtectedAccessMode;
   }>;
 }
 
@@ -255,6 +302,10 @@ export function unlockTier1Edit(
 
 export function installationInfo(): Promise<InstallationInfo> {
   return invoke("installation_info");
+}
+
+export function openExtensionStore(url: string): Promise<void> {
+  return invoke("open_extension_store", { url });
 }
 
 export function uninstallBlockuntu(phrase: string): Promise<UninstallResult> {

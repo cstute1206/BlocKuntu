@@ -18,10 +18,70 @@ pub struct ProcessInfo {
     pub window_titles: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SupportedBrowser {
     Firefox,
+    LibreWolf,
+    Waterfox,
     Chrome,
+    Chromium,
+    Brave,
+    Opera,
+    Edge,
+    Vivaldi,
+}
+
+impl SupportedBrowser {
+    pub const MANAGED: [Self; 9] = [
+        Self::Firefox,
+        Self::LibreWolf,
+        Self::Waterfox,
+        Self::Chrome,
+        Self::Chromium,
+        Self::Brave,
+        Self::Opera,
+        Self::Edge,
+        Self::Vivaldi,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Firefox => "firefox",
+            Self::LibreWolf => "librewolf",
+            Self::Waterfox => "waterfox",
+            Self::Chrome => "chrome",
+            Self::Chromium => "chromium",
+            Self::Brave => "brave",
+            Self::Opera => "opera",
+            Self::Edge => "edge",
+            Self::Vivaldi => "vivaldi",
+        }
+    }
+
+    pub fn extension_component(self) -> &'static str {
+        match self {
+            Self::Firefox => "firefox_extension",
+            Self::LibreWolf => "librewolf_extension",
+            Self::Waterfox => "waterfox_extension",
+            Self::Chrome => "chrome_extension",
+            Self::Chromium => "chromium_extension",
+            Self::Brave => "brave_extension",
+            Self::Opera => "opera_extension",
+            Self::Edge => "edge_extension",
+            Self::Vivaldi => "vivaldi_extension",
+        }
+    }
+
+    pub fn is_chromium_based(self) -> bool {
+        matches!(
+            self,
+            Self::Chrome | Self::Chromium | Self::Brave | Self::Opera | Self::Edge | Self::Vivaldi
+        )
+    }
+
+    pub fn is_firefox_based(self) -> bool {
+        matches!(self, Self::Firefox | Self::LibreWolf | Self::Waterfox)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,6 +271,33 @@ pub fn supported_browser_for_process(process: &ProcessIdentity) -> Option<Suppor
         matches_normalized(
             value,
             &[
+                "librewolf",
+                "librewolf.desktop",
+                "io.gitlab.librewolf-community.desktop",
+            ],
+        )
+    }) {
+        return Some(SupportedBrowser::LibreWolf);
+    }
+
+    if names.iter().flatten().any(|value| {
+        matches_normalized(
+            value,
+            &[
+                "waterfox",
+                "waterfox-bin",
+                "waterfox.desktop",
+                "net.waterfox.waterfox.desktop",
+            ],
+        )
+    }) {
+        return Some(SupportedBrowser::Waterfox);
+    }
+
+    if names.iter().flatten().any(|value| {
+        matches_normalized(
+            value,
+            &[
                 "chrome",
                 "google-chrome",
                 "google-chrome-stable",
@@ -222,6 +309,82 @@ pub fn supported_browser_for_process(process: &ProcessIdentity) -> Option<Suppor
         )
     }) {
         return Some(SupportedBrowser::Chrome);
+    }
+
+    if names.iter().flatten().any(|value| {
+        matches_normalized(
+            value,
+            &[
+                "chromium",
+                "chromium-browser",
+                "chromium.desktop",
+                "org.chromium.chromium.desktop",
+            ],
+        )
+    }) {
+        return Some(SupportedBrowser::Chromium);
+    }
+
+    if names.iter().flatten().any(|value| {
+        matches_normalized(
+            value,
+            &[
+                "brave",
+                "brave-browser",
+                "brave-browser.desktop",
+                "com.brave.browser.desktop",
+            ],
+        )
+    }) {
+        return Some(SupportedBrowser::Brave);
+    }
+
+    if names.iter().flatten().any(|value| {
+        matches_normalized(
+            value,
+            &[
+                "opera",
+                "opera-stable",
+                "opera.desktop",
+                "com.opera.opera.desktop",
+            ],
+        )
+    }) {
+        return Some(SupportedBrowser::Opera);
+    }
+
+    if names.iter().flatten().any(|value| {
+        matches_normalized(
+            value,
+            &[
+                "microsoft-edge",
+                "microsoft-edge-stable",
+                "msedge",
+                "msedge-beta",
+                "msedge-dev",
+                "msedge-canary",
+                "microsoft-edge.desktop",
+                "com.microsoft.edge.desktop",
+            ],
+        )
+    }) {
+        return Some(SupportedBrowser::Edge);
+    }
+
+    if names.iter().flatten().any(|value| {
+        matches_normalized(
+            value,
+            &[
+                "vivaldi",
+                "vivaldi-stable",
+                "vivaldi-bin",
+                "vivaldi.desktop",
+                "vivaldi-stable.desktop",
+                "com.vivaldi.vivaldi.desktop",
+            ],
+        )
+    }) {
+        return Some(SupportedBrowser::Vivaldi);
     }
 
     None

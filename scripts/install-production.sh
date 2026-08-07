@@ -29,9 +29,9 @@ Options:
   --user USER         Desktop user to add to the blockuntu socket group.
   -h, --help          Show this help.
 
-Firefox and Chrome policy repair is deferred until each extension's first
-verified heartbeat. This script installs the Native Messaging manifests
-required by both browsers. Firefox Flatpak uses a per-user systemconfig policy
+Firefox and Chromium-family policy repair is deferred until each extension's
+first verified heartbeat. This script installs the Native Messaging manifests
+required by Firefox and Chromium-family browsers. Firefox Flatpak uses a per-user systemconfig policy
 because it cannot read the host /etc/firefox policy path; it is written after
 the first verified Firefox heartbeat.
 USAGE
@@ -249,11 +249,11 @@ warn_browser_prerequisites() {
   if flatpak_firefox_installed; then
     log "Firefox Flatpak detected; confined Firefox native-host setup will be installed for ${TARGET_USER}"
   fi
-  if ! has_cmd firefox; then
-    log "warning: firefox was not found on PATH; install a system Firefox package before using the Firefox extension"
+  if ! has_cmd firefox && ! has_cmd librewolf && ! has_cmd waterfox; then
+    log "warning: no Firefox, LibreWolf, or Waterfox binary was found on PATH; install a native Firefox-family package before using the AMO extension"
   fi
-  if ! has_cmd google-chrome && ! has_cmd google-chrome-stable && ! has_cmd chromium && ! has_cmd chromium-browser; then
-    log "warning: no Chrome/Chromium binary was found on PATH; ignore this if you only use Firefox"
+  if ! has_cmd google-chrome && ! has_cmd google-chrome-stable && ! has_cmd chromium && ! has_cmd chromium-browser && ! has_cmd brave-browser && ! has_cmd opera && ! has_cmd microsoft-edge && ! has_cmd microsoft-edge-stable && ! has_cmd vivaldi && ! has_cmd vivaldi-stable; then
+    log "warning: no Chrome, Chromium, Brave, Opera, Microsoft Edge, or Vivaldi binary was found on PATH; ignore this if you only use Firefox-family browsers"
   fi
 }
 
@@ -391,10 +391,20 @@ fi
 log "installing Native Messaging manifests"
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.json \
   /usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json
+sudo install -Dm644 packaging/native-messaging/blockuntu_native.json \
+  /usr/lib/librewolf/native-messaging-hosts/blockuntu_native.json
+sudo install -Dm644 packaging/native-messaging/blockuntu_native.json \
+  /usr/lib/waterfox/native-messaging-hosts/blockuntu_native.json
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
   /etc/opt/chrome/native-messaging-hosts/blockuntu_native.json
 sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
   /etc/chromium/native-messaging-hosts/blockuntu_native.json
+sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
+  /etc/opt/edge/native-messaging-hosts/blockuntu_native.json
+sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
+  /etc/opt/vivaldi/native-messaging-hosts/blockuntu_native.json
+sudo install -Dm644 packaging/native-messaging/blockuntu_native.chrome.json \
+  /etc/vivaldi/native-messaging-hosts/blockuntu_native.json
 
 if [[ "${INSTALL_CONFINED_FIREFOX}" -eq 1 ]]; then
   "${REPO_ROOT}/scripts/setup-confined-firefox-native-host.sh" \
@@ -512,7 +522,8 @@ BlocKuntu installation complete.
 
 Important next steps:
   1. Log out and back in so ${TARGET_USER} receives the blockuntu group.
-  2. Install and enable the BlocKuntu Firefox and/or Chrome extension manually.
+  2. Install and enable the BlocKuntu Firefox extension in Firefox, LibreWolf, or Waterfox,
+     or the Chrome Web Store extension in Chrome, Chromium, Brave, Opera, Microsoft Edge, or Vivaldi manually.
   3. Restart the browser after installing the extension.
   4. Start the GUI from the app launcher or run: blockuntu-gui
 
@@ -523,7 +534,7 @@ icon is not visible.
 Browser policy repair is deferred until the first extension heartbeat in:
   /etc/systemd/system/blockuntu.service.d/90-defer-browser-policy.conf
 
-No system Firefox, Firefox Snap, or Chrome policy file is created until the
+No system Firefox, LibreWolf, Waterfox, Firefox Snap, Chrome, Chromium, Brave, Opera, Microsoft Edge, or Vivaldi policy file is created until the
 matching browser extension sends its first heartbeat. Firefox Flatpak uses a
 per-user systemconfig policy that is written by the confined Firefox helper
 after that same verified Firefox heartbeat.

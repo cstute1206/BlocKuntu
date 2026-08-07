@@ -40,7 +40,11 @@
     runningApps as fetchRunningApps,
     requestUnlock,
     scheduleActivitySummary,
-    setOperatorWindowRestriction,
+    setChromiumIncognitoChangeAccessMode,
+    setChromiumIncognitoDisableScope,
+    setChromiumIncognitoMode,
+    setProtectedAccessMode,
+    setUnsupportedBrowserBlockMode,
     setNotificationPreferences,
     startDetox,
     systemHealth,
@@ -85,6 +89,8 @@
     Allowance,
     AppRule,
     ConfigSnapshot,
+    ChromiumIncognitoDisableScope,
+    ChromiumIncognitoMode,
     DaemonStatus,
     DecisionResult,
     DetoxDurationUnit,
@@ -93,6 +99,7 @@
     LogSummary,
     NotificationPreferences,
     PolicyFileResult,
+    ProtectedAccessMode,
     RunningApp,
     ScheduleActivitySummary,
     Rule,
@@ -107,8 +114,6 @@
   type Icon = typeof LayoutDashboard;
   const TRAY_OPEN_VIEW_EVENT = "blockuntu-open-view";
   const TRAY_RUNTIME_REFRESH_EVENT = "blockuntu-runtime-refresh";
-  const OPERATOR_WINDOW_LABEL = "Sunday 20:00-23:59";
-
   interface RefreshOptions {
     silent?: boolean;
   }
@@ -195,11 +200,21 @@
 
   let tier1EditPhraseInput = $state("");
   let tier1EditCredentialConfigured = $state(false);
-  let operatorWindowRestrictionEnabled = $state(false);
+  let protectedAccessMode = $state<ProtectedAccessMode>("all_time");
+  let unsupportedBrowserBlockMode = $state<ProtectedAccessMode>("all_time");
+  let unsupportedBrowserBlockActive = $state(false);
+  let chromiumIncognitoMode = $state<ChromiumIncognitoMode>("manual_consent");
+  let chromiumIncognitoDisableScope = $state<ChromiumIncognitoDisableScope>("all_time");
+  let chromiumIncognitoPrivateBrowsingDisabled = $state(false);
+  let chromiumIncognitoChangeAccessMode = $state<ProtectedAccessMode>("all_time");
+  let chromiumIncognitoSettingsChangeAllowed = $state(true);
+  let chromiumIncognitoUrlBlockCount = $state(0);
+  let chromiumIncognitoUnsupportedPatternCount = $state(0);
+  let chromiumIncognitoUrlBlockLimitExceeded = $state(false);
   let tier1EditUnlocking = $state(false);
   let tier1EditUnlockedUntil: string | null = $state(null);
-  let operatorWindowOpenFromDaemon: boolean | null = $state(null);
-  let operatorWindowLabelFromDaemon: string | null = $state(null);
+  let protectedAccessOpenFromDaemon: boolean | null = $state(null);
+  let protectedAccessLabelFromDaemon: string | null = $state(null);
   let tier1EditMessage: string | null = $state(null);
   let nowMs = $state(Date.now());
 
@@ -216,12 +231,8 @@
   let tier1EditUnlocked = $derived(
     Boolean(tier1EditUnlockedUntil && Date.parse(tier1EditUnlockedUntil) > nowMs)
   );
-  let operatorWindowOpen = $derived(
-    operatorWindowOpenFromDaemon ?? (!operatorWindowRestrictionEnabled || operatorWindowOpenAt(nowMs))
-  );
-  let operatorWindowLabel = $derived(
-    operatorWindowLabelFromDaemon ?? (operatorWindowRestrictionEnabled ? OPERATOR_WINDOW_LABEL : "Any time")
-  );
+  let protectedAccessOpen = $derived(protectedAccessOpenFromDaemon ?? false);
+  let protectedAccessLabel = $derived(protectedAccessLabelFromDaemon ?? "Unavailable");
   let activeDetoxSessions = $derived(
     detoxSessionList.filter(
       (session) =>
@@ -480,14 +491,50 @@
       tier1EditUnlockedUntil = tier1EditStatusResult.value.active
         ? (tier1EditStatusResult.value.expires_at ?? null)
         : null;
-      operatorWindowOpenFromDaemon = tier1EditStatusResult.value.operator_window_open ?? null;
-      operatorWindowLabelFromDaemon = tier1EditStatusResult.value.operator_window_label ?? null;
+      protectedAccessMode =
+        tier1EditStatusResult.value.protected_access_mode ??
+        (tier1EditStatusResult.value.operator_window_restriction_enabled ? "sunday" : "all_time");
+      protectedAccessOpenFromDaemon =
+        tier1EditStatusResult.value.protected_access_open ??
+        tier1EditStatusResult.value.operator_window_open ??
+        null;
+      protectedAccessLabelFromDaemon =
+        tier1EditStatusResult.value.protected_access_label ??
+        tier1EditStatusResult.value.operator_window_label ??
+        null;
+      unsupportedBrowserBlockMode =
+        tier1EditStatusResult.value.unsupported_browser_block_mode ?? "all_time";
+      unsupportedBrowserBlockActive =
+        tier1EditStatusResult.value.unsupported_browser_block_active ?? false;
+      chromiumIncognitoMode =
+        tier1EditStatusResult.value.chromium_incognito_mode ?? "manual_consent";
+      chromiumIncognitoDisableScope =
+        tier1EditStatusResult.value.chromium_incognito_disable_scope ?? "all_time";
+      chromiumIncognitoPrivateBrowsingDisabled =
+        tier1EditStatusResult.value.chromium_incognito_private_browsing_disabled ?? false;
+      chromiumIncognitoChangeAccessMode =
+        tier1EditStatusResult.value.chromium_incognito_change_access_mode ?? "all_time";
+      chromiumIncognitoSettingsChangeAllowed =
+        tier1EditStatusResult.value.chromium_incognito_settings_change_allowed ?? true;
+      chromiumIncognitoUrlBlockCount =
+        tier1EditStatusResult.value.chromium_incognito_url_block_count ?? 0;
+      chromiumIncognitoUnsupportedPatternCount =
+        tier1EditStatusResult.value.chromium_incognito_unsupported_pattern_count ?? 0;
+      chromiumIncognitoUrlBlockLimitExceeded =
+        tier1EditStatusResult.value.chromium_incognito_url_block_limit_exceeded ?? false;
       tier1EditCredentialConfigured = tier1EditStatusResult.value.credential_configured ?? false;
-      operatorWindowRestrictionEnabled =
-        tier1EditStatusResult.value.operator_window_restriction_enabled ?? false;
     } else {
-      operatorWindowOpenFromDaemon = null;
-      operatorWindowLabelFromDaemon = null;
+      protectedAccessOpenFromDaemon = null;
+      protectedAccessLabelFromDaemon = null;
+      unsupportedBrowserBlockActive = false;
+      chromiumIncognitoMode = "manual_consent";
+      chromiumIncognitoDisableScope = "all_time";
+      chromiumIncognitoPrivateBrowsingDisabled = false;
+      chromiumIncognitoChangeAccessMode = "all_time";
+      chromiumIncognitoSettingsChangeAllowed = true;
+      chromiumIncognitoUrlBlockCount = 0;
+      chromiumIncognitoUnsupportedPatternCount = 0;
+      chromiumIncognitoUrlBlockLimitExceeded = false;
       tier1EditCredentialConfigured = false;
     }
   }
@@ -876,12 +923,58 @@
     }
   }
 
-  async function updateOperatorWindowRestriction(enabled: boolean): Promise<void> {
+  async function updateProtectedAccessMode(mode: ProtectedAccessMode): Promise<void> {
     try {
-      await setOperatorWindowRestriction(enabled, socketArg());
-      operatorWindowRestrictionEnabled = enabled;
-      operatorWindowOpenFromDaemon = enabled ? null : true;
-      operatorWindowLabelFromDaemon = enabled ? null : "Any time";
+      await setProtectedAccessMode(mode, socketArg());
+      protectedAccessMode = mode;
+      await refreshRuntime({ silent: true });
+    } catch (error) {
+      lastError = formatError(error);
+    }
+  }
+
+  async function updateUnsupportedBrowserBlockMode(mode: ProtectedAccessMode): Promise<void> {
+    try {
+      const result = await setUnsupportedBrowserBlockMode(mode, socketArg());
+      unsupportedBrowserBlockMode = result.mode;
+      unsupportedBrowserBlockActive = result.active;
+      await refreshRuntime({ silent: true });
+    } catch (error) {
+      lastError = formatError(error);
+    }
+  }
+
+  async function updateChromiumIncognitoMode(mode: ChromiumIncognitoMode): Promise<void> {
+    try {
+      const result = await setChromiumIncognitoMode(mode, socketArg());
+      chromiumIncognitoMode = result.mode;
+      chromiumIncognitoUrlBlockCount = result.url_block_count;
+      chromiumIncognitoUnsupportedPatternCount = result.unsupported_pattern_count;
+      await refreshRuntime({ silent: true });
+    } catch (error) {
+      lastError = formatError(error);
+    }
+  }
+
+  async function updateChromiumIncognitoDisableScope(
+    scope: ChromiumIncognitoDisableScope
+  ): Promise<void> {
+    try {
+      const result = await setChromiumIncognitoDisableScope(scope, socketArg());
+      chromiumIncognitoDisableScope = result.scope;
+      chromiumIncognitoPrivateBrowsingDisabled = result.private_browsing_disabled;
+      await refreshRuntime({ silent: true });
+    } catch (error) {
+      lastError = formatError(error);
+    }
+  }
+
+  async function updateChromiumIncognitoChangeAccessMode(
+    mode: ProtectedAccessMode
+  ): Promise<void> {
+    try {
+      const result = await setChromiumIncognitoChangeAccessMode(mode, socketArg());
+      chromiumIncognitoChangeAccessMode = result.mode;
       await refreshRuntime({ silent: true });
     } catch (error) {
       lastError = formatError(error);
@@ -938,12 +1031,6 @@
     }
   }
 
-  function operatorWindowOpenAt(timestampMs: number): boolean {
-    const date = new Date(timestampMs);
-    const currentMinute = date.getHours() * 60 + date.getMinutes();
-    return date.getDay() === 0 && currentMinute >= 20 * 60 && currentMinute <= 23 * 60 + 59;
-  }
-
   function setRuleDraft(rule: Rule | null, snapshot: ConfigSnapshot | null = config): void {
     ruleDraft = rule ? cloneRule(rule) : null;
     ruleAllowanceDraft = rule ? cloneAllowanceForRule(rule, snapshot) : null;
@@ -966,7 +1053,7 @@
       name: `Website ${index}`,
       tier: "controlled_access",
       enabled: true,
-      patterns: [{ kind: "domain", value: "example.com", match_subdomains: true }],
+      patterns: [{ kind: "domain", value: "", match_subdomains: true }],
       schedule_ids: [],
       allowance_id: null
     };
@@ -1068,7 +1155,7 @@
       name: `Application ${index}`,
       tier: "hard",
       enabled: true,
-      matchers: [{ kind: "command_name", value: "kmines" }],
+      matchers: [{ kind: "command_name", value: "" }],
       schedule_ids: [],
       allowance_id: null
     };
@@ -1103,6 +1190,11 @@
     lastError = null;
     appRuleMessage = null;
     try {
+      if (normalizeAppRuleDraft(appRuleDraft).matchers.length === 0) {
+        lastError = "Add at least one application matcher before saving.";
+        return;
+      }
+
       const socket = socketArg();
       const savedRule = config?.app_rules.find((rule) => rule.id === appRuleDraft?.id) ?? null;
       const additiveOnlySave = savedRule ? appRuleSaveIsAdditiveOnly(savedRule, config) : false;
@@ -1397,6 +1489,7 @@
         {config}
         {runningApps}
         {runningAppsError}
+        {runningAppsLoading}
         bind:appRuleDraft
         bind:appRuleAllowanceDraft
         {appRuleSaving}
@@ -1405,6 +1498,7 @@
         onSelectAppRule={selectAppRule}
         onStartNewAppRule={startNewAppRule}
         onAddDetectedMatchers={addDetectedMatchersToDraft}
+        onRefreshRunningApps={() => refreshRunningApps()}
         onSaveAppRuleDraft={saveAppRuleDraft}
         onRemoveAppRuleDraft={removeAppRuleDraft}
       />
@@ -1468,9 +1562,19 @@
         bind:tier1EditPhraseInput
         {tier1EditUnlocking}
         tier1EditUnlockedUntil={tier1EditUnlockedUntil}
-        {operatorWindowOpen}
-        {operatorWindowLabel}
-        {operatorWindowRestrictionEnabled}
+        {protectedAccessMode}
+        {protectedAccessOpen}
+        {protectedAccessLabel}
+        {unsupportedBrowserBlockMode}
+        {unsupportedBrowserBlockActive}
+        {chromiumIncognitoMode}
+        {chromiumIncognitoDisableScope}
+        {chromiumIncognitoPrivateBrowsingDisabled}
+        {chromiumIncognitoChangeAccessMode}
+        {chromiumIncognitoSettingsChangeAllowed}
+        {chromiumIncognitoUrlBlockCount}
+        {chromiumIncognitoUnsupportedPatternCount}
+        {chromiumIncognitoUrlBlockLimitExceeded}
         {tier1EditCredentialConfigured}
         {tier1EditMessage}
         timeFormat={uiPreferences.timeFormat}
@@ -1481,7 +1585,11 @@
         onRefreshHealth={() => refreshAll()}
         onRunUninstallBlockuntu={runUninstallBlockuntu}
         onUnlockTier1Edit={runUnlockTier1Edit}
-        onUpdateOperatorWindowRestriction={updateOperatorWindowRestriction}
+        onUpdateProtectedAccessMode={updateProtectedAccessMode}
+        onUpdateUnsupportedBrowserBlockMode={updateUnsupportedBrowserBlockMode}
+        onUpdateChromiumIncognitoMode={updateChromiumIncognitoMode}
+        onUpdateChromiumIncognitoDisableScope={updateChromiumIncognitoDisableScope}
+        onUpdateChromiumIncognitoChangeAccessMode={updateChromiumIncognitoChangeAccessMode}
         onExportPolicyToml={runExportPolicyToml}
         onImportPolicyToml={runImportPolicyToml}
         onUpdateNotificationPreferences={updateNotificationPreferences}

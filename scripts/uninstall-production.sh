@@ -134,6 +134,12 @@ remove_browser_policies() {
 
   local firefox_policy="/etc/firefox/policies/policies.json"
   local chrome_policy="/etc/opt/chrome/policies/managed/blockuntu.json"
+  local chromium_policy="/etc/chromium/policies/managed/blockuntu.json"
+  local brave_policy="/etc/brave/policies/managed/blockuntu.json"
+  local opera_policy="/etc/opt/opera/policies/managed/blockuntu.json"
+  local edge_policy="/etc/opt/edge/policies/managed/blockuntu.json"
+  local vivaldi_policy="/etc/vivaldi/policies/managed/blockuntu.json"
+  local legacy_vivaldi_policy="/etc/opt/vivaldi/policies/managed/blockuntu.json"
 
   if [[ -f "${firefox_policy}" ]]; then
     if grep -q "blockuntu" "${firefox_policy}" 2>/dev/null; then
@@ -146,9 +152,28 @@ remove_browser_policies() {
   fi
 
   remove_path "${chrome_policy}"
+  remove_path "${chromium_policy}"
+  remove_path "${brave_policy}"
+  remove_path "${opera_policy}"
+  remove_path "${edge_policy}"
+  remove_path "${vivaldi_policy}"
+  remove_path "${legacy_vivaldi_policy}"
+  log "leaving LibreWolf and Waterfox policy files for the daemon's authorized uninstall flow, which restores browser-owned settings"
   remove_path "/usr/local/share/blockuntu/chrome-extension-updates.xml"
   remove_empty_dir "/etc/opt/chrome/policies/managed"
   remove_empty_dir "/etc/opt/chrome/policies"
+  remove_empty_dir "/etc/chromium/policies/managed"
+  remove_empty_dir "/etc/chromium/policies"
+  remove_empty_dir "/etc/brave/policies/managed"
+  remove_empty_dir "/etc/brave/policies"
+  remove_empty_dir "/etc/opt/opera/policies/managed"
+  remove_empty_dir "/etc/opt/opera/policies"
+  remove_empty_dir "/etc/opt/edge/policies/managed"
+  remove_empty_dir "/etc/opt/edge/policies"
+  remove_empty_dir "/etc/vivaldi/policies/managed"
+  remove_empty_dir "/etc/vivaldi/policies"
+  remove_empty_dir "/etc/opt/vivaldi/policies/managed"
+  remove_empty_dir "/etc/opt/vivaldi/policies"
 }
 
 remove_confined_firefox_native_hosts() {
@@ -309,11 +334,21 @@ remove_empty_dir "/usr/local/share/blockuntu"
 
 log "removing Native Messaging manifests"
 remove_path "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json"
+remove_path "/usr/lib/librewolf/native-messaging-hosts/blockuntu_native.json"
+remove_path "/usr/lib/waterfox/native-messaging-hosts/blockuntu_native.json"
 remove_path "/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json"
 remove_path "/etc/chromium/native-messaging-hosts/blockuntu_native.json"
+remove_path "/etc/opt/edge/native-messaging-hosts/blockuntu_native.json"
+remove_path "/etc/opt/vivaldi/native-messaging-hosts/blockuntu_native.json"
+remove_path "/etc/vivaldi/native-messaging-hosts/blockuntu_native.json"
 remove_empty_dir "/usr/lib/mozilla/native-messaging-hosts"
+remove_empty_dir "/usr/lib/librewolf/native-messaging-hosts"
+remove_empty_dir "/usr/lib/waterfox/native-messaging-hosts"
 remove_empty_dir "/etc/opt/chrome/native-messaging-hosts"
 remove_empty_dir "/etc/chromium/native-messaging-hosts"
+remove_empty_dir "/etc/opt/edge/native-messaging-hosts"
+remove_empty_dir "/etc/opt/vivaldi/native-messaging-hosts"
+remove_empty_dir "/etc/vivaldi/native-messaging-hosts"
 remove_confined_firefox_native_hosts
 
 remove_browser_policies

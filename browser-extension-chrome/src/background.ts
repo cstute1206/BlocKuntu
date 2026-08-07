@@ -1,8 +1,6 @@
 "use strict";
 
 const NATIVE_HOST_NAME = "blockuntu_native";
-const EXTENSION_COMPONENT = "chrome_extension";
-const BROWSER_NAME = "chrome";
 const BLOCKED_PAGE_URL = chrome.runtime.getURL("blocked.html");
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const HEARTBEAT_TIMEOUT_MS = 75_000;
@@ -15,6 +13,13 @@ const REVALIDATE_ALARM = "blockuntu-revalidate-tabs";
 const INTEGRATION_DISABLED_STORAGE_KEY = "blockuntuIntegrationDisabled";
 
 type JsonObject = Record<string, unknown>;
+type ChromiumBrowserName = "chrome" | "chromium" | "brave" | "opera" | "edge" | "vivaldi";
+
+interface BraveNavigator {
+  brave?: {
+    isBrave?: () => Promise<boolean> | boolean;
+  };
+}
 
 interface PendingRequest {
   method: string;
@@ -52,6 +57,7 @@ let heartbeatPromise: Promise<boolean> | null = null;
 let lastHeartbeatOkAt = 0;
 let backendHealthy = false;
 let blockingDisabled = false;
+let browserIdentityPromise: Promise<ChromiumBrowserName> | null = null;
 
 const pendingRequests = new Map<number, PendingRequest>();
 const activeVisits = new Map<number, ActiveVisit>();
@@ -165,6 +171,45 @@ function rejectAllPending(reason: string): void {
   }
 }
 
+function browserIdentity(): Promise<ChromiumBrowserName> {
+  if (!browserIdentityPromise) {
+    browserIdentityPromise = detectBrowserIdentity();
+  }
+  return browserIdentityPromise;
+}
+
+async function detectBrowserIdentity(): Promise<ChromiumBrowserName> {
+  const brave = (navigator as Navigator & BraveNavigator).brave;
+  if (typeof brave?.isBrave === "function") {
+    try {
+      if (await brave.isBrave()) {
+        return "brave";
+      }
+    } catch {
+      // Continue with the user agent if Brave's optional detection API fails.
+    }
+  }
+
+  const userAgent = navigator.userAgent;
+  if (/\bEdg\//i.test(userAgent)) {
+    return "edge";
+  }
+  if (/\bOPR\//i.test(userAgent)) {
+    return "opera";
+  }
+  if (/\bVivaldi\//i.test(userAgent)) {
+    return "vivaldi";
+  }
+  if (/\bChromium\//i.test(userAgent)) {
+    return "chromium";
+  }
+  return "chrome";
+}
+
+function extensionComponent(browser: ChromiumBrowserName): string {
+  return `${browser}_extension`;
+}
+
 function sendHeartbeat(): Promise<boolean> {
   refreshHealthState();
   if (heartbeatPromise) {
@@ -172,17 +217,20 @@ function sendHeartbeat(): Promise<boolean> {
   }
 
   heartbeatInFlight = true;
-  heartbeatPromise = sendRpc(
-    "extension_heartbeat",
-    {
-      browser: BROWSER_NAME,
-      component: EXTENSION_COMPONENT,
-      extension_id: chrome.runtime.id,
-      extension_version: chrome.runtime.getManifest().version,
-      now: new Date().toISOString(),
-    },
-    Math.min(RPC_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS)
-  )
+  heartbeatPromise = browserIdentity()
+    .then((browser) =>
+      sendRpc(
+        "extension_heartbeat",
+        {
+          browser,
+          component: extensionComponent(browser),
+          extension_id: chrome.runtime.id,
+          extension_version: chrome.runtime.getManifest().version,
+          now: new Date().toISOString(),
+        },
+        Math.min(RPC_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS)
+      )
+    )
     .then((result) => {
       applyHeartbeatResult(result);
       lastHeartbeatOkAt = Date.now();

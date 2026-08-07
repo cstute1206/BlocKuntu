@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { AlertTriangle, Gamepad2, Plus, Save, Trash2 } from "@lucide/svelte";
+  import { AlertTriangle, Gamepad2, Plus, RefreshCw, Save, Trash2 } from "@lucide/svelte";
   import { tick } from "svelte";
   import { appMatcherKinds, appRuleIsActive, defaultAllowanceForRule } from "../../lib/ui";
   import type { Allowance, AppRule, ConfigSnapshot, RunningApp } from "../../lib/types";
@@ -8,6 +8,7 @@
     config: ConfigSnapshot | null;
     runningApps: RunningApp[];
     runningAppsError: string | null;
+    runningAppsLoading: boolean;
     appRuleDraft?: AppRule | null;
     appRuleAllowanceDraft?: Allowance | null;
     appRuleSaving: boolean;
@@ -16,6 +17,7 @@
     onSelectAppRule: (rule: AppRule) => void;
     onStartNewAppRule: () => void;
     onAddDetectedMatchers: (app: RunningApp) => void;
+    onRefreshRunningApps: () => void | Promise<void>;
     onSaveAppRuleDraft: () => void | Promise<void>;
     onRemoveAppRuleDraft: () => void | Promise<void>;
   }
@@ -24,6 +26,7 @@
     config,
     runningApps,
     runningAppsError,
+    runningAppsLoading,
     appRuleDraft = $bindable<AppRule | null>(null),
     appRuleAllowanceDraft = $bindable<Allowance | null>(null),
     appRuleSaving,
@@ -32,6 +35,7 @@
     onSelectAppRule,
     onStartNewAppRule,
     onAddDetectedMatchers,
+    onRefreshRunningApps,
     onSaveAppRuleDraft,
     onRemoveAppRuleDraft
   }: Props = $props();
@@ -50,7 +54,26 @@
     Boolean(savedAppRule && (appRuleDraftDetoxLocked || appRuleDraftActive))
   );
   let savedMatcherCount = $derived(savedAppRule?.matchers.length ?? 0);
+  let detectedAppSearch = $state("");
+  let filteredRunningApps = $derived(
+    runningApps.filter((app) => detectedAppMatchesSearch(app, detectedAppSearch))
+  );
   let matcherValueInputs: HTMLInputElement[] = [];
+
+  function detectedAppMatchesSearch(app: RunningApp, search: string): boolean {
+    const query = search.trim().toLocaleLowerCase();
+    if (!query) return true;
+
+    return [
+      app.display_name,
+      app.command_name,
+      app.executable_basename,
+      app.executable_path,
+      app.desktop_id,
+      app.window_titles.join(" "),
+      app.blocking_rule_name
+    ].some((value) => value?.toLocaleLowerCase().includes(query));
+  }
 
   function matcherIsSaved(index: number): boolean {
     return Boolean(savedAppRule && index < savedMatcherCount);
@@ -308,45 +331,63 @@
       {/if}
     {/if}
     <div class="section-label section-label-tight">Detected apps</div>
+    <div class="detected-app-controls">
+      <label class="detected-app-search">
+        <span>Search</span>
+        <input
+          type="search"
+          bind:value={detectedAppSearch}
+          placeholder="Name, command, path, or desktop ID"
+        />
+      </label>
+      <button class="secondary" onclick={onRefreshRunningApps} disabled={runningAppsLoading}>
+        <RefreshCw size={16} aria-hidden="true" />
+        <span>{runningAppsLoading ? "Refreshing" : "Refresh"}</span>
+      </button>
+    </div>
     {#if runningAppsError}
       <p class="danger-text">{runningAppsError}</p>
     {/if}
     <div class="rule-list detected-app-list">
-      {#each runningApps as app (`${app.pid}-${app.display_name}`)}
-        <article class="detected-app-item">
-          <div class="detected-app-header">
-            <strong>{app.display_name}</strong>
-            <em>{app.decision === "block" ? "Blocked" : "Allowed"}</em>
-          </div>
-          <p class="detected-app-meta">PID {app.pid}</p>
-          {#if app.command_name}
-            <p class="detected-app-meta">Command: {app.command_name}</p>
-          {/if}
-          {#if app.executable_basename}
-            <p class="detected-app-meta">Binary: {app.executable_basename}</p>
-          {/if}
-          {#if app.executable_path}
-            <p class="detected-app-meta">Path: {app.executable_path}</p>
-          {/if}
-          {#if app.desktop_id}
-            <p class="detected-app-meta">Desktop ID: {app.desktop_id}</p>
-          {/if}
-          {#if app.window_titles.length > 0}
-            <p class="detected-app-meta">Title: {app.window_titles[0]}</p>
-          {/if}
-          {#if app.blocking_rule_name}
-            <p class="detected-app-meta">Rule: {app.blocking_rule_name}</p>
-          {/if}
-          <div class="button-row compact-row">
-            <button class="secondary" onclick={() => onAddDetectedMatchers(app)}>
-              <Plus size={16} aria-hidden="true" />
-              <span>Append</span>
-            </button>
-          </div>
-        </article>
+      {#if filteredRunningApps.length > 0}
+        {#each filteredRunningApps as app (`${app.pid}-${app.display_name}`)}
+          <article class="detected-app-item">
+            <div class="detected-app-header">
+              <strong>{app.display_name}</strong>
+              <em>{app.decision === "block" ? "Blocked" : "Allowed"}</em>
+            </div>
+            <p class="detected-app-meta">PID {app.pid}</p>
+            {#if app.command_name}
+              <p class="detected-app-meta">Command: {app.command_name}</p>
+            {/if}
+            {#if app.executable_basename}
+              <p class="detected-app-meta">Binary: {app.executable_basename}</p>
+            {/if}
+            {#if app.executable_path}
+              <p class="detected-app-meta">Path: {app.executable_path}</p>
+            {/if}
+            {#if app.desktop_id}
+              <p class="detected-app-meta">Desktop ID: {app.desktop_id}</p>
+            {/if}
+            {#if app.window_titles.length > 0}
+              <p class="detected-app-meta">Title: {app.window_titles[0]}</p>
+            {/if}
+            {#if app.blocking_rule_name}
+              <p class="detected-app-meta">Rule: {app.blocking_rule_name}</p>
+            {/if}
+            <div class="button-row compact-row">
+              <button class="secondary" onclick={() => onAddDetectedMatchers(app)}>
+                <Plus size={16} aria-hidden="true" />
+                <span>Append</span>
+              </button>
+            </div>
+          </article>
+        {/each}
+      {:else if runningApps.length > 0}
+        <p class="empty-state">No detected applications match your search.</p>
       {:else}
         <p class="empty-state">No running apps are currently detected.</p>
-      {/each}
+      {/if}
     </div>
   </article>
 </section>

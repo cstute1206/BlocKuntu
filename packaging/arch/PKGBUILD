@@ -21,6 +21,7 @@ depends=(
   'sqlite'
   'systemd'
   'webkit2gtk-4.1'
+  'xdg-utils'
 )
 makedepends=(
   'librsvg'
@@ -40,6 +41,9 @@ backup=(
   'etc/blockuntu/config.toml'
   'etc/chromium/native-messaging-hosts/blockuntu_native.json'
   'etc/opt/chrome/native-messaging-hosts/blockuntu_native.json'
+  'etc/opt/edge/native-messaging-hosts/blockuntu_native.json'
+  'etc/opt/vivaldi/native-messaging-hosts/blockuntu_native.json'
+  'etc/vivaldi/native-messaging-hosts/blockuntu_native.json'
 )
 install='blockuntu.install'
 source=("${pkgname}-${pkgver}.tar.gz")
@@ -130,12 +134,25 @@ EOF
 
   install -d \
     "${pkgdir}/usr/lib/mozilla/native-messaging-hosts" \
+    "${pkgdir}/usr/lib/librewolf/native-messaging-hosts" \
+    "${pkgdir}/usr/lib/waterfox/native-messaging-hosts" \
     "${pkgdir}/etc/opt/chrome/native-messaging-hosts" \
-    "${pkgdir}/etc/chromium/native-messaging-hosts"
+    "${pkgdir}/etc/chromium/native-messaging-hosts" \
+    "${pkgdir}/etc/opt/edge/native-messaging-hosts" \
+    "${pkgdir}/etc/opt/vivaldi/native-messaging-hosts" \
+    "${pkgdir}/etc/vivaldi/native-messaging-hosts"
   sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
     packaging/native-messaging/blockuntu_native.json \
     >"${pkgdir}/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json"
   chmod 0644 "${pkgdir}/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json"
+  sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+    packaging/native-messaging/blockuntu_native.json \
+    >"${pkgdir}/usr/lib/librewolf/native-messaging-hosts/blockuntu_native.json"
+  chmod 0644 "${pkgdir}/usr/lib/librewolf/native-messaging-hosts/blockuntu_native.json"
+  sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+    packaging/native-messaging/blockuntu_native.json \
+    >"${pkgdir}/usr/lib/waterfox/native-messaging-hosts/blockuntu_native.json"
+  chmod 0644 "${pkgdir}/usr/lib/waterfox/native-messaging-hosts/blockuntu_native.json"
   sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
     packaging/native-messaging/blockuntu_native.chrome.json \
     >"${pkgdir}/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json"
@@ -144,6 +161,18 @@ EOF
     packaging/native-messaging/blockuntu_native.chrome.json \
     >"${pkgdir}/etc/chromium/native-messaging-hosts/blockuntu_native.json"
   chmod 0644 "${pkgdir}/etc/chromium/native-messaging-hosts/blockuntu_native.json"
+  sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+    packaging/native-messaging/blockuntu_native.chrome.json \
+    >"${pkgdir}/etc/opt/edge/native-messaging-hosts/blockuntu_native.json"
+  chmod 0644 "${pkgdir}/etc/opt/edge/native-messaging-hosts/blockuntu_native.json"
+  sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+    packaging/native-messaging/blockuntu_native.chrome.json \
+    >"${pkgdir}/etc/opt/vivaldi/native-messaging-hosts/blockuntu_native.json"
+  chmod 0644 "${pkgdir}/etc/opt/vivaldi/native-messaging-hosts/blockuntu_native.json"
+  sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
+    packaging/native-messaging/blockuntu_native.chrome.json \
+    >"${pkgdir}/etc/vivaldi/native-messaging-hosts/blockuntu_native.json"
+  chmod 0644 "${pkgdir}/etc/vivaldi/native-messaging-hosts/blockuntu_native.json"
 
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
   install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"

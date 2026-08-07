@@ -158,7 +158,7 @@
 </script>
 
 <section class="content-grid detox-grid">
-  <article class="panel detox-start-panel">
+  <article class="panel wide-panel detox-start-panel">
     <div class="panel-title">
       <Timer size={18} aria-hidden="true" />
       <h2>Start Detox</h2>
@@ -288,7 +288,7 @@
     </div>
   </article>
 
-  <article class="panel wide-panel">
+  <article class="panel detox-recent-panel">
     <div class="panel-title">
       <Timer size={18} aria-hidden="true" />
       <h2>Recent Detox</h2>

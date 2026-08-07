@@ -1,10 +1,10 @@
 # BlocKuntu Browser Extension Privacy Policy
 
-**Last updated:** July 28, 2026
+**Last updated:** August 3, 2026
 
 ## 1. Scope
 
-This Privacy Policy applies to the BlocKuntu browser extensions for Google Chrome/Chromium and Mozilla Firefox (the **Extensions**) and their connection to  
+This Privacy Policy applies to the BlocKuntu browser extensions for Google Chrome, Chromium, Brave, Opera, Microsoft Edge, Vivaldi, Mozilla Firefox, LibreWolf, and Waterfox (the **Extensions**) and their connection to
 the locally installed BlocKuntu application and service (together, **BlocKuntu**).
 
 BlocKuntu is a local website- and application-blocking tool. The Extensions use the browser permissions needed to apply the website rules, schedules, and time  

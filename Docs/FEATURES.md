@@ -37,15 +37,33 @@ manual-unlock behavior.
 
 ## Browser and application enforcement
 
-Firefox and Chrome/Chromium extensions send navigations through the local daemon  
+Firefox, LibreWolf, Waterfox, Chrome, Chromium, Brave, Opera, Microsoft Edge, and Vivaldi extensions send navigations through the local daemon
 using Native Messaging. They fail closed for top-level HTTP/HTTPS navigation if  
 they cannot verify the daemon connection. The daemon also monitors configured  
 applications and terminates matching processes.
 
 The Health section reports daemon, browser integration, policy, and hosts-file
-checks. Users install the Firefox and Chrome extensions from their official
-stores. After each extension's first successful heartbeat, BlocKuntu writes its
-managed policy and locks that same store-installed extension.
+checks. Users install the Firefox extension from AMO in Firefox, LibreWolf, or Waterfox,
+and the Chrome Web Store extension in Chrome, Chromium, Brave, Opera, Microsoft Edge, or
+Vivaldi. After each extension's first successful heartbeat, BlocKuntu writes its managed policy
+and locks that same store-installed extension. Opera and Edge require turning on **Allow extensions
+from other stores**; Vivaldi requires enabling Web Store in its Google Extensions setting. Chromium,
+Opera Snap, and Vivaldi Flatpak builds still require clean-VM validation.
+
+In **Settings → Protected changes and uninstall**, Chromium-family private browsing has three
+explicit modes: disable private windows, leave the extension toggle to the user's manual consent,
+or use the browser's private URL-blocklist policy. Manual consent can be revoked in the browser.
+Private windows are disabled all the time by default, or only while a schedule or Detox session is
+active. A separate protected-change window controls when either Chromium private-browsing setting
+can be altered: all the time (the default), only while no schedule or Detox is active, or Sunday
+from 20:00 through 23:59.
+
+URL-policy mode includes active Hard, Scheduled Block, and Controlled Access domain, exact-URL,
+and full URL-prefix patterns. Controlled Access patterns remain blocked there even when their daily
+allowance still has time. URL-contains and path-only patterns cannot be represented safely by the
+browser policy and are reported as omitted. The policy is limited to 1,000 patterns and requires a
+browser release that supports the private URL-blocklist policy, so validate the chosen
+browser/version in a clean VM.
 
 ## Overview and Settings
 
@@ -56,14 +74,15 @@ credentials
 - a URL probe, where you can check the status of urls
 - a manual Tier 3 unlock form, that unlocks tier 3 sites
 
-Settings contains Health, Enforcement, Export and Import Rules, Protected  
-Changes and Uninstall, Notifications, and Logging. Import uses **Append**:  
-existing rules remain and rules are augmented by the new ones.  
-Protected Changes and Uninstall provides the five-minute Tier 1 edit unlock,  
-the optional Sunday restriction, time-format preference, recovery-credential  
-hiding, the welcome-modal action and package uninstall. The Sunday restriction  
-is off by default, when enabled Tier 1 editing and uninstall are available only  
-on Sunday from 20:00 through 23:59. It can be disabled only during that window.
+Settings contains Health (including Enforcement), Rules and logging, Protected
+Changes and Uninstall, and Notifications. Import uses **Append**: existing
+rules remain and rules are augmented by the new ones.
+Protected Changes and Uninstall provides the five-minute Tier 1 edit unlock,
+time-format preference, recovery-credential hiding, the welcome-modal action
+and package uninstall. You can choose whether Tier 1 editing and uninstall are
+available on Sunday from 20:00 through 23:59, only while no schedule or Detox
+is active, or at any time. The same choice controls when the automatic Tier 1
+blocked-browser list is active; it fails closed if clock tampering is detected.
 
 The package-generated recovery uninstall phrase and Tier 1 edit key are shown  
 in the welcome modal until they are hidden. Hiding them removes both files from  
@@ -84,5 +103,6 @@ inspection remains terminal-based.
 - BlocKuntu cannot protect against a user with unrestricted root or sudo access.
 - Hosts-file fallback supports domain patterns only; exact-URL and path patterns  
 require the browser extension.
-- Firefox and Google Chrome are the supported browser-enforcement paths; other  
-browsers may be handled as blocked applications in strict mode.
+- Firefox, LibreWolf, Waterfox, Google Chrome, Chromium, Brave, Opera, Microsoft Edge, and Vivaldi are the
+supported browser-enforcement paths. Other browsers may be handled as blocked
+applications in strict mode.

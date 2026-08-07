@@ -10,6 +10,7 @@ const REVALIDATE_TABS_INTERVAL_MS = 5_000;
 const INTEGRATION_DISABLED_STORAGE_KEY = "blockuntuIntegrationDisabled";
 
 type JsonObject = Record<string, unknown>;
+type FirefoxBrowserName = "firefox" | "librewolf" | "waterfox";
 
 interface PendingRequest {
   method: string;
@@ -47,6 +48,7 @@ let heartbeatPromise: Promise<boolean> | null = null;
 let lastHeartbeatOkAt = 0;
 let backendHealthy = false;
 let blockingDisabled = false;
+let browserIdentityPromise: Promise<FirefoxBrowserName> | null = null;
 
 const pendingRequests = new Map<number, PendingRequest>();
 const activeVisits = new Map<number, ActiveVisit>();
@@ -160,6 +162,29 @@ function rejectAllPending(reason: string): void {
   }
 }
 
+function browserIdentity(): Promise<FirefoxBrowserName> {
+  if (!browserIdentityPromise) {
+    browserIdentityPromise = browser.runtime
+      .getBrowserInfo()
+      .then((info) => {
+        const name = `${info.name} ${navigator.userAgent}`.toLowerCase();
+        if (name.includes("librewolf")) {
+          return "librewolf";
+        }
+        if (name.includes("waterfox")) {
+          return "waterfox";
+        }
+        return "firefox";
+      })
+      .catch(() => "firefox");
+  }
+  return browserIdentityPromise;
+}
+
+function extensionComponent(browserName: FirefoxBrowserName): string {
+  return `${browserName}_extension`;
+}
+
 function sendHeartbeat(): Promise<boolean> {
   refreshHealthState();
   if (heartbeatPromise) {
@@ -167,17 +192,20 @@ function sendHeartbeat(): Promise<boolean> {
   }
 
   heartbeatInFlight = true;
-  heartbeatPromise = sendRpc(
-    "extension_heartbeat",
-    {
-      browser: "firefox",
-      component: "firefox_extension",
-      extension_id: browser.runtime.id,
-      extension_version: browser.runtime.getManifest().version,
-      now: new Date().toISOString(),
-    },
-    Math.min(RPC_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS)
-  )
+  heartbeatPromise = browserIdentity()
+    .then((browserName) =>
+      sendRpc(
+        "extension_heartbeat",
+        {
+          browser: browserName,
+          component: extensionComponent(browserName),
+          extension_id: browser.runtime.id,
+          extension_version: browser.runtime.getManifest().version,
+          now: new Date().toISOString(),
+        },
+        Math.min(RPC_TIMEOUT_MS, HEARTBEAT_INTERVAL_MS)
+      )
+    )
     .then((result) => {
       applyHeartbeatResult(result);
       lastHeartbeatOkAt = Date.now();

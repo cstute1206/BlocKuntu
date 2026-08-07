@@ -26,14 +26,34 @@ extensions for you.
 1. Open BlocKuntu after signing in.
 2. Store the recovery uninstall phrase and Tier 1 edit key shown in the welcome
   modal somewhere secure. They are needed for protected actions.
-3. Install and enable the BlocKuntu Firefox extension from AMO and the
-  BlocKuntu Chrome extension from the Chrome Web Store in every browser you
-  want BlocKuntu to protect, then restart each browser.
+3. Install and enable the BlocKuntu Firefox extension from AMO in Firefox,
+  LibreWolf, or Waterfox, or the BlocKuntu Chrome Web Store extension in every
+  Chromium-family browser you want BlocKuntu to protect: Chrome, Chromium,
+  Brave, Opera, Microsoft Edge, or Vivaldi. In Opera and Edge, first turn on
+  **Allow extensions from other stores**. In Vivaldi, enable Web Store under
+  **Settings → Privacy and Security → Google Extensions**. Then restart each browser.
 4. Use **Settings → Health** to verify the browser and Native Messaging checks.
 
-Both browser policies are deferred until the matching extension sends its first
-verified heartbeat. BlocKuntu then writes a policy that force-installs and locks
-that same AMO or Chrome Web Store extension.
+Browser policies are deferred independently until their matching extension
+sends its first verified heartbeat. BlocKuntu then writes a policy that
+force-installs and locks that same AMO or Chrome Web Store extension.
+When Brave or a native Vivaldi installation is detected, opening the installed
+GUI also prepares its per-user Native Messaging manifest; restart that browser
+after the first GUI launch. Vivaldi Snap does not expose the Native Messaging
+API, so use the native Vivaldi package for browser-extension enforcement.
+
+Choose the Chromium private-browsing behavior in **Settings → Protected changes
+and uninstall**. “Allow with manual extension consent” is user-controlled and
+can be turned off in the browser. “Disable private browsing” applies all the
+time by default, or only during an active schedule or Detox. “Block URLs by
+browser policy” includes active Hard, Scheduled Block, and Controlled Access
+domain, exact-URL, and full URL-prefix rules; Controlled Access rules are still
+blocked while an allowance remains. URL-contains and path-only rules are shown
+as omitted because the browser policy cannot safely express them. A separate
+change window protects these settings: all the time (default), only while no
+schedule or Detox is active, or Sunday from 20:00 through 23:59. The private
+URL-blocklist requires a supporting browser version and refuses lists over
+1,000 patterns. Test this mode in the target clean VM.
 
 For Firefox Snap or Flatpak, opening BlocKuntu starts the per-user Native
 Messaging setup. Firefox Flatpak receives its store-extension policy after the
@@ -64,9 +84,11 @@ If browser navigation fails closed, check the path in this order:
 browser extension -> blockuntu-native -> /run/blockuntu/blockuntud.sock -> blockuntud
 ```
 
-Common causes are stale group membership, a browser extension that was not  
-installed or restarted, and a missing Native Messaging manifest for a confined  
-Firefox installation.
+Common causes are stale group membership, a browser extension that was not
+installed or restarted, and a missing Native Messaging manifest for a confined
+Firefox installation. Chromium and Opera Snap builds, Vivaldi Flatpak, and
+Firefox-family packages installed outside their native package locations require
+separate clean-VM validation before they can be treated as supported package paths.
 
 ## Build a package
 

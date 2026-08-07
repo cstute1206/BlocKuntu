@@ -16,8 +16,9 @@ Direct `dpkg`, `apt`, `rpm`, and `dnf` removal calls are intentionally refused
 because they do not have that lease. This prevents a package-manager invocation
 from stopping enforcement without the protected GUI flow.
 
-The Sunday restriction is optional and off by default. If it has been enabled,
-uninstall is available only on Sunday from 20:00 through 23:59 local time.
+In Settings, choose when the protected GUI uninstall is available: Sunday from
+20:00 through 23:59 local time, only while no schedule or Detox is active, or
+at any time.
 
 ## Recovery credentials
 
@@ -46,7 +47,7 @@ including:
   hosts repair units;
 - `/run/blockuntu`, `/etc/blockuntu`, and `/var/lib/blockuntu`;
 - package binaries, launcher, icons, and system Native Messaging manifests;
-- BlocKuntu-owned Firefox and Chrome policy files.
+- BlocKuntu-owned Firefox, LibreWolf, Waterfox, Chrome, Chromium, Brave, Opera, Microsoft Edge, and Vivaldi policy files. LibreWolf and Waterfox policy entries are restored without removing their browser-owned policy files.
 
 Restart affected browsers after uninstall if they continue to show managed
 policy state. Per-user Firefox Snap/Flatpak integration may remain and can be

@@ -363,6 +363,10 @@ function humanizeErrorMessage(message: string): string {
     return "This action is only available on Sunday between 20:00 and 23:59.";
   }
 
+  if (lowerNormalized.includes("only available while no schedule or detox is active")) {
+    return "This action is only available while no schedule or Detox is active.";
+  }
+
   if (normalized === "GUI uninstall requires pkexec, but pkexec was not found") {
     return "GUI uninstall requires pkexec, but pkexec is not installed. Install pkexec, then retry the protected uninstall from the GUI.";
   }
