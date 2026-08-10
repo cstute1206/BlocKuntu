@@ -252,7 +252,7 @@ warn_browser_prerequisites() {
   if ! has_cmd firefox && ! has_cmd librewolf && ! has_cmd waterfox; then
     log "warning: no Firefox, LibreWolf, or Waterfox binary was found on PATH; install a native Firefox-family package before using the AMO extension"
   fi
-  if ! has_cmd google-chrome && ! has_cmd google-chrome-stable && ! has_cmd chromium && ! has_cmd chromium-browser && ! has_cmd brave-browser && ! has_cmd opera && ! has_cmd microsoft-edge && ! has_cmd microsoft-edge-stable && ! has_cmd vivaldi && ! has_cmd vivaldi-stable; then
+  if ! has_cmd google-chrome && ! has_cmd google-chrome-stable && ! has_cmd chromium && ! has_cmd chromium-browser && ! has_cmd brave-browser && ! has_cmd brave && ! has_cmd opera && ! has_cmd microsoft-edge && ! has_cmd microsoft-edge-stable && ! has_cmd vivaldi && ! has_cmd vivaldi-stable && ! has_cmd vivaldi.vivaldi-stable; then
     log "warning: no Chrome, Chromium, Brave, Opera, Microsoft Edge, or Vivaldi binary was found on PATH; ignore this if you only use Firefox-family browsers"
   fi
 }
@@ -374,6 +374,23 @@ fi
 log "installing daemon and native host binaries"
 sudo install -Dm755 focusd/target/release/blockuntud /usr/local/bin/blockuntud
 sudo install -Dm755 native-host/target/release/blockuntu-native /usr/local/bin/blockuntu-native
+sudo install -Dm755 scripts/setup-confined-chromium-native-host.sh \
+  /usr/local/lib/blockuntu/setup-confined-chromium-native-host.sh
+confined_chromium_wrapper="$(mktemp)"
+cat >"${confined_chromium_wrapper}" <<'SH'
+#!/bin/sh
+exec /usr/local/lib/blockuntu/setup-confined-chromium-native-host.sh "$@"
+SH
+sudo install -Dm755 "${confined_chromium_wrapper}" /usr/local/bin/blockuntu-setup-confined-chromium
+rm -f "${confined_chromium_wrapper}"
+
+if [[ ! -s /etc/blockuntu/snap-native-bridge-token ]] || ! sudo grep -Eq '^[0-9A-Fa-f]{64}$' /etc/blockuntu/snap-native-bridge-token; then
+  log "creating Snap native bridge token"
+  snap_bridge_token_file="$(mktemp)"
+  od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"${snap_bridge_token_file}"
+  sudo install -o root -g blockuntu -m 0640 "${snap_bridge_token_file}" /etc/blockuntu/snap-native-bridge-token
+  rm -f "${snap_bridge_token_file}"
+fi
 
 log "removing retired locally hosted browser-extension artifacts"
 sudo rm -f \
@@ -414,6 +431,10 @@ if [[ "${INSTALL_CONFINED_FIREFOX}" -eq 1 ]]; then
 else
   log "skipping confined Firefox setup"
 fi
+sudo "${REPO_ROOT}/scripts/setup-confined-chromium-native-host.sh" \
+  --user "${TARGET_USER}" \
+  --native-host /usr/local/bin/blockuntu-native \
+  --targets auto
 
 log "installing systemd units"
 sudo install -Dm644 packaging/systemd/blockuntu.socket /etc/systemd/system/blockuntu.socket
@@ -437,7 +458,7 @@ cat >"${override_file}" <<'OVERRIDE'
 ExecStart=
 OVERRIDE
 cat >>"${override_file}" <<OVERRIDE
-ExecStart=/usr/local/bin/blockuntud --defer-browser-policy-repair-until-heartbeat serve
+ExecStart=/usr/local/bin/blockuntud --snap-native-bridge --defer-browser-policy-repair-until-heartbeat serve
 OVERRIDE
 
 log "installing browser-policy service override"
@@ -542,7 +563,9 @@ after that same verified Firefox heartbeat.
 Native Messaging manifests were installed, so the manually installed extension
 can reach /run/blockuntu/blockuntud.sock through blockuntu-native.
 If Firefox Snap is installed for ${TARGET_USER}, its per-user manifest and host
-copy were installed too. If Firefox Flatpak is installed, its per-user manifest,
-and host copy were installed. Its systemconfig policy is added after the first
-verified Firefox heartbeat. Restart those browsers before testing.
+copy were installed too. If Chromium, Brave, Opera, or Vivaldi Snap is installed,
+its per-user launcher and authenticated loopback bridge manifest were installed.
+If Firefox Flatpak is installed, its per-user manifest and host copy were
+installed. Its systemconfig policy is added after the first verified Firefox
+heartbeat. Restart those browsers before testing.
 SUMMARY

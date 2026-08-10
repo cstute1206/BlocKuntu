@@ -45,12 +45,23 @@ or the Chrome Web Store extension in Chrome, Chromium, Brave, Opera, Microsoft E
 In Opera and Edge, first turn on **Allow extensions from other stores**; in Vivaldi, enable Web Store
 under **Settings → Privacy and Security → Google Extensions**. After each first
 verified extension heartbeat, BlocKuntu locks that same store-installed
-extension through browser policy. Firefox Snap and Flatpak users can run
-`blockuntu-setup-confined-firefox` as their desktop user if automatic setup does
-not complete.
+extension through browser policy when that browser installation supports
+managed policy. Firefox Snap and Flatpak users can run
+`blockuntu-setup-confined-firefox`, while Chromium, Brave, Opera, and Vivaldi
+Snap users can run `blockuntu-setup-confined-chromium`, as their desktop user
+if automatic setup does not complete.
+
+> **Opera and Vivaldi Snap limitation:** Their current strict Snap packages can
+> use BlocKuntu's per-user Native Messaging bridge, but cannot use its managed
+> browser policies. The Snap sandboxes do not expose their policy directories
+> to host-installed policy files, so BlocKuntu cannot force-install or lock the
+> extension, disable private browsing, or apply the private URL-blocklist policy
+> in those two Snap browsers. See the
+> [installation limitation note](Docs/INSTALLATION.md#opera-and-vivaldi-snap-policy-limitation)
+> for the diagnostic and the required upstream fix.
 
 See [production installation](Docs/INSTALLATION.md) for verification, package  
-building, confined Firefox, and virtual-machine testing.
+building, confined browsers, and virtual-machine testing.
 
 ## Documentation
 

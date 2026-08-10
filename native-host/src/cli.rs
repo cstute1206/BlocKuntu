@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -16,6 +17,17 @@ pub struct Args {
     pub socket: PathBuf,
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
     pub timeout_ms: u64,
+    #[arg(
+        long,
+        help = "Authenticated loopback endpoint used by confined Chromium-family Snaps"
+    )]
+    pub tcp_address: Option<SocketAddr>,
+    #[arg(
+        long,
+        requires = "tcp_address",
+        help = "Authentication token for --tcp-address"
+    )]
+    pub access_token: Option<String>,
     #[arg(
         long,
         value_name = "PATH",

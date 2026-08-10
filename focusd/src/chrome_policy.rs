@@ -32,6 +32,7 @@ impl Default for ChromiumIncognitoMode {
 #[derive(Debug, Clone)]
 pub struct ChromePolicyManager {
     policy_path: PathBuf,
+    snap_policy_current_dir: Option<PathBuf>,
     extension_id: String,
     update_url: String,
     browser_name: String,
@@ -59,6 +60,8 @@ pub struct ChromePolicyStatus {
     pub incognito_mode: ChromiumIncognitoMode,
     pub incognito_mode_configured: bool,
     pub incognito_url_block_count: usize,
+    pub snap_policy_path: Option<String>,
+    pub snap_policy_compliant: Option<bool>,
     pub detail: String,
 }
 
@@ -74,10 +77,22 @@ impl ChromePolicyManager {
     ) -> Self {
         Self {
             policy_path: policy_path.into(),
+            snap_policy_current_dir: None,
             extension_id: extension_id.into(),
             update_url: CHROME_WEB_STORE_UPDATE_URL.to_string(),
             browser_name: browser_name.into(),
         }
+    }
+
+    /// Also writes the policy into the active revision of a strictly confined Snap.
+    ///
+    /// Snap's `current` directory is a symlink that changes on refresh. Keeping the
+    /// directory rather than a resolved revision lets the normal repair loop restore
+    /// the policy after each refresh. A missing or non-symlink directory means the
+    /// Snap is not installed, so no Snap data directory is created.
+    pub fn with_snap_policy_current_dir(mut self, current_dir: impl Into<PathBuf>) -> Self {
+        self.snap_policy_current_dir = Some(current_dir.into());
+        self
     }
 
     pub fn expected_policy(&self) -> Value {
@@ -132,20 +147,29 @@ impl ChromePolicyManager {
         incognito_url_blocklist: &[String],
     ) -> Result<ChromePolicyRepairStatus> {
         let expected_policy = self.expected_policy_for(incognito_mode, incognito_url_blocklist);
-        if file_json_equals(&self.policy_path, &expected_policy)? {
-            return Ok(ChromePolicyRepairStatus::AlreadyCompliant);
+        let mut repaired = false;
+        for path in self.policy_paths() {
+            if !file_json_equals(&path, &expected_policy)? {
+                self.write_policy_at(&path, &expected_policy)?;
+                repaired = true;
+            }
         }
-
-        self.write_policy(&expected_policy)?;
-        Ok(ChromePolicyRepairStatus::Repaired)
+        Ok(if repaired {
+            ChromePolicyRepairStatus::Repaired
+        } else {
+            ChromePolicyRepairStatus::AlreadyCompliant
+        })
     }
 
     pub fn remove_policy(&self) -> Result<ChromePolicyRepairStatus> {
-        let removed = match fs::remove_file(&self.policy_path) {
-            Ok(()) => true,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-            Err(err) => return Err(err.into()),
-        };
+        let mut removed = false;
+        for path in self.policy_paths() {
+            match fs::remove_file(path) {
+                Ok(()) => removed = true,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
 
         Ok(if removed {
             ChromePolicyRepairStatus::Repaired
@@ -165,6 +189,7 @@ impl ChromePolicyManager {
     ) -> ChromePolicyStatus {
         let expected_policy = self.expected_policy_for(incognito_mode, incognito_url_blocklist);
         let policy_path = self.policy_path.display().to_string();
+        let (snap_policy_path, snap_policy_compliant) = self.snap_policy_status(&expected_policy);
 
         let contents = match fs::read(&self.policy_path) {
             Ok(contents) => contents,
@@ -181,6 +206,8 @@ impl ChromePolicyManager {
                     incognito_mode,
                     incognito_mode_configured: false,
                     incognito_url_block_count: 0,
+                    snap_policy_path,
+                    snap_policy_compliant,
                     detail: format!("{} policy file is missing", self.browser_name),
                 };
             }
@@ -197,6 +224,8 @@ impl ChromePolicyManager {
                     incognito_mode,
                     incognito_mode_configured: false,
                     incognito_url_block_count: 0,
+                    snap_policy_path,
+                    snap_policy_compliant,
                     detail: format!("{} policy file cannot be read: {err}", self.browser_name),
                 };
             }
@@ -217,6 +246,8 @@ impl ChromePolicyManager {
                     incognito_mode,
                     incognito_mode_configured: false,
                     incognito_url_block_count: 0,
+                    snap_policy_path,
+                    snap_policy_compliant,
                     detail: format!("{} policy file is not valid JSON: {err}", self.browser_name),
                 };
             }
@@ -239,7 +270,8 @@ impl ChromePolicyManager {
             .cloned()
             .map(Value::String)
             .collect();
-        let compliant = parsed == expected_policy;
+        let primary_policy_compliant = parsed == expected_policy;
+        let compliant = primary_policy_compliant && snap_policy_compliant.unwrap_or(true);
         let incognito_mode_configured = match incognito_mode {
             ChromiumIncognitoMode::Disabled => {
                 parsed
@@ -274,7 +306,13 @@ impl ChromePolicyManager {
                 incognito_url_blocklist.len()
             ),
         };
-        let detail = if compliant {
+        let detail = if !snap_policy_compliant.unwrap_or(true) {
+            format!(
+                "{} policy differs from expected hardened settings because the active Snap policy file is missing or stale: {}",
+                self.browser_name,
+                snap_policy_path.as_deref().unwrap_or("unknown")
+            )
+        } else if primary_policy_compliant {
             format!(
                 "{} Chrome Web Store policy matches expected force-install settings; {incognito_detail}",
                 self.browser_name,
@@ -312,8 +350,35 @@ impl ChromePolicyManager {
                 .and_then(Value::as_array)
                 .map(Vec::len)
                 .unwrap_or(0),
+            snap_policy_path,
+            snap_policy_compliant,
             detail,
         }
+    }
+
+    fn policy_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.policy_path.clone()];
+        if let Some(path) = self.active_snap_policy_path() {
+            paths.push(path);
+        }
+        paths
+    }
+
+    fn active_snap_policy_path(&self) -> Option<PathBuf> {
+        let current_dir = self.snap_policy_current_dir.as_ref()?;
+        let metadata = fs::symlink_metadata(current_dir).ok()?;
+        if !metadata.file_type().is_symlink() || !current_dir.is_dir() {
+            return None;
+        }
+        Some(current_dir.join("policies/managed/blockuntu.json"))
+    }
+
+    fn snap_policy_status(&self, expected_policy: &Value) -> (Option<String>, Option<bool>) {
+        let Some(path) = self.active_snap_policy_path() else {
+            return (None, None);
+        };
+        let compliant = file_json_equals(&path, expected_policy).unwrap_or(false);
+        (Some(path.display().to_string()), Some(compliant))
     }
 
     fn force_install_entry(&self) -> String {
@@ -349,18 +414,18 @@ impl ChromePolicyManager {
         }
     }
 
-    fn write_policy(&self, policy: &Value) -> Result<()> {
-        let parent = self.policy_path.parent().ok_or_else(|| {
+    fn write_policy_at(&self, policy_path: &Path, policy: &Value) -> Result<()> {
+        let parent = policy_path.parent().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("policy path has no parent: {}", self.policy_path.display()),
+                format!("policy path has no parent: {}", policy_path.display()),
             )
         })?;
         fs::create_dir_all(parent)?;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
 
-        let temporary_path = temporary_path(&self.policy_path);
-        let result = write_json_atomically(&self.policy_path, &temporary_path, policy);
+        let temporary_path = temporary_path(policy_path);
+        let result = write_json_atomically(policy_path, &temporary_path, policy);
         if result.is_err() {
             let _ = fs::remove_file(&temporary_path);
         }
@@ -414,6 +479,8 @@ fn temporary_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::symlink;
+
     use serde_json::Value;
 
     use super::{ChromePolicyManager, ChromePolicyRepairStatus, ChromiumIncognitoMode};
@@ -481,5 +548,49 @@ mod tests {
             edge_policy["InPrivateModeUrlBlocklist"],
             serde_json::json!(["blocked.example", ".exact.example"])
         );
+    }
+
+    #[test]
+    fn mirrors_chromium_policy_into_the_active_snap_revision() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let policy_path = temp
+            .path()
+            .join("etc/chromium/policies/managed/blockuntu.json");
+        let snap_revision = temp.path().join("var/snap/chromium/4321");
+        let snap_current = temp.path().join("var/snap/chromium/current");
+        std::fs::create_dir_all(&snap_revision).expect("Snap revision directory should exist");
+        symlink(&snap_revision, &snap_current).expect("Snap current symlink should exist");
+
+        let manager = ChromePolicyManager::for_browser(&policy_path, "extension", "Chromium")
+            .with_snap_policy_current_dir(&snap_current);
+        assert_eq!(
+            manager.verify_and_repair().expect("repair should succeed"),
+            ChromePolicyRepairStatus::Repaired
+        );
+
+        let snap_policy = snap_current.join("policies/managed/blockuntu.json");
+        assert!(policy_path.exists());
+        assert!(snap_policy.exists());
+
+        let status = manager.status();
+        assert!(status.compliant);
+        assert_eq!(status.snap_policy_path.as_deref(), snap_policy.to_str());
+        assert_eq!(status.snap_policy_compliant, Some(true));
+    }
+
+    #[test]
+    fn does_not_create_snap_data_when_chromium_snap_is_not_installed() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let policy_path = temp
+            .path()
+            .join("etc/chromium/policies/managed/blockuntu.json");
+        let snap_current = temp.path().join("var/snap/chromium/current");
+        let manager = ChromePolicyManager::for_browser(&policy_path, "extension", "Chromium")
+            .with_snap_policy_current_dir(&snap_current);
+
+        manager.verify_and_repair().expect("repair should succeed");
+        assert!(policy_path.exists());
+        assert!(!snap_current.exists());
+        assert_eq!(manager.status().snap_policy_path, None);
     }
 }

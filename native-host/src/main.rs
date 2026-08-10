@@ -15,7 +15,15 @@ fn main() {
 
 fn run() -> native_host::error::Result<()> {
     let args = Args::parse();
-    let mut daemon_client = DaemonClient::new(args.socket, Duration::from_millis(args.timeout_ms));
+    let mut daemon_client = match args.tcp_address {
+        Some(address) => DaemonClient::new_snap_bridge(
+            address,
+            args.access_token
+                .ok_or(native_host::error::NativeHostError::InvalidSnapBridgeToken)?,
+            Duration::from_millis(args.timeout_ms),
+        ),
+        None => DaemonClient::new(args.socket, Duration::from_millis(args.timeout_ms)),
+    };
     if let Some(command) = args.revive_command {
         daemon_client = daemon_client.with_revival(DaemonRevivalConfig::new(
             command,

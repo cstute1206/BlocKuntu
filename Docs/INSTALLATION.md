@@ -36,11 +36,42 @@ extensions for you.
 
 Browser policies are deferred independently until their matching extension
 sends its first verified heartbeat. BlocKuntu then writes a policy that
-force-installs and locks that same AMO or Chrome Web Store extension.
-When Brave or a native Vivaldi installation is detected, opening the installed
-GUI also prepares its per-user Native Messaging manifest; restart that browser
-after the first GUI launch. Vivaldi Snap does not expose the Native Messaging
-API, so use the native Vivaldi package for browser-extension enforcement.
+force-installs and locks that same AMO or Chrome Web Store extension when the
+browser installation supports managed policy. Chromium,
+Brave, Opera, and Vivaldi Snaps receive a per-user Native Messaging host inside
+their Snap-accessible profile when BlocKuntu starts. That host reaches the
+daemon through BlocKuntu's authenticated loopback bridge because strict Snaps
+cannot access the system Unix socket. Restart the affected Snap browser after
+opening BlocKuntu and again after its first heartbeat.
+
+### Opera and Vivaldi Snap policy limitation
+
+Opera and Vivaldi installed as strict Snaps are currently **Native Messaging
+only** integrations. Their extensions can send verified heartbeats and enforce
+navigation through the daemon, but BlocKuntu cannot apply managed browser
+policy to those Snap builds. In particular, it cannot force-install or lock the
+extension, disable private browsing, or apply URL blocking in private browsing
+through policy.
+
+BlocKuntu writes the normal host policy files at
+`/etc/opt/opera/policies/managed/` and `/etc/vivaldi/policies/managed/`, but
+the respective Snap sandboxes cannot see those files. Their policy loaders look
+at those paths inside the confined filesystem and report no policy file. This
+is a Snap-package layout limitation, not a missing heartbeat or a malformed
+BlocKuntu policy. It cannot be fixed by changing the BlocKuntu `.deb`; the
+Opera or Vivaldi Snap publisher must expose a writable Snap-data directory at
+the browser's managed-policy path.
+
+Use the following commands when validating a future Snap release:
+
+```bash
+blockuntu-diagnose-snap-policy --browser opera
+blockuntu-diagnose-snap-policy --browser vivaldi
+```
+
+`Policy loader: found` is required before treating policy-based protection as
+supported. `Policy file: readable` alone only proves that the host can read the
+file; it does not mean that the confined browser can read it.
 
 Choose the Chromium private-browsing behavior in **Settings → Protected changes
 and uninstall**. “Allow with manual extension consent” is user-controlled and
@@ -62,6 +93,17 @@ desktop user and restart Firefox:
 
 ```bash
 blockuntu-setup-confined-firefox
+```
+
+For Chromium, Brave, Opera, or Vivaldi installed as a Snap, BlocKuntu performs
+the per-user Native Messaging setup automatically when the GUI starts. If a
+Snap browser was updated while BlocKuntu was not running or its Health check
+still reports a missing integration, run this as the desktop user and restart
+that browser. This does not overcome the Opera and Vivaldi managed-policy
+limitation above:
+
+```bash
+blockuntu-setup-confined-chromium
 ```
 
 ## Verify the installation
@@ -86,9 +128,9 @@ browser extension -> blockuntu-native -> /run/blockuntu/blockuntud.sock -> block
 
 Common causes are stale group membership, a browser extension that was not
 installed or restarted, and a missing Native Messaging manifest for a confined
-Firefox installation. Chromium and Opera Snap builds, Vivaldi Flatpak, and
-Firefox-family packages installed outside their native package locations require
-separate clean-VM validation before they can be treated as supported package paths.
+browser installation. Vivaldi Flatpak and Firefox-family packages installed
+outside their native package locations require separate clean-VM validation
+before they can be treated as supported package paths.
 
 ## Build a package
 

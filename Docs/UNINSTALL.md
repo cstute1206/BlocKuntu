@@ -50,5 +50,5 @@ including:
 - BlocKuntu-owned Firefox, LibreWolf, Waterfox, Chrome, Chromium, Brave, Opera, Microsoft Edge, and Vivaldi policy files. LibreWolf and Waterfox policy entries are restored without removing their browser-owned policy files.
 
 Restart affected browsers after uninstall if they continue to show managed
-policy state. Per-user Firefox Snap/Flatpak integration may remain and can be
-removed manually if no longer needed.
+policy state. Per-user Firefox Snap/Flatpak and Chromium-family Snap integration
+may remain and can be removed manually if no longer needed.

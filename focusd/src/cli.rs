@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -38,6 +39,8 @@ pub const DEFAULT_EDGE_EXTENSION_ID: &str = DEFAULT_CHROME_EXTENSION_ID;
 pub const DEFAULT_VIVALDI_POLICY_PATH: &str = "/etc/vivaldi/policies/managed/blockuntu.json";
 pub const DEFAULT_VIVALDI_EXTENSION_ID: &str = DEFAULT_CHROME_EXTENSION_ID;
 pub const DEFAULT_HOSTS_PATH: &str = "/etc/hosts";
+pub const DEFAULT_SNAP_NATIVE_BRIDGE_ADDRESS: &str = "127.0.0.1:35173";
+pub const DEFAULT_SNAP_NATIVE_BRIDGE_TOKEN_FILE: &str = "/etc/blockuntu/snap-native-bridge-token";
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "blockuntud")]
@@ -121,6 +124,12 @@ pub struct Args {
     pub defer_firefox_policy_repair_until_heartbeat: bool,
     #[arg(long)]
     pub defer_chrome_policy_repair_until_heartbeat: bool,
+    #[arg(long)]
+    pub snap_native_bridge: bool,
+    #[arg(long, default_value = DEFAULT_SNAP_NATIVE_BRIDGE_ADDRESS)]
+    pub snap_native_bridge_address: SocketAddr,
+    #[arg(long, default_value = DEFAULT_SNAP_NATIVE_BRIDGE_TOKEN_FILE)]
+    pub snap_native_bridge_token_file: PathBuf,
     #[arg(long)]
     pub dev_bind_socket: bool,
     #[arg(long, default_value_t = 15)]

@@ -12,8 +12,8 @@ use focus_core::{
     AppRuleConfig, BlockReason, Database, Decision, DetoxSession, EvaluationContext, FocusCore,
     ProcessIdentity, RuleTier, StrictModeConfig, Weekday,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
 use crate::cli::{Args, DEFAULT_HOSTS_PATH, DEFAULT_POLICY_RECOVERY_PATH};
@@ -35,6 +35,8 @@ use crate::rpc::{
 use crate::socket::listener_from_systemd_or_path;
 
 const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
+const SNAP_NATIVE_BRIDGE_HEADER_PREFIX: &[u8] = b"BLOCKUNTU-SNAP-BRIDGE ";
+const CHROMIUM_SNAP_POLICY_CURRENT_DIR: &str = "/var/snap/chromium/current";
 const UNSUPPORTED_BROWSER_RULE_ID: &str = "unsupported-browsers-hard";
 const STRICT_FIREFOX_MISSING_SINCE_KEY: &str = "strict_mode.firefox_missing_since";
 const STRICT_LIBREWOLF_MISSING_SINCE_KEY: &str = "strict_mode.librewolf_missing_since";
@@ -170,7 +172,8 @@ impl DaemonApp {
                     &args.chromium_policy,
                     &args.chromium_extension_id,
                     "Chromium",
-                ),
+                )
+                .with_snap_policy_current_dir(CHROMIUM_SNAP_POLICY_CURRENT_DIR),
             ),
             ChromiumPolicyBinding::new(
                 SupportedBrowser::Brave,
@@ -379,6 +382,19 @@ impl DaemonApp {
         self.spawn_repair_loop();
         self.spawn_process_scan_loop();
         self.spawn_notification_loop();
+
+        if args.snap_native_bridge {
+            let bridge_token = read_snap_native_bridge_token(&args.snap_native_bridge_token_file)?;
+            let bridge_listener = TcpListener::bind(args.snap_native_bridge_address).await?;
+            let bridge_address = bridge_listener.local_addr()?;
+            eprintln!("BlocKuntu Snap native bridge listening on {bridge_address}");
+            let bridge_app = self.clone();
+            tokio::spawn(async move {
+                bridge_app
+                    .accept_snap_native_bridge_loop(bridge_listener, bridge_token)
+                    .await;
+            });
+        }
 
         let listener = listener_from_systemd_or_path(&args.socket, args.dev_bind_socket)?;
         self.accept_loop(listener).await
@@ -685,6 +701,27 @@ impl DaemonApp {
             }
         }
     }
+
+    async fn accept_snap_native_bridge_loop(self, listener: TcpListener, token: String) {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let context = self.rpc_context.clone();
+                    let token = token.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) =
+                            handle_snap_native_bridge_client(stream, context, &token).await
+                        {
+                            eprintln!("Snap native bridge client error: {err}");
+                        }
+                    });
+                }
+                Err(err) => {
+                    eprintln!("Snap native bridge accept error: {err}");
+                }
+            }
+        }
+    }
 }
 
 fn next_tier2_site_schedule_boundary(
@@ -754,7 +791,23 @@ async fn handle_client(mut stream: UnixStream, context: RpcContext) -> Result<()
     Ok(())
 }
 
-async fn read_limited(stream: &mut UnixStream) -> Result<Vec<u8>> {
+async fn handle_snap_native_bridge_client(
+    mut stream: TcpStream,
+    context: RpcContext,
+    token: &str,
+) -> Result<()> {
+    let request = read_limited(&mut stream).await?;
+    let payload = snap_native_bridge_payload(&request, token)?;
+    let response = handle_payload(&context, payload);
+    stream.write_all(&response).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+async fn read_limited<R>(stream: &mut R) -> Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
     let mut payload = Vec::new();
     let mut buffer = [0_u8; 8192];
 
@@ -770,6 +823,60 @@ async fn read_limited(stream: &mut UnixStream) -> Result<Vec<u8>> {
         }
         payload.extend_from_slice(&buffer[..read]);
     }
+}
+
+fn read_snap_native_bridge_token(path: &Path) -> Result<String> {
+    let token = fs::read_to_string(path)?.trim().to_string();
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(DaemonError::InvalidRequest(format!(
+            "Snap native bridge token at {} must be exactly 64 hexadecimal characters",
+            path.display()
+        )));
+    }
+    Ok(token)
+}
+
+fn snap_native_bridge_payload<'a>(request: &'a [u8], expected_token: &str) -> Result<&'a [u8]> {
+    let header_end = request
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .ok_or_else(|| {
+            DaemonError::InvalidRequest("Snap native bridge request has no header".to_string())
+        })?;
+    let header = &request[..header_end];
+    let supplied_token = header
+        .strip_prefix(SNAP_NATIVE_BRIDGE_HEADER_PREFIX)
+        .ok_or_else(|| {
+            DaemonError::InvalidRequest(
+                "Snap native bridge request has an invalid header".to_string(),
+            )
+        })?;
+
+    if !constant_time_equals(supplied_token, expected_token.as_bytes()) {
+        return Err(DaemonError::InvalidRequest(
+            "Snap native bridge authentication failed".to_string(),
+        ));
+    }
+
+    let payload = &request[header_end + 1..];
+    if payload.is_empty() {
+        return Err(DaemonError::InvalidRequest(
+            "Snap native bridge request has no JSON-RPC payload".to_string(),
+        ));
+    }
+    Ok(payload)
+}
+
+fn constant_time_equals(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
 }
 
 fn create_parent_dir(path: &Path, mode: u32) -> Result<()> {
@@ -1385,14 +1492,34 @@ mod tests {
     };
 
     use super::{
-        ensure_mandatory_app_rules, is_blockuntu_process, load_startup_policy,
-        next_tier2_site_schedule_boundary, strict_browser_kill_details,
-        sync_allowance_notifications, sync_metered_app_usage_sessions, sync_schedule_notifications,
-        UNSUPPORTED_BROWSER_RULE_ID,
+        constant_time_equals, ensure_mandatory_app_rules, is_blockuntu_process,
+        load_startup_policy, next_tier2_site_schedule_boundary, snap_native_bridge_payload,
+        strict_browser_kill_details, sync_allowance_notifications, sync_metered_app_usage_sessions,
+        sync_schedule_notifications, UNSUPPORTED_BROWSER_RULE_ID,
     };
     use crate::error::DaemonError;
     use crate::policy_recovery::PolicyRecoveryManager;
     use crate::process_scan::{supported_browser_for_process, ProcessInfo, SupportedBrowser};
+
+    #[test]
+    fn snap_native_bridge_requires_the_expected_token_and_payload() {
+        let token = "a".repeat(64);
+        let request = format!("BLOCKUNTU-SNAP-BRIDGE {token}\n{{\"jsonrpc\":\"2.0\"}}");
+
+        assert_eq!(
+            snap_native_bridge_payload(request.as_bytes(), &token).expect("token should match"),
+            br#"{"jsonrpc":"2.0"}"#
+        );
+        assert!(snap_native_bridge_payload(b"BLOCKUNTU-SNAP-BRIDGE bad\n{}", &token).is_err());
+        assert!(snap_native_bridge_payload(b"{}", &token).is_err());
+    }
+
+    #[test]
+    fn snap_native_bridge_token_comparison_is_exact() {
+        assert!(constant_time_equals(b"same", b"same"));
+        assert!(!constant_time_equals(b"same", b"different"));
+        assert!(!constant_time_equals(b"same", b"sane"));
+    }
 
     #[test]
     fn tier2_hosts_repair_wakes_at_the_next_schedule_boundary() {
@@ -1691,6 +1818,19 @@ mod tests {
         assert_eq!(
             supported_browser_for_process(&process("vivaldi-bin")),
             Some(SupportedBrowser::Vivaldi)
+        );
+
+        let chromium_snap = ProcessIdentity {
+            executable_path: Some(
+                "/snap/chromium/3499/usr/lib/chromium-browser/chrome".to_string(),
+            ),
+            executable_basename: Some("chrome".to_string()),
+            command_name: Some("chrome".to_string()),
+            ..process("chrome")
+        };
+        assert_eq!(
+            supported_browser_for_process(&chromium_snap),
+            Some(SupportedBrowser::Chromium)
         );
     }
 

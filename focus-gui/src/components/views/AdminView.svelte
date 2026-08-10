@@ -16,6 +16,7 @@
     X,
     XCircle
   } from "@lucide/svelte";
+  import { diagnoseSnapPolicy } from "../../lib/api";
   import type {
     EnforcementStatus,
     HealthCheck,
@@ -23,6 +24,8 @@
     ChromiumIncognitoDisableScope,
     ChromiumIncognitoMode,
     ProtectedAccessMode,
+    SnapPolicyDiagnostic,
+    SnapPolicyDiagnosticBrowser,
     SystemHealth,
     UninstallResult
   } from "../../lib/types";
@@ -157,6 +160,9 @@
 
   let activeSection: SettingsSection = $state("health");
   let customAllowanceThreshold = $state("");
+  let snapPolicyDiagnosticRunning = $state<SnapPolicyDiagnosticBrowser | null>(null);
+  let snapPolicyDiagnosticError = $state<string | null>(null);
+  let snapPolicyDiagnostics = $state<Partial<Record<SnapPolicyDiagnosticBrowser, SnapPolicyDiagnostic>>>({});
   $effect(() => {
     customAllowanceThreshold = String(
       notificationPreferences?.allowance_warning_minutes.find(
@@ -194,6 +200,26 @@
     if (state === "inactive") return "not running";
     if (state === "pending") return "starting";
     return state;
+  }
+
+  async function runSnapPolicyDiagnostic(browser: SnapPolicyDiagnosticBrowser): Promise<void> {
+    if (snapPolicyDiagnosticRunning) return;
+    snapPolicyDiagnosticRunning = browser;
+    snapPolicyDiagnosticError = null;
+    try {
+      const diagnostic = await diagnoseSnapPolicy(browser);
+      snapPolicyDiagnostics = { ...snapPolicyDiagnostics, [browser]: diagnostic };
+    } catch (error) {
+      snapPolicyDiagnosticError = error instanceof Error ? error.message : String(error);
+    } finally {
+      snapPolicyDiagnosticRunning = null;
+    }
+  }
+
+  function snapPolicyLoaderState(diagnostic: SnapPolicyDiagnostic): "ok" | "warn" | "error" {
+    if (diagnostic.loader_state === "found") return "ok";
+    if (diagnostic.loader_state === "missing") return "error";
+    return "warn";
   }
 
   function updateNotificationPreferences(
@@ -343,6 +369,44 @@
                 <div class="status-row"><span>Unsupported browsers</span><small>{healthChecks.find((check) => check.key === "unsupported_browser_hard_block")?.detail ?? "unavailable"}</small></div>
               </div>
               <p class="settings-note">Browser integration health is included in the Health checks above.</p>
+            </section>
+            <section class="settings-subsection">
+              <div class="settings-subsection-header">
+                <h4>Opera and Vivaldi Snap policy diagnosis</h4>
+                <p>Runs a short isolated browser probe. It never changes your browser profile or policy.</p>
+              </div>
+              <div class="policy-file-actions">
+                {#each ["opera", "vivaldi"] as browser (browser)}
+                  {@const diagnosticBrowser = browser as SnapPolicyDiagnosticBrowser}
+                  {@const diagnostic = snapPolicyDiagnostics[diagnosticBrowser]}
+                  <button
+                    class="secondary"
+                    disabled={snapPolicyDiagnosticRunning !== null}
+                    onclick={() => void runSnapPolicyDiagnostic(diagnosticBrowser)}
+                  >
+                    <Activity size={17} aria-hidden="true" />
+                    <span>{snapPolicyDiagnosticRunning === diagnosticBrowser ? `Diagnosing ${browser}` : diagnostic ? `Diagnose ${browser} again` : `Diagnose ${browser}`}</span>
+                  </button>
+                {/each}
+              </div>
+              {#if snapPolicyDiagnosticError}
+                <p class="result-text danger-text">{snapPolicyDiagnosticError}</p>
+              {/if}
+              {#each ["opera", "vivaldi"] as browser (browser)}
+                {@const diagnostic = snapPolicyDiagnostics[browser as SnapPolicyDiagnosticBrowser]}
+                {#if diagnostic}
+                  <div class="status-list">
+                    <div class="status-row"><span>{diagnostic.browser} policy file</span><small>{diagnostic.policy_path}: {diagnostic.policy_file_state}</small></div>
+                    <div class="status-row"><span>Snap policy loader</span><strong data-state={snapPolicyLoaderState(diagnostic)}>{diagnostic.loader_state}</strong></div>
+                    <div class="status-row"><span>Loader path</span><small>{diagnostic.loader_path ?? "not reported"}</small></div>
+                    <div class="status-row"><span>Heartbeat</span><small>{diagnostic.heartbeat ? `${diagnostic.heartbeat.component}: ${diagnostic.heartbeat.state}; ${diagnostic.heartbeat.detail}` : "unavailable"}</small></div>
+                  </div>
+                  <div class="log-file-note">
+                    <FileText size={18} aria-hidden="true" />
+                    <div><strong>Probe evidence</strong><code>{diagnostic.loader_line ?? diagnostic.detail}</code><small>Open {diagnostic.policy_page} after a full browser restart to inspect any rejected policy keys.</small></div>
+                  </div>
+                {/if}
+              {/each}
             </section>
           </section>
         {:else if activeSection === "policy"}

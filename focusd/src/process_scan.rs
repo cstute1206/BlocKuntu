@@ -246,6 +246,17 @@ impl ProcessInfo {
 }
 
 pub fn supported_browser_for_process(process: &ProcessIdentity) -> Option<SupportedBrowser> {
+    if process
+        .executable_path
+        .as_deref()
+        .is_some_and(|path| path.starts_with("/snap/chromium/"))
+    {
+        // Chromium Snap's main executable is named `chrome`, and its user agent
+        // likewise identifies as Chrome. The immutable Snap path is the reliable
+        // distinction, so check it before generic executable-name matching.
+        return Some(SupportedBrowser::Chromium);
+    }
+
     let names = [
         process.executable_basename.as_deref(),
         process.command_name.as_deref(),

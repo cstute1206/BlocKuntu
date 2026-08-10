@@ -16,6 +16,8 @@ pub enum NativeHostError {
     DaemonResponseTooLarge { limit: usize },
     #[error("daemon returned an empty response from {socket}")]
     EmptyDaemonResponse { socket: PathBuf },
+    #[error("Snap native bridge token must be exactly 64 hexadecimal characters")]
+    InvalidSnapBridgeToken,
     #[error("daemon response is not valid JSON: {0}")]
     InvalidDaemonResponse(String),
 }

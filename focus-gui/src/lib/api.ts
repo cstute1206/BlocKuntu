@@ -18,6 +18,8 @@ import type {
   Rule,
   RecoveryCredentials,
   Schedule,
+  SnapPolicyDiagnostic,
+  SnapPolicyDiagnosticBrowser,
   SystemHealth,
   Tier1EditStatus,
   ChromiumIncognitoDisableScope,
@@ -199,6 +201,13 @@ export function runningApps(socketPath?: string): Promise<RunningAppsResponse> {
 
 export function systemHealth(socketPath?: string): Promise<SystemHealth> {
   return invoke("system_health", { socketPath });
+}
+
+export function diagnoseSnapPolicy(
+  browser: SnapPolicyDiagnosticBrowser,
+  socketPath?: string
+): Promise<SnapPolicyDiagnostic> {
+  return invoke("diagnose_snap_policy", { browser, socketPath });
 }
 
 export function evaluateUrl(

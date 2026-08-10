@@ -46,9 +46,20 @@ The Health section reports daemon, browser integration, policy, and hosts-file
 checks. Users install the Firefox extension from AMO in Firefox, LibreWolf, or Waterfox,
 and the Chrome Web Store extension in Chrome, Chromium, Brave, Opera, Microsoft Edge, or
 Vivaldi. After each extension's first successful heartbeat, BlocKuntu writes its managed policy
-and locks that same store-installed extension. Opera and Edge require turning on **Allow extensions
-from other stores**; Vivaldi requires enabling Web Store in its Google Extensions setting. Chromium,
-Opera Snap, and Vivaldi Flatpak builds still require clean-VM validation.
+and locks that same store-installed extension when the browser installation supports managed
+policy. Opera and Edge require turning on **Allow extensions from other stores**; Vivaldi requires
+enabling Web Store in its Google Extensions setting. Strict
+Chromium, Brave, Opera, and Vivaldi Snaps receive a per-user copy of the Native
+Messaging bridge and a manifest in their Snap-visible profile when BlocKuntu
+starts. The bridge uses an authenticated local TCP connection because strict
+Snaps cannot reach the daemon's Unix socket. Opera and Vivaldi Snap extensions
+can therefore send heartbeats, but their current strict Snap packages cannot
+read host-managed policy files. Their Snap installations cannot be force-
+installed or locked by policy, have private browsing disabled by policy, or use
+the private URL-blocklist policy. See
+[the installation limitation](INSTALLATION.md#opera-and-vivaldi-snap-policy-limitation)
+for the reason and diagnostic. Vivaldi Flatpak still requires clean-VM
+validation.
 
 In **Settings → Protected changes and uninstall**, Chromium-family private browsing has three
 explicit modes: disable private windows, leave the extension toggle to the user's manual consent,
@@ -106,3 +117,7 @@ require the browser extension.
 - Firefox, LibreWolf, Waterfox, Google Chrome, Chromium, Brave, Opera, Microsoft Edge, and Vivaldi are the
 supported browser-enforcement paths. Other browsers may be handled as blocked
 applications in strict mode.
+- Opera and Vivaldi strict Snaps are not supported for **managed-policy**
+  enforcement. Their Native Messaging integration can work, but policy-backed
+  extension locking, Incognito disabling, and private URL blocking cannot work
+  until their Snap packages expose a policy directory to the sandbox.

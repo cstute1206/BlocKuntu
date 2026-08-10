@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-19"
+VERSION="0.1.0-23"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
@@ -25,7 +25,7 @@ store-installed extension.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-19.
+  --version VERSION   Package version, default 0.1.0-23.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -121,11 +121,25 @@ install -Dm755 native-host/target/release/blockuntu-native "${PKG_ROOT}/usr/bin/
 install -Dm755 focus-gui/src-tauri/target/release/blockuntu-gui "${PKG_ROOT}/usr/bin/blockuntu-gui"
 install -Dm755 scripts/setup-confined-firefox-native-host.sh \
   "${PKG_ROOT}/usr/lib/blockuntu/setup-confined-firefox-native-host.sh"
+install -Dm755 scripts/setup-confined-chromium-native-host.sh \
+  "${PKG_ROOT}/usr/lib/blockuntu/setup-confined-chromium-native-host.sh"
+install -Dm755 scripts/diagnose-snap-policy.sh \
+  "${PKG_ROOT}/usr/lib/blockuntu/diagnose-snap-policy.sh"
 cat >"${PKG_ROOT}/usr/bin/blockuntu-setup-confined-firefox" <<'SH'
 #!/bin/sh
 exec /usr/lib/blockuntu/setup-confined-firefox-native-host.sh "$@"
 SH
 chmod 0755 "${PKG_ROOT}/usr/bin/blockuntu-setup-confined-firefox"
+cat >"${PKG_ROOT}/usr/bin/blockuntu-setup-confined-chromium" <<'SH'
+#!/bin/sh
+exec /usr/lib/blockuntu/setup-confined-chromium-native-host.sh "$@"
+SH
+chmod 0755 "${PKG_ROOT}/usr/bin/blockuntu-setup-confined-chromium"
+cat >"${PKG_ROOT}/usr/bin/blockuntu-diagnose-snap-policy" <<'SH'
+#!/bin/sh
+exec /usr/lib/blockuntu/diagnose-snap-policy.sh "$@"
+SH
+chmod 0755 "${PKG_ROOT}/usr/bin/blockuntu-diagnose-snap-policy"
 
 install -Dm644 packaging/deb/blockuntu.toml "${PKG_ROOT}/etc/blockuntu/config.toml"
 
@@ -168,7 +182,7 @@ install -Dm644 packaging/systemd/blockuntu-hosts.service \
   "${PKG_ROOT}/lib/systemd/system/blockuntu-hosts.service"
 
 sed -i \
-  's#ExecStart=/usr/local/bin/blockuntud serve#ExecStart=/usr/bin/blockuntud --defer-browser-policy-repair-until-heartbeat serve#' \
+  's#ExecStart=/usr/local/bin/blockuntud serve#ExecStart=/usr/bin/blockuntud --snap-native-bridge --defer-browser-policy-repair-until-heartbeat serve#' \
   "${PKG_ROOT}/lib/systemd/system/blockuntu.service"
 sed -i 's#ExecStart=/usr/local/bin/blockuntud repair-hosts#ExecStart=/usr/bin/blockuntud repair-hosts#' \
   "${PKG_ROOT}/lib/systemd/system/blockuntu-hosts.service"
@@ -274,11 +288,25 @@ create_recovery_credential() {
   rm -f "${temp_file}"
 }
 
+create_snap_native_bridge_token() {
+  token_file="/etc/blockuntu/snap-native-bridge-token"
+  if [ -s "${token_file}" ] && grep -Eq '^[0-9A-Fa-f]{64}$' "${token_file}"; then
+    return 0
+  fi
+  random_hex="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  temp_file="$(mktemp)"
+  printf '%s\n' "${random_hex}" >"${temp_file}"
+  install -d -o root -g root -m 0755 /etc/blockuntu
+  install -o root -g blockuntu -m 0640 "${temp_file}" "${token_file}"
+  rm -f "${temp_file}"
+}
+
 create_installation_serial
 if [ ! -e /var/lib/blockuntu/recovery-credentials-hidden ]; then
   create_recovery_credential /etc/blockuntu/uninstall-recovery.txt BLOCKUNTU-UNINSTALL-RECOVERY
   create_recovery_credential /etc/blockuntu/tier1-edit-key.txt BLOCKUNTU-TIER1-EDIT
 fi
+create_snap_native_bridge_token
 
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
@@ -308,6 +336,8 @@ Settings > Privacy and Security > Google Extensions first.
 If you use Firefox Snap or Flatpak, BlocKuntu configures its per-user browser
 integration automatically when the GUI starts. Its Flatpak policy is written
 after the first verified Firefox heartbeat.
+Chromium, Brave, Opera, and Vivaldi Snaps receive the same per-user setup when
+the GUI starts; restart each affected browser afterwards.
 
 Open the GUI once after the first login and store the recovery credentials shown
 in the welcome modal. You can hide and remove them permanently from Settings.
@@ -408,6 +438,9 @@ remove_browser_policies() {
   fi
 
   rm -f "${chrome_policy}" "${chromium_policy}" "${brave_policy}" "${opera_policy}" "${edge_policy}" "${vivaldi_policy}" "${legacy_vivaldi_policy}"
+  for chromium_snap_policy in /var/snap/chromium/*/policies/managed/blockuntu.json; do
+    [ -f "${chromium_snap_policy}" ] && rm -f "${chromium_snap_policy}"
+  done
   rm -f "${chrome_update_manifest}"
   remove_empty_dir "/etc/opt/chrome/policies/managed"
   remove_empty_dir "/etc/opt/chrome/policies"
