@@ -401,6 +401,34 @@ pub fn supported_browser_for_process(process: &ProcessIdentity) -> Option<Suppor
     None
 }
 
+/// Returns package-specific browser installations that must not be treated as
+/// managed browsers. Browser executable names alone are not sufficient: the
+/// same Chromium-family browser can be supported in one package format and
+/// unsupported in another.
+pub fn unsupported_browser_installation_for_process(
+    process: &ProcessIdentity,
+) -> Option<&'static str> {
+    let executable_path = process.executable_path.as_deref().map(Path::new);
+
+    if executable_path.is_some_and(|path| path.starts_with("/snap/brave")) {
+        return Some("brave-snap");
+    }
+    if executable_path.is_some_and(|path| path.starts_with("/snap/opera")) {
+        return Some("opera-snap");
+    }
+    if executable_path.is_some_and(|path| path.starts_with("/snap/vivaldi")) {
+        return Some("vivaldi-snap");
+    }
+
+    // Flatpak supplies FLATPAK_ID to the process. scan_procfs records that as
+    // the desktop ID, including when Chromium was started with `flatpak run`.
+    process
+        .desktop_id
+        .as_deref()
+        .is_some_and(|desktop_id| desktop_id.eq_ignore_ascii_case("org.chromium.Chromium.desktop"))
+        .then_some("chromium-flatpak")
+}
+
 fn matches_normalized(value: &str, expected_values: &[&str]) -> bool {
     let value = value.trim().to_ascii_lowercase();
     expected_values.iter().any(|expected| value == *expected)
@@ -535,9 +563,12 @@ mod tests {
     use std::collections::HashMap;
     use std::os::unix::fs::symlink;
 
+    use focus_core::ProcessIdentity;
+
     use super::{
-        attach_window_titles, kill_processes, parse_wmctrl_titles, scan_procfs, ProcessInfo,
-        ProcessKiller, WindowTitleProvider,
+        attach_window_titles, kill_processes, parse_wmctrl_titles, scan_procfs,
+        unsupported_browser_installation_for_process, ProcessInfo, ProcessKiller,
+        WindowTitleProvider,
     };
     use crate::error::Result;
 
@@ -617,6 +648,54 @@ mod tests {
         assert_eq!(
             titles.get(&1234),
             Some(&vec!["KMines - 4 mines".to_string()])
+        );
+    }
+
+    #[test]
+    fn identifies_unsupported_browser_package_variants_without_blocking_chromium_snap() {
+        let identity = |executable_path: &str, desktop_id: Option<&str>| ProcessIdentity {
+            pid: Some(1234),
+            executable_path: Some(executable_path.to_string()),
+            executable_basename: Some("chrome".to_string()),
+            command_name: Some("chrome".to_string()),
+            desktop_id: desktop_id.map(ToOwned::to_owned),
+            window_titles: Vec::new(),
+        };
+
+        assert_eq!(
+            unsupported_browser_installation_for_process(&identity(
+                "/snap/brave/999/opt/brave.com/brave/brave",
+                None,
+            )),
+            Some("brave-snap")
+        );
+        assert_eq!(
+            unsupported_browser_installation_for_process(&identity(
+                "/snap/opera/999/usr/lib/x86_64-linux-gnu/opera/opera",
+                None,
+            )),
+            Some("opera-snap")
+        );
+        assert_eq!(
+            unsupported_browser_installation_for_process(&identity(
+                "/snap/vivaldi/999/opt/vivaldi/vivaldi",
+                None,
+            )),
+            Some("vivaldi-snap")
+        );
+        assert_eq!(
+            unsupported_browser_installation_for_process(&identity(
+                "/app/chromium/chrome",
+                Some("org.chromium.Chromium.desktop"),
+            )),
+            Some("chromium-flatpak")
+        );
+        assert_eq!(
+            unsupported_browser_installation_for_process(&identity(
+                "/snap/chromium/999/usr/lib/chromium-browser/chrome",
+                Some("chromium_chromium.desktop"),
+            )),
+            None
         );
     }
 }

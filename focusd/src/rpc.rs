@@ -2603,16 +2603,19 @@ fn set_protected_access_mode_method(
 fn set_protected_access_mode(context: &RpcContext, mode: ProtectedAccessMode) -> Result<()> {
     let now = Utc::now();
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    core.database().set_service_state(
+    for key in [
         PROTECTED_ACCESS_MODE_KEY,
-        protected_access_mode_name(mode),
-        now,
-    )?;
+        UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
+        CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY,
+    ] {
+        core.database()
+            .set_service_state(key, protected_access_mode_name(mode), now)?;
+    }
     core.database().record_event(
         "protected_access_mode_updated",
         Some("protected_changes"),
         Some(&format!(
-            "Protected actions are available {}",
+            "Tier 1 edits, uninstall, unsupported-browser blocking, and Chromium private-browsing settings are available {}",
             protected_access_mode_description(mode)
         )),
         now,
@@ -2624,23 +2627,10 @@ fn set_unsupported_browser_block_mode_method(
     context: &RpcContext,
     params: SetUnsupportedBrowserBlockModeParams,
 ) -> Result<Value> {
+    set_protected_access_mode(context, params.mode)?;
     let now = Utc::now();
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    core.database().set_service_state(
-        UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
-        protected_access_mode_name(params.mode),
-        now,
-    )?;
     let active = unsupported_browser_block_is_active(&core, now.fixed_offset(), false)?;
-    core.database().record_event(
-        "unsupported_browser_block_mode_updated",
-        Some(UNSUPPORTED_BROWSER_RULE_ID),
-        Some(&format!(
-            "Tier 1 blocked-browser list is active {}",
-            protected_access_mode_description(params.mode)
-        )),
-        now,
-    )?;
     Ok(json!({ "mode": params.mode, "active": active }))
 }
 
@@ -2745,28 +2735,7 @@ fn set_chromium_incognito_change_access_mode_method(
     context: &RpcContext,
     params: SetChromiumIncognitoChangeAccessModeParams,
 ) -> Result<Value> {
-    let guarded = guarded_now_with_status(context, None)?;
-    let now = guarded.now;
-    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-    ensure_chromium_incognito_settings_change_allowed(
-        &core,
-        now,
-        guarded.integrity.state == "tampered",
-    )?;
-    core.database().set_service_state(
-        CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY,
-        protected_access_mode_name(params.mode),
-        now.with_timezone(&Utc),
-    )?;
-    core.database().record_event(
-        "chromium_incognito_change_access_mode_updated",
-        Some("browser_policy"),
-        Some(&format!(
-            "Chromium private browsing settings can be changed {}",
-            protected_access_mode_description(params.mode)
-        )),
-        now.with_timezone(&Utc),
-    )?;
+    set_protected_access_mode(context, params.mode)?;
     Ok(json!({ "mode": params.mode }))
 }
 
@@ -3805,18 +3774,7 @@ fn protected_access_mode(core: &FocusCore) -> Result<ProtectedAccessMode> {
 }
 
 fn unsupported_browser_block_mode(core: &FocusCore) -> Result<ProtectedAccessMode> {
-    match core
-        .database()
-        .service_state(UNSUPPORTED_BROWSER_BLOCK_MODE_KEY)?
-        .as_deref()
-    {
-        Some("sunday") => Ok(ProtectedAccessMode::Sunday),
-        Some("no_active_schedule_or_detox") => Ok(ProtectedAccessMode::NoActiveScheduleOrDetox),
-        Some("all_time") | None => Ok(ProtectedAccessMode::AllTime),
-        Some(mode) => Err(DaemonError::InvalidRequest(format!(
-            "invalid unsupported browser block mode '{mode}'"
-        ))),
-    }
+    protected_access_mode(core)
 }
 
 pub(crate) fn chromium_incognito_policy_settings(
@@ -3865,7 +3823,8 @@ fn chromium_incognito_mode(core: &FocusCore) -> Result<ChromiumIncognitoMode> {
         .as_deref()
     {
         Some("disabled") => Ok(ChromiumIncognitoMode::Disabled),
-        Some("manual_consent") | None => Ok(ChromiumIncognitoMode::ManualConsent),
+        Some("manual_consent") => Ok(ChromiumIncognitoMode::ManualConsent),
+        None => Ok(ChromiumIncognitoMode::default()),
         Some("policy_url_blocking") => Ok(ChromiumIncognitoMode::PolicyUrlBlocking),
         Some(mode) => Err(DaemonError::InvalidRequest(format!(
             "invalid Chromium private browsing mode '{mode}'"
@@ -3992,18 +3951,7 @@ fn chromium_incognito_disable_scope_description(
 }
 
 fn chromium_incognito_change_access_mode(core: &FocusCore) -> Result<ProtectedAccessMode> {
-    match core
-        .database()
-        .service_state(CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY)?
-        .as_deref()
-    {
-        Some("sunday") => Ok(ProtectedAccessMode::Sunday),
-        Some("no_active_schedule_or_detox") => Ok(ProtectedAccessMode::NoActiveScheduleOrDetox),
-        Some("all_time") | None => Ok(ProtectedAccessMode::AllTime),
-        Some(mode) => Err(DaemonError::InvalidRequest(format!(
-            "invalid Chromium private browsing settings access mode '{mode}'"
-        ))),
-    }
+    protected_access_mode(core)
 }
 
 fn chromium_incognito_settings_change_allowed(
@@ -4579,8 +4527,7 @@ mod tests {
         chromium_incognito_settings_change_allowed, chromium_incognito_url_blocklist,
         handle_payload, infer_browser_from_running_browsers, parse_optional_now,
         running_app_snapshots_from_processes, ChromiumPolicyBinding, GeckoPolicyBinding,
-        RpcContext, CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY,
-        CHROMIUM_INCOGNITO_DISABLE_SCOPE_KEY,
+        RpcContext, CHROMIUM_INCOGNITO_DISABLE_SCOPE_KEY,
     };
     use crate::process_scan::{ProcessInfo, SupportedBrowser};
 
@@ -4715,11 +4662,11 @@ mod tests {
             .expect("disable scope should persist");
         core.database()
             .set_service_state(
-                CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY,
+                super::PROTECTED_ACCESS_MODE_KEY,
                 "no_active_schedule_or_detox",
                 active.with_timezone(&Utc),
             )
-            .expect("change access mode should persist");
+            .expect("protected access mode should persist");
 
         let active_settings = chromium_incognito_policy_settings(
             &core,
@@ -6571,6 +6518,22 @@ mod tests {
             set_idle_response["result"]["mode"],
             "no_active_schedule_or_detox"
         );
+        let idle_core = idle_context.core.lock().expect("core should lock");
+        for key in [
+            super::PROTECTED_ACCESS_MODE_KEY,
+            super::UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
+            super::CHROMIUM_INCOGNITO_CHANGE_ACCESS_MODE_KEY,
+        ] {
+            assert_eq!(
+                idle_core
+                    .database()
+                    .service_state(key)
+                    .expect("protected access mode should read")
+                    .as_deref(),
+                Some("no_active_schedule_or_detox")
+            );
+        }
+        drop(idle_core);
 
         let idle_unlock = json!({
             "jsonrpc": "2.0",
@@ -6668,7 +6631,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_browser_block_mode_uses_the_selected_activation_condition() {
+    fn protected_access_mode_controls_unsupported_browser_block_activation() {
         let context = active_scheduled_rpc_context();
         let core = context.core.lock().expect("core should lock");
         let active_schedule_time =
@@ -6679,35 +6642,27 @@ mod tests {
 
         core.database()
             .set_service_state(
-                super::UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
+                super::PROTECTED_ACCESS_MODE_KEY,
                 "no_active_schedule_or_detox",
                 Utc::now(),
             )
-            .expect("browser block mode should persist");
+            .expect("protected access mode should persist");
         assert!(
             !super::unsupported_browser_block_is_active(&core, active_schedule_time, false)
                 .expect("browser block should evaluate")
         );
 
         core.database()
-            .set_service_state(
-                super::UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
-                "all_time",
-                Utc::now(),
-            )
-            .expect("browser block mode should persist");
+            .set_service_state(super::PROTECTED_ACCESS_MODE_KEY, "all_time", Utc::now())
+            .expect("protected access mode should persist");
         assert!(
             super::unsupported_browser_block_is_active(&core, active_schedule_time, false)
                 .expect("browser block should evaluate")
         );
 
         core.database()
-            .set_service_state(
-                super::UNSUPPORTED_BROWSER_BLOCK_MODE_KEY,
-                "sunday",
-                Utc::now(),
-            )
-            .expect("browser block mode should persist");
+            .set_service_state(super::PROTECTED_ACCESS_MODE_KEY, "sunday", Utc::now())
+            .expect("protected access mode should persist");
         assert!(
             !super::unsupported_browser_block_is_active(&core, active_schedule_time, false)
                 .expect("browser block should evaluate")

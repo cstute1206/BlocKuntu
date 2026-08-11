@@ -8,6 +8,11 @@ the Chromium enterprise policies which make an extension non-removable,
 disable private browsing, or enforce URL blocking are not reliably deployed
 inside the Flatpak sandbox.
 
+Chromium Flatpak is therefore an unsupported browser installation. Whenever
+BlocKuntu's automatic Tier 1 blocked-browser list is active, the daemon
+terminates it. This is intentionally separate from Chromium Snap, which has
+its own supported package path.
+
 This note records the work that was tried, why it was withdrawn, and the
 constraints a future implementation must satisfy.  It deliberately does not
 turn an experimental setup into an installation instruction.

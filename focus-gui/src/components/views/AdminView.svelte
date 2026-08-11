@@ -16,7 +16,6 @@
     X,
     XCircle
   } from "@lucide/svelte";
-  import { diagnoseSnapPolicy } from "../../lib/api";
   import type {
     EnforcementStatus,
     HealthCheck,
@@ -24,8 +23,6 @@
     ChromiumIncognitoDisableScope,
     ChromiumIncognitoMode,
     ProtectedAccessMode,
-    SnapPolicyDiagnostic,
-    SnapPolicyDiagnosticBrowser,
     SystemHealth,
     UninstallResult
   } from "../../lib/types";
@@ -39,6 +36,7 @@
 
   interface Props {
     health: SystemHealth | null;
+    healthRefreshing: boolean;
     enforcement: EnforcementStatus | null;
     notificationPreferences: NotificationPreferences | null;
     notificationPreferencesSaving: boolean;
@@ -56,18 +54,16 @@
     protectedAccessMode: ProtectedAccessMode;
     protectedAccessOpen: boolean;
     protectedAccessLabel: string;
-    unsupportedBrowserBlockMode: ProtectedAccessMode;
     unsupportedBrowserBlockActive: boolean;
     chromiumIncognitoMode: ChromiumIncognitoMode;
     chromiumIncognitoDisableScope: ChromiumIncognitoDisableScope;
     chromiumIncognitoPrivateBrowsingDisabled: boolean;
-    chromiumIncognitoChangeAccessMode: ProtectedAccessMode;
-    chromiumIncognitoSettingsChangeAllowed: boolean;
     chromiumIncognitoUrlBlockCount: number;
     chromiumIncognitoUnsupportedPatternCount: number;
     chromiumIncognitoUrlBlockLimitExceeded: boolean;
     tier1EditCredentialConfigured: boolean;
     tier1EditMessage: string | null;
+    tier1EditError: string | null;
     timeFormat: "12h" | "24h";
     policyExportRunning: boolean;
     policyImportRunning: boolean;
@@ -77,13 +73,9 @@
     onRunUninstallBlockuntu: () => void | Promise<void>;
     onUnlockTier1Edit: () => void | Promise<void>;
     onUpdateProtectedAccessMode: (mode: ProtectedAccessMode) => void | Promise<void>;
-    onUpdateUnsupportedBrowserBlockMode: (mode: ProtectedAccessMode) => void | Promise<void>;
     onUpdateChromiumIncognitoMode: (mode: ChromiumIncognitoMode) => void | Promise<void>;
     onUpdateChromiumIncognitoDisableScope: (
       scope: ChromiumIncognitoDisableScope
-    ) => void | Promise<void>;
-    onUpdateChromiumIncognitoChangeAccessMode: (
-      mode: ProtectedAccessMode
     ) => void | Promise<void>;
     onExportPolicyToml: () => void | Promise<void>;
     onImportPolicyToml: () => void | Promise<void>;
@@ -106,6 +98,7 @@
 
   let {
     health,
+    healthRefreshing,
     enforcement,
     notificationPreferences,
     notificationPreferencesSaving,
@@ -123,18 +116,16 @@
     protectedAccessMode,
     protectedAccessOpen,
     protectedAccessLabel,
-    unsupportedBrowserBlockMode,
     unsupportedBrowserBlockActive,
     chromiumIncognitoMode,
     chromiumIncognitoDisableScope,
     chromiumIncognitoPrivateBrowsingDisabled,
-    chromiumIncognitoChangeAccessMode,
-    chromiumIncognitoSettingsChangeAllowed,
     chromiumIncognitoUrlBlockCount,
     chromiumIncognitoUnsupportedPatternCount,
     chromiumIncognitoUrlBlockLimitExceeded,
     tier1EditCredentialConfigured,
     tier1EditMessage,
+    tier1EditError,
     timeFormat,
     policyExportRunning,
     policyImportRunning,
@@ -144,10 +135,8 @@
     onRunUninstallBlockuntu,
     onUnlockTier1Edit,
     onUpdateProtectedAccessMode,
-    onUpdateUnsupportedBrowserBlockMode,
     onUpdateChromiumIncognitoMode,
     onUpdateChromiumIncognitoDisableScope,
-    onUpdateChromiumIncognitoChangeAccessMode,
     onExportPolicyToml,
     onImportPolicyToml,
     onUpdateNotificationPreferences,
@@ -160,15 +149,19 @@
 
   let activeSection: SettingsSection = $state("health");
   let customAllowanceThreshold = $state("");
-  let snapPolicyDiagnosticRunning = $state<SnapPolicyDiagnosticBrowser | null>(null);
-  let snapPolicyDiagnosticError = $state<string | null>(null);
-  let snapPolicyDiagnostics = $state<Partial<Record<SnapPolicyDiagnosticBrowser, SnapPolicyDiagnostic>>>({});
   $effect(() => {
     customAllowanceThreshold = String(
       notificationPreferences?.allowance_warning_minutes.find(
         (minutes) => minutes !== 5 && minutes !== 1
       ) ?? ""
     );
+  });
+  $effect(() => {
+    if (activeSection !== "health") return;
+    const healthRefreshInterval = window.setInterval(() => {
+      void onRefreshHealth();
+    }, 60_000);
+    return () => window.clearInterval(healthRefreshInterval);
   });
   let healthChecks = $derived(health?.checks ?? []);
   let okHealthCount = $derived(healthChecks.filter((check) => check.state === "ok").length);
@@ -200,26 +193,6 @@
     if (state === "inactive") return "not running";
     if (state === "pending") return "starting";
     return state;
-  }
-
-  async function runSnapPolicyDiagnostic(browser: SnapPolicyDiagnosticBrowser): Promise<void> {
-    if (snapPolicyDiagnosticRunning) return;
-    snapPolicyDiagnosticRunning = browser;
-    snapPolicyDiagnosticError = null;
-    try {
-      const diagnostic = await diagnoseSnapPolicy(browser);
-      snapPolicyDiagnostics = { ...snapPolicyDiagnostics, [browser]: diagnostic };
-    } catch (error) {
-      snapPolicyDiagnosticError = error instanceof Error ? error.message : String(error);
-    } finally {
-      snapPolicyDiagnosticRunning = null;
-    }
-  }
-
-  function snapPolicyLoaderState(diagnostic: SnapPolicyDiagnostic): "ok" | "warn" | "error" {
-    if (diagnostic.loader_state === "found") return "ok";
-    if (diagnostic.loader_state === "missing") return "error";
-    return "warn";
   }
 
   function updateNotificationPreferences(
@@ -294,6 +267,34 @@
   function closeFromBackdrop(event: MouseEvent): void {
     if (event.currentTarget === event.target) onClose();
   }
+
+  function selectSettingsSection(section: SettingsSection): void {
+    activeSection = section;
+    if (section === "health") {
+      void onRefreshHealth();
+    }
+  }
+
+  function requestProtectedAccessModeChange(event: Event): void {
+    const selector = event.currentTarget as HTMLSelectElement;
+    const mode = selector.value as ProtectedAccessMode;
+    selector.value = protectedAccessMode;
+    if (mode === protectedAccessMode) return;
+    if (
+      window.confirm(
+        `Set protected settings access to ${protectedAccessModeLabel(mode)}?\n\nThis applies to Tier 1 edits and uninstall, Tier 1 blocked browsers, and changes to Chromium private-browsing settings.`
+      )
+    ) {
+      void onUpdateProtectedAccessMode(mode);
+    }
+  }
+
+  function protectedAccessModeLabel(mode: ProtectedAccessMode): string {
+    if (mode === "sunday") return "Sunday restriction (20:00-23:59)";
+    if (mode === "no_active_schedule_or_detox") return "Only when no schedule or Detox is active";
+    return "All the time";
+  }
+
 </script>
 
 <div class="settings-modal-backdrop" role="presentation" onclick={closeFromBackdrop}>
@@ -321,7 +322,7 @@
           {@const SectionIcon = section.icon}
           <button
             class:active={activeSection === section.id}
-            onclick={() => (activeSection = section.id)}
+            onclick={() => selectSettingsSection(section.id)}
           >
             <SectionIcon size={17} aria-hidden="true" />
             <span>{section.label}</span>
@@ -335,12 +336,12 @@
             <div class="settings-panel-header">
               <div>
                 <h3>Health</h3>
-                <p>Live daemon, browser, and enforcement checks.</p>
+                <p>Live daemon and enforcement checks, plus checks for supported browsers installed on this system.</p>
               </div>
               <div class="panel-actions">
-                <button class="secondary" onclick={onRefreshHealth}>
+                <button class="secondary" onclick={onRefreshHealth} disabled={healthRefreshing}>
                   <RefreshCw size={17} aria-hidden="true" />
-                  <span>Refresh</span>
+                  <span>{healthRefreshing ? "Refreshing" : "Refresh"}</span>
                 </button>
               </div>
             </div>
@@ -369,44 +370,6 @@
                 <div class="status-row"><span>Unsupported browsers</span><small>{healthChecks.find((check) => check.key === "unsupported_browser_hard_block")?.detail ?? "unavailable"}</small></div>
               </div>
               <p class="settings-note">Browser integration health is included in the Health checks above.</p>
-            </section>
-            <section class="settings-subsection">
-              <div class="settings-subsection-header">
-                <h4>Opera and Vivaldi Snap policy diagnosis</h4>
-                <p>Runs a short isolated browser probe. It never changes your browser profile or policy.</p>
-              </div>
-              <div class="policy-file-actions">
-                {#each ["opera", "vivaldi"] as browser (browser)}
-                  {@const diagnosticBrowser = browser as SnapPolicyDiagnosticBrowser}
-                  {@const diagnostic = snapPolicyDiagnostics[diagnosticBrowser]}
-                  <button
-                    class="secondary"
-                    disabled={snapPolicyDiagnosticRunning !== null}
-                    onclick={() => void runSnapPolicyDiagnostic(diagnosticBrowser)}
-                  >
-                    <Activity size={17} aria-hidden="true" />
-                    <span>{snapPolicyDiagnosticRunning === diagnosticBrowser ? `Diagnosing ${browser}` : diagnostic ? `Diagnose ${browser} again` : `Diagnose ${browser}`}</span>
-                  </button>
-                {/each}
-              </div>
-              {#if snapPolicyDiagnosticError}
-                <p class="result-text danger-text">{snapPolicyDiagnosticError}</p>
-              {/if}
-              {#each ["opera", "vivaldi"] as browser (browser)}
-                {@const diagnostic = snapPolicyDiagnostics[browser as SnapPolicyDiagnosticBrowser]}
-                {#if diagnostic}
-                  <div class="status-list">
-                    <div class="status-row"><span>{diagnostic.browser} policy file</span><small>{diagnostic.policy_path}: {diagnostic.policy_file_state}</small></div>
-                    <div class="status-row"><span>Snap policy loader</span><strong data-state={snapPolicyLoaderState(diagnostic)}>{diagnostic.loader_state}</strong></div>
-                    <div class="status-row"><span>Loader path</span><small>{diagnostic.loader_path ?? "not reported"}</small></div>
-                    <div class="status-row"><span>Heartbeat</span><small>{diagnostic.heartbeat ? `${diagnostic.heartbeat.component}: ${diagnostic.heartbeat.state}; ${diagnostic.heartbeat.detail}` : "unavailable"}</small></div>
-                  </div>
-                  <div class="log-file-note">
-                    <FileText size={18} aria-hidden="true" />
-                    <div><strong>Probe evidence</strong><code>{diagnostic.loader_line ?? diagnostic.detail}</code><small>Open {diagnostic.policy_page} after a full browser restart to inspect any rejected policy keys.</small></div>
-                  </div>
-                {/if}
-              {/each}
             </section>
           </section>
         {:else if activeSection === "policy"}
@@ -437,14 +400,11 @@
                 <div class="status-row"><span>Available</span><small>{protectedAccessLabel}</small></div>
                 <div class="status-row"><span>Edit unlock</span><small>{protectionState}</small></div>
               </div>
-              <label class="preference-row"><span><strong>Tier 1 edits and uninstall</strong><small>Choose when protected changes and the GUI uninstall can be authorized. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={(event) => onUpdateProtectedAccessMode((event.currentTarget as HTMLSelectElement).value as ProtectedAccessMode)}><option value="sunday">Sunday restriction (20:00-23:59)</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="all_time">All the time</option></select></label>
-              <label class="preference-row"><span><strong>Tier 1 blocked browsers</strong><small>Choose when BlocKuntu blocks browsers without a supported extension. It remains active if the clock is tampered with.</small></span><select value={unsupportedBrowserBlockMode} onchange={(event) => onUpdateUnsupportedBrowserBlockMode((event.currentTarget as HTMLSelectElement).value as ProtectedAccessMode)}><option value="sunday">Sunday restriction (20:00-23:59)</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="all_time">All the time</option></select></label>
-              <p class="settings-note">Tier 1 blocked browsers are currently {unsupportedBrowserBlockActive ? "active" : "inactive"}.</p>
-              <label class="preference-row"><span><strong>Change Chromium private-browsing settings</strong><small>Choose when the settings below can be changed. The current choice also protects itself, so select a restrictive option only when you are ready to use it.</small></span><select value={chromiumIncognitoChangeAccessMode} disabled={!chromiumIncognitoSettingsChangeAllowed} onchange={(event) => onUpdateChromiumIncognitoChangeAccessMode((event.currentTarget as HTMLSelectElement).value as ProtectedAccessMode)}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
-              <p class="settings-note">Chromium private-browsing settings are currently {chromiumIncognitoSettingsChangeAllowed ? "available to change" : "locked by their change window"}.</p>
-              <label class="preference-row"><span><strong>Chromium private browsing</strong><small>Choose how Chrome, Chromium, Brave, Opera, Edge, and Vivaldi handle private windows. Manual consent is controlled by the browser and a user can revoke it; BlocKuntu cannot policy-force the extension toggle.</small></span><select value={chromiumIncognitoMode} disabled={!chromiumIncognitoSettingsChangeAllowed} onchange={(event) => onUpdateChromiumIncognitoMode((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoMode)}><option value="disabled">Disable private browsing</option><option value="manual_consent">Allow with manual extension consent</option><option value="policy_url_blocking">Block URLs by browser policy</option></select></label>
+              <label class="preference-row"><span><strong>Protected settings access</strong><small>This one setting controls when Tier 1 edits and uninstall can be authorized, Tier 1 blocked browsers are active, and Chromium private-browsing settings can be changed. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={requestProtectedAccessModeChange}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
+              <p class="settings-note">Tier 1 blocked browsers are currently {unsupportedBrowserBlockActive ? "active" : "inactive"}. Chromium private-browsing settings are currently {protectedAccessOpen ? "available to change" : "locked by the protected settings access window"}.</p>
+              <label class="preference-row"><span><strong>Chromium private browsing</strong><small>Choose how Chrome, Chromium, Brave, Opera, Edge, and Vivaldi handle private windows. Manual consent is controlled by the browser and a user can revoke it; BlocKuntu cannot policy-force the extension toggle.</small></span><select value={chromiumIncognitoMode} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoMode((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoMode)}><option value="disabled">Disable private browsing</option><option value="manual_consent">Allow with manual extension consent</option><option value="policy_url_blocking">Block URLs by browser policy</option></select></label>
               {#if chromiumIncognitoMode === "disabled"}
-                <label class="preference-row"><span><strong>When to disable private browsing</strong><small>All the time is the default. The scoped option makes private browsing available outside every active schedule and Detox session.</small></span><select value={chromiumIncognitoDisableScope} disabled={!chromiumIncognitoSettingsChangeAllowed} onchange={(event) => onUpdateChromiumIncognitoDisableScope((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoDisableScope)}><option value="all_time">All the time</option><option value="active_schedule_or_detox">Only during an active schedule or Detox</option></select></label>
+                <label class="preference-row"><span><strong>When to disable private browsing</strong><small>All the time is the default. The scoped option makes private browsing available outside every active schedule and Detox session.</small></span><select value={chromiumIncognitoDisableScope} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoDisableScope((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoDisableScope)}><option value="all_time">All the time</option><option value="active_schedule_or_detox">Only during an active schedule or Detox</option></select></label>
                 <p class="settings-note">{chromiumIncognitoPrivateBrowsingDisabled ? "Private windows are currently disabled through the browser policy." : "Private windows are currently available and will be disabled when a schedule or Detox becomes active."}</p>
               {:else if chromiumIncognitoMode === "manual_consent"}
                 <p class="settings-note">The extension can run in private windows only after the user enables the browser’s private/incognito extension toggle; that consent can be withdrawn by the user.</p>
@@ -458,10 +418,11 @@
                 <button class="primary" onclick={onUnlockTier1Edit} disabled={tier1EditUnlocking || !canUnlockTier1Edit}><KeyRound size={17} aria-hidden="true" /><span>{tier1EditUnlocking ? "Unlocking" : "Unlock 5 min"}</span></button>
               </div>
               {#if tier1EditMessage}<p class="result-text">{tier1EditMessage}</p>{/if}
+              {#if tier1EditError}<p class="result-text danger-text">{tier1EditError}</p>{/if}
               <div class="button-row compact-row settings-action-row"><button class="secondary" onclick={onShowFirstRunOverview}>Show welcome modal</button></div>
-              {#if recoveryCredentialsVisible}<div class="button-row compact-row settings-action-row"><button class="secondary danger-action" onclick={onHideRecoveryCredentials}>Hide and remove recovery credentials</button></div>{/if}
+              {#if recoveryCredentialsVisible}<div class="button-row compact-row settings-action-row"><button class="secondary danger-action" onclick={onHideRecoveryCredentials}>Hide and remove displayed credentials</button></div>{/if}
               <div class="uninstall-form admin-action-form">
-                <label><span>Recovery uninstall phrase</span><input type="password" bind:value={uninstallPhraseInput} autocomplete="current-password" placeholder="Enter the recovery uninstall phrase" spellcheck="false" /></label>
+                <label><span>Uninstall phrase</span><input type="password" bind:value={uninstallPhraseInput} autocomplete="current-password" placeholder="Enter the uninstall phrase" spellcheck="false" /></label>
                 <button class="secondary danger-action" onclick={onRunUninstallBlockuntu} disabled={uninstallRunning || !canRunUninstall}><Trash2 size={17} aria-hidden="true" /><span>{uninstallRunning ? "Removing" : "Uninstall BlocKuntu"}</span></button>
               </div>
               {#if uninstallPhraseError}<p class="result-text danger-text">{uninstallPhraseError}</p>{/if}

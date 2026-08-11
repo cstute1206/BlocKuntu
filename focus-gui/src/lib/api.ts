@@ -18,8 +18,6 @@ import type {
   Rule,
   RecoveryCredentials,
   Schedule,
-  SnapPolicyDiagnostic,
-  SnapPolicyDiagnosticBrowser,
   SystemHealth,
   Tier1EditStatus,
   ChromiumIncognitoDisableScope,
@@ -203,13 +201,6 @@ export function systemHealth(socketPath?: string): Promise<SystemHealth> {
   return invoke("system_health", { socketPath });
 }
 
-export function diagnoseSnapPolicy(
-  browser: SnapPolicyDiagnosticBrowser,
-  socketPath?: string
-): Promise<SnapPolicyDiagnostic> {
-  return invoke("diagnose_snap_policy", { browser, socketPath });
-}
-
 export function evaluateUrl(
   url: string,
   socketPath?: string,
@@ -246,16 +237,6 @@ export function setProtectedAccessMode(
   }>;
 }
 
-export function setUnsupportedBrowserBlockMode(
-  mode: ProtectedAccessMode,
-  socketPath?: string
-): Promise<{ mode: ProtectedAccessMode; active: boolean }> {
-  return daemonRpc("set_unsupported_browser_block_mode", { mode }, socketPath) as Promise<{
-    mode: ProtectedAccessMode;
-    active: boolean;
-  }>;
-}
-
 export function setChromiumIncognitoMode(
   mode: ChromiumIncognitoMode,
   socketPath?: string
@@ -278,15 +259,6 @@ export function setChromiumIncognitoDisableScope(
   return daemonRpc("set_chromium_incognito_disable_scope", { scope }, socketPath) as Promise<{
     scope: ChromiumIncognitoDisableScope;
     private_browsing_disabled: boolean;
-  }>;
-}
-
-export function setChromiumIncognitoChangeAccessMode(
-  mode: ProtectedAccessMode,
-  socketPath?: string
-): Promise<{ mode: ProtectedAccessMode }> {
-  return daemonRpc("set_chromium_incognito_change_access_mode", { mode }, socketPath) as Promise<{
-    mode: ProtectedAccessMode;
   }>;
 }
 

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-23"
+VERSION="0.1.0-24"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
@@ -25,7 +25,7 @@ store-installed extension.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-23.
+  --version VERSION   Package version, default 0.1.0-24.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -123,8 +123,6 @@ install -Dm755 scripts/setup-confined-firefox-native-host.sh \
   "${PKG_ROOT}/usr/lib/blockuntu/setup-confined-firefox-native-host.sh"
 install -Dm755 scripts/setup-confined-chromium-native-host.sh \
   "${PKG_ROOT}/usr/lib/blockuntu/setup-confined-chromium-native-host.sh"
-install -Dm755 scripts/diagnose-snap-policy.sh \
-  "${PKG_ROOT}/usr/lib/blockuntu/diagnose-snap-policy.sh"
 cat >"${PKG_ROOT}/usr/bin/blockuntu-setup-confined-firefox" <<'SH'
 #!/bin/sh
 exec /usr/lib/blockuntu/setup-confined-firefox-native-host.sh "$@"
@@ -135,11 +133,6 @@ cat >"${PKG_ROOT}/usr/bin/blockuntu-setup-confined-chromium" <<'SH'
 exec /usr/lib/blockuntu/setup-confined-chromium-native-host.sh "$@"
 SH
 chmod 0755 "${PKG_ROOT}/usr/bin/blockuntu-setup-confined-chromium"
-cat >"${PKG_ROOT}/usr/bin/blockuntu-diagnose-snap-policy" <<'SH'
-#!/bin/sh
-exec /usr/lib/blockuntu/diagnose-snap-policy.sh "$@"
-SH
-chmod 0755 "${PKG_ROOT}/usr/bin/blockuntu-diagnose-snap-policy"
 
 install -Dm644 packaging/deb/blockuntu.toml "${PKG_ROOT}/etc/blockuntu/config.toml"
 

@@ -25,7 +25,7 @@ pub enum ChromiumIncognitoMode {
 
 impl Default for ChromiumIncognitoMode {
     fn default() -> Self {
-        Self::ManualConsent
+        Self::PolicyUrlBlocking
     }
 }
 
@@ -96,7 +96,7 @@ impl ChromePolicyManager {
     }
 
     pub fn expected_policy(&self) -> Value {
-        self.expected_policy_for(ChromiumIncognitoMode::ManualConsent, &[])
+        self.expected_policy_for(ChromiumIncognitoMode::default(), &[])
     }
 
     pub fn expected_policy_for(
@@ -138,7 +138,7 @@ impl ChromePolicyManager {
     }
 
     pub fn verify_and_repair(&self) -> Result<ChromePolicyRepairStatus> {
-        self.verify_and_repair_with(ChromiumIncognitoMode::ManualConsent, &[])
+        self.verify_and_repair_with(ChromiumIncognitoMode::default(), &[])
     }
 
     pub fn verify_and_repair_with(
@@ -179,7 +179,7 @@ impl ChromePolicyManager {
     }
 
     pub fn status(&self) -> ChromePolicyStatus {
-        self.status_with(ChromiumIncognitoMode::ManualConsent, &[])
+        self.status_with(ChromiumIncognitoMode::default(), &[])
     }
 
     pub fn status_with(

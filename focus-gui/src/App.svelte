@@ -40,11 +40,9 @@
     runningApps as fetchRunningApps,
     requestUnlock,
     scheduleActivitySummary,
-    setChromiumIncognitoChangeAccessMode,
     setChromiumIncognitoDisableScope,
     setChromiumIncognitoMode,
     setProtectedAccessMode,
-    setUnsupportedBrowserBlockMode,
     setNotificationPreferences,
     startDetox,
     systemHealth,
@@ -138,8 +136,8 @@
   let runningApps = $state<RunningApp[]>([]);
   let runningAppsLoading = $state(false);
   let runningAppsError: string | null = $state(null);
-  let runningAppsLoadedOnce = $state(false);
   let loading = $state(false);
+  let healthRefreshing = $state(false);
   let lastError: string | null = $state(null);
   let lastRefresh: string | null = $state(null);
   let showFirstRunOverview = $state(false);
@@ -201,13 +199,10 @@
   let tier1EditPhraseInput = $state("");
   let tier1EditCredentialConfigured = $state(false);
   let protectedAccessMode = $state<ProtectedAccessMode>("all_time");
-  let unsupportedBrowserBlockMode = $state<ProtectedAccessMode>("all_time");
   let unsupportedBrowserBlockActive = $state(false);
-  let chromiumIncognitoMode = $state<ChromiumIncognitoMode>("manual_consent");
+  let chromiumIncognitoMode = $state<ChromiumIncognitoMode>("policy_url_blocking");
   let chromiumIncognitoDisableScope = $state<ChromiumIncognitoDisableScope>("all_time");
   let chromiumIncognitoPrivateBrowsingDisabled = $state(false);
-  let chromiumIncognitoChangeAccessMode = $state<ProtectedAccessMode>("all_time");
-  let chromiumIncognitoSettingsChangeAllowed = $state(true);
   let chromiumIncognitoUrlBlockCount = $state(0);
   let chromiumIncognitoUnsupportedPatternCount = $state(0);
   let chromiumIncognitoUrlBlockLimitExceeded = $state(false);
@@ -216,6 +211,7 @@
   let protectedAccessOpenFromDaemon: boolean | null = $state(null);
   let protectedAccessLabelFromDaemon: string | null = $state(null);
   let tier1EditMessage: string | null = $state(null);
+  let tier1EditError: string | null = $state(null);
   let nowMs = $state(Date.now());
 
   let policyExportRunning = $state(false);
@@ -316,12 +312,12 @@
     if (view === "admin") {
       settingsOpen = true;
       void loadNotificationPreferences();
+      void refreshHealth({ silent: true });
       return;
     }
     activeView = view;
     saveLastSelectedView(view);
-    if (view === "apps" && !runningAppsLoadedOnce && !runningAppsLoading) {
-      runningAppsLoadedOnce = true;
+    if (view === "apps" && !runningAppsLoading) {
       void refreshRunningApps({ silent: true });
     }
     if (view === "statistics") {
@@ -347,6 +343,24 @@
     saveApplicationUiPreferences(uiPreferences);
   }
 
+  async function refreshHealth(options: RefreshOptions = {}): Promise<void> {
+    if (healthRefreshing) return;
+
+    healthRefreshing = true;
+    if (!options.silent) {
+      lastError = null;
+    }
+    try {
+      health = await systemHealth(socketArg());
+    } catch (error) {
+      if (!options.silent) {
+        lastError = formatError(error);
+      }
+    } finally {
+      healthRefreshing = false;
+    }
+  }
+
   async function refreshRuntime(options: RefreshOptions = {}): Promise<void> {
     if (refreshInFlight) return;
 
@@ -362,14 +376,12 @@
         enforcementResult,
         detoxResult,
         logSummaryResult,
-        healthResult,
         tier1EditStatusResult
       ] = await Promise.allSettled([
         daemonStatus(socketArg()),
         enforcementStatus(socketArg()),
         detoxSessions(false, socketArg()),
         logSummary(socketArg()),
-        systemHealth(socketArg()),
         tier1EditStatus(socketArg())
       ]);
 
@@ -378,7 +390,6 @@
         enforcementResult,
         detoxResult,
         logSummaryResult,
-        healthResult,
         tier1EditStatusResult
       );
       if (activeView === "apps") {
@@ -424,12 +435,15 @@
         tier1EditStatus(socketArg())
       ]);
 
+      if (healthResult.status === "fulfilled") {
+        health = healthResult.value;
+      }
+
       applyRuntimeRefreshResults(
         statusResult,
         enforcementResult,
         detoxResult,
         logSummaryResult,
-        healthResult,
         tier1EditStatusResult
       );
 
@@ -438,7 +452,7 @@
         syncConfigSelection(configResult.value);
       }
 
-      if (activeView === "apps" || runningAppsLoadedOnce) {
+      if (activeView === "apps") {
         void refreshRunningApps({ silent: true });
       }
       if (activeView === "statistics") {
@@ -459,7 +473,6 @@
     enforcementResult: PromiseSettledResult<EnforcementStatus>,
     detoxResult: PromiseSettledResult<{ sessions: DetoxSession[] }>,
     logSummaryResult: PromiseSettledResult<LogSummary>,
-    healthResult: PromiseSettledResult<SystemHealth>,
     tier1EditStatusResult: PromiseSettledResult<Tier1EditStatus>
   ): void {
     if (statusResult.status === "fulfilled") {
@@ -483,10 +496,6 @@
       logStatistics = logSummaryResult.value;
     }
 
-    if (healthResult.status === "fulfilled") {
-      health = healthResult.value;
-    }
-
     if (tier1EditStatusResult.status === "fulfilled") {
       tier1EditUnlockedUntil = tier1EditStatusResult.value.active
         ? (tier1EditStatusResult.value.expires_at ?? null)
@@ -502,20 +511,14 @@
         tier1EditStatusResult.value.protected_access_label ??
         tier1EditStatusResult.value.operator_window_label ??
         null;
-      unsupportedBrowserBlockMode =
-        tier1EditStatusResult.value.unsupported_browser_block_mode ?? "all_time";
       unsupportedBrowserBlockActive =
         tier1EditStatusResult.value.unsupported_browser_block_active ?? false;
       chromiumIncognitoMode =
-        tier1EditStatusResult.value.chromium_incognito_mode ?? "manual_consent";
+        tier1EditStatusResult.value.chromium_incognito_mode ?? "policy_url_blocking";
       chromiumIncognitoDisableScope =
         tier1EditStatusResult.value.chromium_incognito_disable_scope ?? "all_time";
       chromiumIncognitoPrivateBrowsingDisabled =
         tier1EditStatusResult.value.chromium_incognito_private_browsing_disabled ?? false;
-      chromiumIncognitoChangeAccessMode =
-        tier1EditStatusResult.value.chromium_incognito_change_access_mode ?? "all_time";
-      chromiumIncognitoSettingsChangeAllowed =
-        tier1EditStatusResult.value.chromium_incognito_settings_change_allowed ?? true;
       chromiumIncognitoUrlBlockCount =
         tier1EditStatusResult.value.chromium_incognito_url_block_count ?? 0;
       chromiumIncognitoUnsupportedPatternCount =
@@ -527,11 +530,9 @@
       protectedAccessOpenFromDaemon = null;
       protectedAccessLabelFromDaemon = null;
       unsupportedBrowserBlockActive = false;
-      chromiumIncognitoMode = "manual_consent";
+      chromiumIncognitoMode = "policy_url_blocking";
       chromiumIncognitoDisableScope = "all_time";
       chromiumIncognitoPrivateBrowsingDisabled = false;
-      chromiumIncognitoChangeAccessMode = "all_time";
-      chromiumIncognitoSettingsChangeAllowed = true;
       chromiumIncognitoUrlBlockCount = 0;
       chromiumIncognitoUnsupportedPatternCount = 0;
       chromiumIncognitoUrlBlockLimitExceeded = false;
@@ -881,12 +882,12 @@
   }
 
   async function hideDisplayedRecoveryCredentials(): Promise<void> {
-    if (!window.confirm("Hide and permanently delete both recovery credentials from /etc/blockuntu? This cannot be undone.")) return;
+    if (!window.confirm("Hide and permanently delete both displayed credentials from /etc/blockuntu? This cannot be undone.")) return;
     try {
       await hideRecoveryCredentials(socketArg());
       recoveryUninstallPhrase = null;
       recoveryTier1Key = null;
-      tier1EditMessage = "Recovery credentials were removed.";
+      tier1EditMessage = "Displayed credentials were removed.";
     } catch (error) {
       lastError = formatError(error);
     }
@@ -907,6 +908,7 @@
     if (!tier1EditPhraseInput.trim()) return;
     tier1EditUnlocking = true;
     tier1EditMessage = null;
+    tier1EditError = null;
     lastError = null;
     try {
       const result = await unlockTier1Edit(tier1EditPhraseInput, socketArg());
@@ -916,8 +918,7 @@
         : "Tier 1 edits remain locked.";
       tier1EditPhraseInput = "";
     } catch (error) {
-      tier1EditMessage = null;
-      lastError = formatError(error);
+      tier1EditError = formatError(error);
     } finally {
       tier1EditUnlocking = false;
     }
@@ -927,17 +928,6 @@
     try {
       await setProtectedAccessMode(mode, socketArg());
       protectedAccessMode = mode;
-      await refreshRuntime({ silent: true });
-    } catch (error) {
-      lastError = formatError(error);
-    }
-  }
-
-  async function updateUnsupportedBrowserBlockMode(mode: ProtectedAccessMode): Promise<void> {
-    try {
-      const result = await setUnsupportedBrowserBlockMode(mode, socketArg());
-      unsupportedBrowserBlockMode = result.mode;
-      unsupportedBrowserBlockActive = result.active;
       await refreshRuntime({ silent: true });
     } catch (error) {
       lastError = formatError(error);
@@ -969,28 +959,17 @@
     }
   }
 
-  async function updateChromiumIncognitoChangeAccessMode(
-    mode: ProtectedAccessMode
-  ): Promise<void> {
-    try {
-      const result = await setChromiumIncognitoChangeAccessMode(mode, socketArg());
-      chromiumIncognitoChangeAccessMode = result.mode;
-      await refreshRuntime({ silent: true });
-    } catch (error) {
-      lastError = formatError(error);
-    }
-  }
-
   async function runUninstallBlockuntu(): Promise<void> {
     if (!uninstallPhraseInput.trim()) return;
     uninstallRunning = true;
     uninstallResult = null;
+    uninstallPhraseError = null;
     lastError = null;
     try {
       uninstallResult = await uninstallBlockuntu(uninstallPhraseInput);
       clearFirstRunOverviewDismissed();
     } catch (error) {
-      lastError = formatError(error);
+      uninstallPhraseError = formatError(error);
     } finally {
       uninstallRunning = false;
     }
@@ -1548,6 +1527,7 @@
   {#if settingsOpen}
     <AdminView
         {health}
+        {healthRefreshing}
         {enforcement}
         notificationPreferences={notificationPreferenceState}
         {notificationPreferencesSaving}
@@ -1565,31 +1545,27 @@
         {protectedAccessMode}
         {protectedAccessOpen}
         {protectedAccessLabel}
-        {unsupportedBrowserBlockMode}
         {unsupportedBrowserBlockActive}
         {chromiumIncognitoMode}
         {chromiumIncognitoDisableScope}
         {chromiumIncognitoPrivateBrowsingDisabled}
-        {chromiumIncognitoChangeAccessMode}
-        {chromiumIncognitoSettingsChangeAllowed}
         {chromiumIncognitoUrlBlockCount}
         {chromiumIncognitoUnsupportedPatternCount}
         {chromiumIncognitoUrlBlockLimitExceeded}
         {tier1EditCredentialConfigured}
         {tier1EditMessage}
+        {tier1EditError}
         timeFormat={uiPreferences.timeFormat}
         {policyExportRunning}
         {policyImportRunning}
         {policyTransferMessage}
         {policyTransferError}
-        onRefreshHealth={() => refreshAll()}
+        onRefreshHealth={refreshHealth}
         onRunUninstallBlockuntu={runUninstallBlockuntu}
         onUnlockTier1Edit={runUnlockTier1Edit}
         onUpdateProtectedAccessMode={updateProtectedAccessMode}
-        onUpdateUnsupportedBrowserBlockMode={updateUnsupportedBrowserBlockMode}
         onUpdateChromiumIncognitoMode={updateChromiumIncognitoMode}
         onUpdateChromiumIncognitoDisableScope={updateChromiumIncognitoDisableScope}
-        onUpdateChromiumIncognitoChangeAccessMode={updateChromiumIncognitoChangeAccessMode}
         onExportPolicyToml={runExportPolicyToml}
         onImportPolicyToml={runImportPolicyToml}
         onUpdateNotificationPreferences={updateNotificationPreferences}
