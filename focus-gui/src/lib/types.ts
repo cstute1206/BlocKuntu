@@ -228,30 +228,6 @@ export interface ChromePolicyStatus {
   detail: string;
 }
 
-export type SnapPolicyDiagnosticBrowser = "chromium" | "opera" | "vivaldi";
-
-export interface SnapPolicyHeartbeat {
-  component: string;
-  state: string;
-  browser?: string | null;
-  detail: string;
-}
-
-export interface SnapPolicyDiagnostic {
-  browser: SnapPolicyDiagnosticBrowser;
-  snap_name: string;
-  snap_command: string;
-  policy_path: string;
-  policy_file_state: string;
-  loader_state: "found" | "missing" | "not_reported" | "probe_failed" | "unavailable";
-  loader_path?: string | null;
-  loader_line?: string | null;
-  probe_exit_status: number;
-  policy_page: string;
-  detail: string;
-  heartbeat?: SnapPolicyHeartbeat | null;
-}
-
 export interface HostsFileStatus {
   path: string;
   expected_domain_count: number;

@@ -57,8 +57,8 @@ if automatic setup does not complete.
 > to host-installed policy files, so BlocKuntu cannot force-install or lock the
 > extension, disable private browsing, or apply the private URL-blocklist policy
 > in those two Snap browsers. See the
-> [installation limitation note](Docs/INSTALLATION.md#opera-and-vivaldi-snap-policy-limitation)
-> for the diagnostic and the required upstream fix.
+> [dedicated Snap limitation document](Docs/OPERA_VIVALDI_SNAP_LIMITATION.md)
+> for the support boundary and the required upstream fix.
 
 See [production installation](Docs/INSTALLATION.md) for verification, package  
 building, confined browsers, and virtual-machine testing.
@@ -69,6 +69,8 @@ building, confined browsers, and virtual-machine testing.
 verification, updates, and virtual-machine testing.
 - [Uninstall](Docs/UNINSTALL.md) — protected package removal.
 - [Features](Docs/FEATURES.md) — current user-visible behavior and policy model.
+- [Opera/Vivaldi Snap limitation](Docs/OPERA_VIVALDI_SNAP_LIMITATION.md) — why
+  their current strict Snaps cannot load BlocKuntu managed policies.
 - [Hardening](Docs/HARDENING.md) — enforcement boundaries, implemented  
 hardening, and known limitations.
 

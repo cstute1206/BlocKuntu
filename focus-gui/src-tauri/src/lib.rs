@@ -80,23 +80,20 @@ const SYSTEM_WATERFOX_NATIVE_HOST_MANIFESTS: [&str; 3] = [
     "/usr/share/waterfox/native-messaging-hosts/blockuntu_native.json",
 ];
 const FLATPAK_FIREFOX_APP_ROOT: &str = ".var/app/org.mozilla.firefox";
+const FLATPAK_FIREFOX_DEPLOYMENT_ROOT: &str = "/var/lib/flatpak/app/org.mozilla.firefox";
+const FLATPAK_FIREFOX_USER_DEPLOYMENT_ROOT: &str = ".local/share/flatpak/app/org.mozilla.firefox";
 const FLATPAK_FIREFOX_NATIVE_HOST_MANIFEST: &str =
     ".var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts/blockuntu_native.json";
 const FLATPAK_FIREFOX_SYSTEMCONFIG_ROOT: &str =
     "flatpak/extension/org.mozilla.firefox.systemconfig";
-const SNAP_FIREFOX_APP_ROOT: &str = "snap/firefox/common";
 const SNAP_FIREFOX_NATIVE_HOST_MANIFEST: &str =
     "snap/firefox/common/.mozilla/native-messaging-hosts/blockuntu_native.json";
-const SNAP_CHROMIUM_APP_ROOT: &str = "snap/chromium/common";
 const SNAP_CHROMIUM_NATIVE_HOST_MANIFEST: &str =
     "snap/chromium/common/chromium/NativeMessagingHosts/blockuntu_native.json";
-const SNAP_BRAVE_APP_ROOT: &str = "snap/brave";
 const SNAP_BRAVE_NATIVE_HOST_MANIFEST: &str =
     "snap/brave/current/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/blockuntu_native.json";
-const SNAP_OPERA_APP_ROOT: &str = "snap/opera";
 const SNAP_OPERA_NATIVE_HOST_MANIFEST: &str =
     "snap/opera/current/.config/google-chrome/NativeMessagingHosts/blockuntu_native.json";
-const SNAP_VIVALDI_APP_ROOT: &str = "snap/vivaldi";
 const SNAP_VIVALDI_NATIVE_HOST_MANIFEST: &str =
     "snap/vivaldi/current/.config/vivaldi/NativeMessagingHosts/blockuntu_native.json";
 const CHROME_EXTENSION_ID: &str = "opfljaancedgklbpnbpjfhdbbhbfpnoc";
@@ -175,11 +172,6 @@ const CONFINED_CHROMIUM_SETUP_COMMANDS: [&str; 3] = [
     "/usr/local/bin/blockuntu-setup-confined-chromium",
     "/bin/blockuntu-setup-confined-chromium",
 ];
-const SNAP_POLICY_DIAGNOSTIC_COMMANDS: [&str; 3] = [
-    "/usr/bin/blockuntu-diagnose-snap-policy",
-    "/usr/local/bin/blockuntu-diagnose-snap-policy",
-    "/bin/blockuntu-diagnose-snap-policy",
-];
 static CONFINED_FIREFOX_POLICY_SETUP_STARTED: AtomicBool = AtomicBool::new(false);
 const BROWSER_UNINSTALL_NOTICE_WAIT_SECONDS: u64 = 6;
 const TRAY_REFRESH_INTERVAL_SECONDS: u64 = 5;
@@ -219,12 +211,6 @@ enum GuiError {
     UnsupportedExtensionStoreUrl,
     #[error("opening an extension store requires xdg-open, but it was not found")]
     MissingUrlOpener,
-    #[error("unsupported Snap policy diagnostic browser: {0}")]
-    UnsupportedSnapPolicyDiagnosticBrowser(String),
-    #[error("Snap policy diagnostic helper is not installed")]
-    MissingSnapPolicyDiagnosticHelper,
-    #[error("Snap policy diagnostic failed: {0}")]
-    SnapPolicyDiagnostic(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,31 +330,6 @@ struct PolicyFileResult {
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     config: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SnapPolicyHeartbeat {
-    component: String,
-    state: String,
-    browser: Option<String>,
-    detail: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SnapPolicyDiagnostic {
-    browser: String,
-    snap_name: String,
-    snap_command: String,
-    policy_path: String,
-    policy_file_state: String,
-    loader_state: String,
-    loader_path: Option<String>,
-    loader_line: Option<String>,
-    probe_exit_status: i32,
-    policy_page: String,
-    detail: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    heartbeat: Option<SnapPolicyHeartbeat>,
 }
 
 #[derive(Clone)]
@@ -532,65 +493,6 @@ fn installation_info_from_path(path: &Path) -> InstallationInfo {
     InstallationInfo {
         installation_serial: load_installation_serial_from_path(path).ok(),
         build_number: BUILD_NUMBER.to_string(),
-    }
-}
-
-#[tauri::command]
-fn diagnose_snap_policy(
-    browser: String,
-    socket_path: Option<String>,
-) -> Result<SnapPolicyDiagnostic, GuiError> {
-    let component = snap_policy_extension_component(&browser)
-        .ok_or_else(|| GuiError::UnsupportedSnapPolicyDiagnosticBrowser(browser.clone()))?;
-    let helper = command_path(&SNAP_POLICY_DIAGNOSTIC_COMMANDS)
-        .ok_or(GuiError::MissingSnapPolicyDiagnosticHelper)?;
-    let output = Command::new(&helper)
-        .args(["--browser", browser.as_str(), "--json"])
-        .output()?;
-    if !output.status.success() {
-        return Err(GuiError::SnapPolicyDiagnostic(command_failure_detail(
-            &format!("{} --browser {browser}", helper.display()),
-            &output,
-        )));
-    }
-
-    let mut diagnostic = serde_json::from_slice::<SnapPolicyDiagnostic>(&output.stdout)?;
-    let socket = resolve_socket_path(socket_path.as_deref());
-    diagnostic.heartbeat = Some(snap_policy_heartbeat(&socket, component));
-    Ok(diagnostic)
-}
-
-fn snap_policy_extension_component(browser: &str) -> Option<&'static str> {
-    match browser {
-        "chromium" => Some("chromium_extension"),
-        "opera" => Some("opera_extension"),
-        "vivaldi" => Some("vivaldi_extension"),
-        _ => None,
-    }
-}
-
-fn snap_policy_heartbeat(socket_path: &str, component: &str) -> SnapPolicyHeartbeat {
-    match call_daemon(
-        socket_path,
-        "extension_status",
-        json!({ "component": component }),
-    ) {
-        Ok(status) => SnapPolicyHeartbeat {
-            component: component.to_string(),
-            state: string_field(&status, "state")
-                .unwrap_or("unknown")
-                .to_string(),
-            browser: string_field(&status, "browser").map(str::to_string),
-            detail: string_field(&status, "detail")
-                .unwrap_or("daemon returned no heartbeat detail")
-                .to_string(),
-        },
-        Err(error) => SnapPolicyHeartbeat {
-            component: component.to_string(),
-            state: "unavailable".to_string(),
-            browser: None,
-            detail: format!("daemon extension status unavailable: {error}"),
-        },
     }
 }
 
@@ -1014,7 +916,8 @@ fn start_confined_firefox_policy_setup() {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return;
     };
-    if !home.join(FLATPAK_FIREFOX_APP_ROOT).exists()
+    if !flatpak_firefox_available()
+        || !home.join(FLATPAK_FIREFOX_APP_ROOT).exists()
         || flatpak_firefox_policy_uses_amo_install_url(&home)
         || CONFINED_FIREFOX_POLICY_SETUP_STARTED.swap(true, Ordering::SeqCst)
     {
@@ -1213,17 +1116,45 @@ fn ensure_chromium_user_native_host_manifest(user_manifest: &str) -> std::io::Re
 }
 
 fn flatpak_firefox_available() -> bool {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(FLATPAK_FIREFOX_APP_ROOT).exists())
-        .unwrap_or(false)
+    flatpak_app_deployed(Path::new(FLATPAK_FIREFOX_DEPLOYMENT_ROOT))
+        || std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| flatpak_app_deployed(&home.join(FLATPAK_FIREFOX_USER_DEPLOYMENT_ROOT)))
+            .unwrap_or(false)
 }
 
 fn snap_firefox_available() -> bool {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(SNAP_FIREFOX_APP_ROOT).exists())
-        .unwrap_or(false)
+    command_path(&["/snap/bin/firefox"]).is_some()
+}
+
+fn flatpak_app_deployed(app_root: &Path) -> bool {
+    fs::read_dir(app_root).ok().is_some_and(|architectures| {
+        architectures.flatten().any(|architecture| {
+            fs::read_dir(architecture.path())
+                .ok()
+                .is_some_and(|branches| {
+                    branches
+                        .flatten()
+                        .any(|branch| branch.path().join("active").is_dir())
+                })
+        })
+    })
+}
+
+fn snap_chromium_available() -> bool {
+    command_path(&CHROMIUM_COMMANDS[4..]).is_some()
+}
+
+fn snap_brave_available() -> bool {
+    command_path(&BRAVE_COMMANDS[2..]).is_some()
+}
+
+fn snap_opera_available() -> bool {
+    command_path(&OPERA_COMMANDS[2..]).is_some()
+}
+
+fn snap_vivaldi_available() -> bool {
+    command_path(&VIVALDI_COMMANDS[3..]).is_some()
 }
 
 fn command_failure_detail(command: &str, output: &std::process::Output) -> String {
@@ -1529,7 +1460,7 @@ fn chromium_policy_enforcement_check(
     let active_after_heartbeat = bool_field(policy, "active_after_heartbeat");
     let compliant = bool_field(policy, "compliant");
     let force_install = bool_field(policy, "force_install_configured");
-    let incognito_mode = string_field(policy, "incognito_mode").unwrap_or("manual_consent");
+    let incognito_mode = string_field(policy, "incognito_mode").unwrap_or("policy_url_blocking");
     let incognito_configured = policy
         .get("incognito_mode_configured")
         .and_then(Value::as_bool)
@@ -1657,7 +1588,7 @@ fn confined_firefox_native_host_checks() -> Vec<HealthCheck> {
     };
 
     let mut checks = Vec::new();
-    if home.join(FLATPAK_FIREFOX_APP_ROOT).exists() {
+    if flatpak_firefox_available() {
         checks.push(firefox_manifest_check(
             "firefox_flatpak_native_host_manifest",
             "Firefox Flatpak browser integration",
@@ -1665,7 +1596,7 @@ fn confined_firefox_native_host_checks() -> Vec<HealthCheck> {
             "BlocKuntu automatically prepares this when the GUI starts. Restart Firefox Flatpak; if it remains unavailable, run `blockuntu-setup-confined-firefox` manually.",
         ));
     }
-    if home.join(SNAP_FIREFOX_APP_ROOT).exists() {
+    if snap_firefox_available() {
         checks.push(firefox_manifest_check(
             "firefox_snap_native_host_manifest",
             "Firefox Snap browser integration",
@@ -1681,7 +1612,7 @@ fn confined_firefox_policy_checks() -> Vec<HealthCheck> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
     };
-    if !home.join(FLATPAK_FIREFOX_APP_ROOT).exists() {
+    if !flatpak_firefox_available() {
         return Vec::new();
     }
 
@@ -1694,33 +1625,33 @@ fn confined_chromium_native_host_checks() -> Vec<HealthCheck> {
     };
 
     let mut checks = Vec::new();
-    for (app_root, manifest, key, label) in [
+    for (present, manifest, key, label) in [
         (
-            SNAP_CHROMIUM_APP_ROOT,
+            snap_chromium_available(),
             SNAP_CHROMIUM_NATIVE_HOST_MANIFEST,
             "chromium_snap_native_host_manifest",
             "Chromium Snap browser integration",
         ),
         (
-            SNAP_BRAVE_APP_ROOT,
+            snap_brave_available(),
             SNAP_BRAVE_NATIVE_HOST_MANIFEST,
             "brave_snap_native_host_manifest",
             "Brave Snap browser integration",
         ),
         (
-            SNAP_OPERA_APP_ROOT,
+            snap_opera_available(),
             SNAP_OPERA_NATIVE_HOST_MANIFEST,
             "opera_snap_native_host_manifest",
             "Opera Snap browser integration",
         ),
         (
-            SNAP_VIVALDI_APP_ROOT,
+            snap_vivaldi_available(),
             SNAP_VIVALDI_NATIVE_HOST_MANIFEST,
             "vivaldi_snap_native_host_manifest",
             "Vivaldi Snap browser integration",
         ),
     ] {
-        if home.join(app_root).exists() {
+        if present {
             checks.push(chromium_manifest_check(
                 key,
                 label,
@@ -2429,7 +2360,6 @@ pub fn run() {
             open_extension_store,
             recovery_credentials,
             uninstall_blockuntu,
-            diagnose_snap_policy,
             system_health
         ])
         .run(tauri::generate_context!())

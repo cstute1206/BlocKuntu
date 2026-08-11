@@ -62,16 +62,9 @@ BlocKuntu policy. It cannot be fixed by changing the BlocKuntu `.deb`; the
 Opera or Vivaldi Snap publisher must expose a writable Snap-data directory at
 the browser's managed-policy path.
 
-Use the following commands when validating a future Snap release:
-
-```bash
-blockuntu-diagnose-snap-policy --browser opera
-blockuntu-diagnose-snap-policy --browser vivaldi
-```
-
-`Policy loader: found` is required before treating policy-based protection as
-supported. `Policy file: readable` alone only proves that the host can read the
-file; it does not mean that the confined browser can read it.
+A host policy JSON being present does not establish policy support; it only
+proves that the host can read the file. Validate any future publisher change in
+a clean VM and confirm the browser reports the policy after a full restart.
 
 Choose the Chromium private-browsing behavior in **Settings → Protected changes
 and uninstall**. “Allow with manual extension consent” is user-controlled and

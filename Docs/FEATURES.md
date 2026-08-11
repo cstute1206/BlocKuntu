@@ -58,7 +58,7 @@ read host-managed policy files. Their Snap installations cannot be force-
 installed or locked by policy, have private browsing disabled by policy, or use
 the private URL-blocklist policy. See
 [the installation limitation](INSTALLATION.md#opera-and-vivaldi-snap-policy-limitation)
-for the reason and diagnostic. Vivaldi Flatpak still requires clean-VM
+for the reason and support boundary. Vivaldi Flatpak still requires clean-VM
 validation.
 
 In **Settings → Protected changes and uninstall**, Chromium-family private browsing has three

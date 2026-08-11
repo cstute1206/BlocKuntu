@@ -155,12 +155,12 @@
         {/if}
         <div class="onboarding-credentials">
           {#if uninstallPhrase && tier1EditKey}
-            <p><strong>Recovery uninstall phrase</strong> — store this somewhere secure.</p>
+            <p><strong>Uninstall phrase</strong> — store this somewhere secure.</p>
             <code class="phrase-code">{uninstallPhrase}</code>
             <p><strong>Tier 1 edit key</strong> — required to unlock Tier 1 edits; store it somewhere secure.</p>
             <code class="phrase-code">{tier1EditKey}</code>
           {:else}
-            <p>Recovery credentials have been hidden and removed from this device.</p>
+            <p>The displayed credentials have been hidden and removed from this device.</p>
           {/if}
         </div>
         <div class="button-row onboarding-actions">
