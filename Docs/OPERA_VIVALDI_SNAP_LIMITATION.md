@@ -2,13 +2,13 @@
 
 ## Status
 
-Opera and Vivaldi installed as strict Snaps are currently supported for the
-BlocKuntu Native Messaging bridge, but **not** for managed browser-policy
-enforcement.
+Opera and Vivaldi installed as strict Snaps are **unsupported browser
+installations**. Their Native Messaging bridge can be configured, but that is
+not managed browser-policy enforcement. Whenever BlocKuntu's automatic Tier 1
+blocked-browser list is active, it terminates these Snap variants.
 
-After the desktop-user setup and a browser restart, their store-installed
-extensions can send a verified daemon heartbeat and enforce navigation through
-the extension. The following protections cannot work in these Snap builds:
+The following protections cannot establish supported browser enforcement in
+these Snap builds:
 
 | Protection | Opera Snap | Vivaldi Snap |
 | --- | --- | --- |
@@ -18,8 +18,7 @@ the extension. The following protections cannot work in these Snap builds:
 | Block URLs in private browsing by policy | Unavailable | Unavailable |
 
 Do not use either Snap package where policy-backed extension locking or private
-browsing protection is required. Use a browser installation that supports
-managed policies instead.
+browsing protection is required. Use a supported browser installation instead.
 
 ## Why the policy file is not loaded
 

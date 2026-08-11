@@ -1967,7 +1967,9 @@ fn unsupported_browser_rule_check(socket_path: &str) -> HealthCheck {
                     HealthState::Error
                 },
                 detail: if hard_enabled {
-                    format!("Tier 1 hard application rule active with {matcher_count} matcher(s)")
+                    format!(
+                        "Tier 1 hard application rule active with {matcher_count} matcher(s), including Chromium Flatpak and Brave, Opera, and Vivaldi Snaps"
+                    )
                 } else {
                     "mandatory Tier 1 hard application rule is missing".to_string()
                 },

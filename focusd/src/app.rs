@@ -24,7 +24,7 @@ use crate::hosts::{HostsManager, HostsRepairStatus};
 use crate::policy_recovery::PolicyRecoveryManager;
 use crate::process_scan::{
     attach_detected_window_titles, kill_processes, scan_procfs, supported_browser_for_process,
-    LinuxSignalKiller, ProcessInfo, SupportedBrowser,
+    unsupported_browser_installation_for_process, LinuxSignalKiller, ProcessInfo, SupportedBrowser,
 };
 use crate::rpc::{
     current_chromium_incognito_policy_settings,
@@ -505,6 +505,7 @@ impl DaemonApp {
             let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
             if core.config().app_rules.is_empty()
                 && !strict_supported_browser_enforcement_enabled(&core.config().strict_mode)
+                && !core.config().strict_mode.block_unsupported_browsers
             {
                 core.database()
                     .end_open_app_usage_sessions(chrono::Utc::now())?;
@@ -560,6 +561,36 @@ impl DaemonApp {
                 }
             }
 
+            if unsupported_browser_block_active {
+                for process in &processes {
+                    if process.pid <= 1
+                        || process.pid == std::process::id()
+                        || is_blockuntu_process(&process.identity())
+                    {
+                        continue;
+                    }
+                    let Some(installation) =
+                        unsupported_browser_installation_for_process(&process.identity())
+                    else {
+                        continue;
+                    };
+
+                    if !blocked_pids.contains(&process.pid) {
+                        blocked_pids.push(process.pid);
+                    }
+                    kill_details_by_pid.insert(
+                        process.pid,
+                        format!(
+                            "rule_id={UNSUPPORTED_BROWSER_RULE_ID};browser_installation={installation}"
+                        ),
+                    );
+                    kill_event_kind_by_pid
+                        .insert(process.pid, "browser_killed_unsupported_installation");
+                    blocked_rule_id_by_pid
+                        .insert(process.pid, UNSUPPORTED_BROWSER_RULE_ID.to_string());
+                }
+            }
+
             let strict_mode = core.config().strict_mode.clone();
             let mut deferred_browsers = HashSet::new();
             if self.defer_firefox_policy_repair_until_heartbeat {
@@ -592,9 +623,9 @@ impl DaemonApp {
             )? {
                 if !blocked_pids.contains(&pid) {
                     blocked_pids.push(pid);
+                    kill_details_by_pid.insert(pid, detail);
+                    kill_event_kind_by_pid.insert(pid, "browser_killed_extension_stale");
                 }
-                kill_details_by_pid.insert(pid, detail);
-                kill_event_kind_by_pid.insert(pid, "browser_killed_extension_stale");
             }
         }
 
@@ -1263,6 +1294,13 @@ fn unsupported_browser_matchers() -> Vec<(AppMatcherKind, &'static str)> {
         (CommandName, "start-tor-browser"),
         (DesktopId, "torbrowser.desktop"),
         (WindowTitleContains, "Tor Browser"),
+        // Package-specific identities for browser variants that cannot load
+        // BlocKuntu's managed policy. The runtime check also uses package
+        // paths, so terminal starts without a desktop ID are covered.
+        (DesktopId, "org.chromium.Chromium.desktop"),
+        (DesktopId, "brave_brave.desktop"),
+        (DesktopId, "opera_opera.desktop"),
+        (DesktopId, "vivaldi_vivaldi-stable.desktop"),
     ]
 }
 
@@ -1760,6 +1798,26 @@ mod tests {
         let opera = process("opera");
         let edge = process("microsoft-edge");
         let vivaldi = process("vivaldi");
+        let chromium_flatpak = ProcessIdentity {
+            desktop_id: Some("org.chromium.Chromium.desktop".to_string()),
+            ..process("chromium")
+        };
+        let brave_snap = ProcessIdentity {
+            desktop_id: Some("brave_brave.desktop".to_string()),
+            ..process("brave-browser")
+        };
+        let opera_snap = ProcessIdentity {
+            desktop_id: Some("opera_opera.desktop".to_string()),
+            ..process("opera")
+        };
+        let vivaldi_snap = ProcessIdentity {
+            desktop_id: Some("vivaldi_vivaldi-stable.desktop".to_string()),
+            ..process("vivaldi")
+        };
+        let chromium_snap = ProcessIdentity {
+            desktop_id: Some("chromium_chromium.desktop".to_string()),
+            ..process("chromium")
+        };
 
         assert!(focus_core::evaluate_app(&epiphany, &context).is_block());
         assert!(!focus_core::evaluate_app(&firefox, &context).is_block());
@@ -1771,6 +1829,11 @@ mod tests {
         assert!(!focus_core::evaluate_app(&opera, &context).is_block());
         assert!(!focus_core::evaluate_app(&edge, &context).is_block());
         assert!(!focus_core::evaluate_app(&vivaldi, &context).is_block());
+        assert!(focus_core::evaluate_app(&chromium_flatpak, &context).is_block());
+        assert!(focus_core::evaluate_app(&brave_snap, &context).is_block());
+        assert!(focus_core::evaluate_app(&opera_snap, &context).is_block());
+        assert!(focus_core::evaluate_app(&vivaldi_snap, &context).is_block());
+        assert!(!focus_core::evaluate_app(&chromium_snap, &context).is_block());
     }
 
     #[test]

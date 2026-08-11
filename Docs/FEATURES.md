@@ -48,18 +48,18 @@ and the Chrome Web Store extension in Chrome, Chromium, Brave, Opera, Microsoft 
 Vivaldi. After each extension's first successful heartbeat, BlocKuntu writes its managed policy
 and locks that same store-installed extension when the browser installation supports managed
 policy. Opera and Edge require turning on **Allow extensions from other stores**; Vivaldi requires
-enabling Web Store in its Google Extensions setting. Strict
-Chromium, Brave, Opera, and Vivaldi Snaps receive a per-user copy of the Native
-Messaging bridge and a manifest in their Snap-visible profile when BlocKuntu
-starts. The bridge uses an authenticated local TCP connection because strict
-Snaps cannot reach the daemon's Unix socket. Opera and Vivaldi Snap extensions
-can therefore send heartbeats, but their current strict Snap packages cannot
-read host-managed policy files. Their Snap installations cannot be force-
-installed or locked by policy, have private browsing disabled by policy, or use
-the private URL-blocklist policy. See
-[the installation limitation](INSTALLATION.md#opera-and-vivaldi-snap-policy-limitation)
-for the reason and support boundary. Vivaldi Flatpak still requires clean-VM
-validation.
+enabling Web Store in its Google Extensions setting. Chromium Snap receives a
+per-user copy of the Native Messaging bridge and a manifest in its Snap-visible
+profile when BlocKuntu starts. The bridge uses an authenticated local TCP
+connection because strict Snaps cannot reach the daemon's Unix socket.
+
+Chromium Flatpak and Brave, Opera, and Vivaldi Snaps are currently unsupported
+browser installations. Whenever the automatic Tier 1 blocked-browser list is
+active, BlocKuntu terminates those package variants; it does not treat a
+heartbeat from a browser of the same family as protection for them. This keeps
+Chromium Snap distinct from Chromium Flatpak. See
+[the installation limitation](INSTALLATION.md#unsupported-browser-packages)
+for the support boundary. Vivaldi Flatpak still requires clean-VM validation.
 
 In **Settings → Protected changes and uninstall**, Chromium-family private browsing has three
 explicit modes: disable private windows, leave the extension toggle to the user's manual consent,
