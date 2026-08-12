@@ -673,7 +673,7 @@ function backendBlockReason(kind: "backend_unhealthy" | "backend_unavailable", m
     kind,
     message,
     summary: "BlocKuntu cannot verify the daemon heartbeat.",
-    detail: "Browsing is blocked fail-closed until the Firefox extension, native host, and daemon heartbeat chain is healthy again.",
+    detail: "Browsing is blocked fail-closed until the Firefox extension, native host and daemon heartbeat chain is healthy again.",
     heartbeat_timeout_seconds: HEARTBEAT_TIMEOUT_MS / 1000,
   };
 

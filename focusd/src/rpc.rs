@@ -2615,7 +2615,7 @@ fn set_protected_access_mode(context: &RpcContext, mode: ProtectedAccessMode) ->
         "protected_access_mode_updated",
         Some("protected_changes"),
         Some(&format!(
-            "Tier 1 edits, uninstall, unsupported-browser blocking, and Chromium private-browsing settings are available {}",
+            "Tier 1 edits, uninstall, unsupported-browser blocking and Chromium private-browsing settings are available {}",
             protected_access_mode_description(mode)
         )),
         now,

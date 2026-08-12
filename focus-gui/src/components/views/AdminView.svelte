@@ -282,7 +282,7 @@
     if (mode === protectedAccessMode) return;
     if (
       window.confirm(
-        `Set protected settings access to ${protectedAccessModeLabel(mode)}?\n\nThis applies to Tier 1 edits and uninstall, Tier 1 blocked browsers, and changes to Chromium private-browsing settings.`
+        `Set protected settings access to ${protectedAccessModeLabel(mode)}?\n\nThis applies to Tier 1 edits and uninstall, Tier 1 blocked browsers and changes to Chromium private-browsing settings.`
       )
     ) {
       void onUpdateProtectedAccessMode(mode);
@@ -386,23 +386,23 @@
               <div class="settings-subsection-header"><h4>Logging</h4><p>BlocKuntu writes plain local event and notification-delivery entries; there is no GUI log viewer.</p></div>
               <div class="log-file-note">
                 <FileText size={18} aria-hidden="true" />
-                <div><strong>Event log</strong><code>/etc/blockuntu/blockuntu.log</code><small>The daemon appends queued, accepted, and failed notification details here. Use a terminal to inspect it.</small></div>
+                <div><strong>Event log</strong><code>/etc/blockuntu/blockuntu.log</code><small>The daemon appends queued, accepted and failed notification details here. Use a terminal to inspect it.</small></div>
               </div>
               <div class="log-command-list"><code>sudo tail -f /etc/blockuntu/blockuntu.log</code><code>sudo less /etc/blockuntu/blockuntu.log</code></div>
             </section>
           </section>
         {:else if activeSection === "protected"}
           <section class="settings-panel">
-            <div class="settings-panel-header"><div><h3>Protected changes and uninstall</h3><p>Manage Tier 1 editing, maintenance, and the protected uninstall flow.</p></div></div>
+            <div class="settings-panel-header"><div><h3>Protected changes and uninstall</h3><p>Manage Tier 1 editing, maintenance and the protected uninstall flow.</p></div></div>
             <div class="protected-changes-stack">
               <div class="status-list">
                 <div class="status-row"><span>Protected actions</span><strong data-state={protectedAccessOpen ? "active" : "stopped"}>{protectedAccessOpen ? "available" : "unavailable"}</strong></div>
                 <div class="status-row"><span>Available</span><small>{protectedAccessLabel}</small></div>
                 <div class="status-row"><span>Edit unlock</span><small>{protectionState}</small></div>
               </div>
-              <label class="preference-row"><span><strong>Protected settings access</strong><small>This one setting controls when Tier 1 edits and uninstall can be authorized, Tier 1 blocked browsers are active, and Chromium private-browsing settings can be changed. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={requestProtectedAccessModeChange}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
+              <label class="preference-row"><span><strong>Protected settings access</strong><small>This one setting controls when Tier 1 edits and uninstall can be authorized, Tier 1 blocked browsers are active and Chromium private-browsing settings can be changed. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={requestProtectedAccessModeChange}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
               <p class="settings-note">Tier 1 blocked browsers are currently {unsupportedBrowserBlockActive ? "active" : "inactive"}. Chromium private-browsing settings are currently {protectedAccessOpen ? "available to change" : "locked by the protected settings access window"}.</p>
-              <label class="preference-row"><span><strong>Chromium private browsing</strong><small>Choose how Chrome, Chromium, Brave, Opera, Edge, and Vivaldi handle private windows. Manual consent is controlled by the browser and a user can revoke it; BlocKuntu cannot policy-force the extension toggle.</small></span><select value={chromiumIncognitoMode} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoMode((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoMode)}><option value="disabled">Disable private browsing</option><option value="manual_consent">Allow with manual extension consent</option><option value="policy_url_blocking">Block URLs by browser policy</option></select></label>
+              <label class="preference-row"><span><strong>Chromium private browsing</strong><small>Choose how Chrome, Chromium, Brave, Opera, Edge and Vivaldi handle private windows. Manual consent is controlled by the browser and a user can revoke it; BlocKuntu cannot policy-force the extension toggle.</small></span><select value={chromiumIncognitoMode} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoMode((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoMode)}><option value="disabled">Disable private browsing</option><option value="manual_consent">Allow with manual extension consent</option><option value="policy_url_blocking">Block URLs by browser policy</option></select></label>
               {#if chromiumIncognitoMode === "disabled"}
                 <label class="preference-row"><span><strong>When to disable private browsing</strong><small>All the time is the default. The scoped option makes private browsing available outside every active schedule and Detox session.</small></span><select value={chromiumIncognitoDisableScope} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoDisableScope((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoDisableScope)}><option value="all_time">All the time</option><option value="active_schedule_or_detox">Only during an active schedule or Detox</option></select></label>
                 <p class="settings-note">{chromiumIncognitoPrivateBrowsingDisabled ? "Private windows are currently disabled through the browser policy." : "Private windows are currently available and will be disabled when a schedule or Detox becomes active."}</p>

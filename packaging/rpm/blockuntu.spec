@@ -37,7 +37,7 @@ Recommends:     wmctrl
 
 %description
 BlocKuntu is a local Linux focus blocker with a privileged daemon, Native
-Messaging bridge, and desktop GUI for local website and application blocking.
+Messaging bridge and desktop GUI for local website and application blocking.
 Browser policies are deferred until each store-installed extension sends a
 verified heartbeat, then the matching extension is force-installed and locked.
 

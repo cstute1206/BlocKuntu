@@ -144,7 +144,7 @@ function detailText(): string {
     return detail;
   }
   if (reason === "backend_unhealthy" || reason === "backend_unavailable") {
-    return "Browsing is blocked fail-closed until the Chrome extension, native host, and daemon can confirm policy enforcement.";
+    return "Browsing is blocked fail-closed until the Chrome extension, native host and daemon can confirm policy enforcement.";
   }
   if (reason === "detox") {
     return "This temporary block stays active until the detox session ends or is cancelled from the privileged admin path.";

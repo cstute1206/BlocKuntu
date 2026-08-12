@@ -214,8 +214,8 @@
       {#if ruleDraft.tier !== "hard"}
         <p class="tier2-schedule-note">
           {ruleDraft.tier === "scheduled_block"
-            ? "Tier 2 websites block strictly during an attached schedule or Detox, cannot be unlocked, and domain patterns enter the hosts file while active."
-            : "Tier 3 websites use allowances and manual unlocks during an attached schedule or Detox, and never enter the hosts file."}
+            ? "Tier 2 websites block strictly during an attached schedule or Detox, cannot be unlocked and domain patterns enter the hosts file while active."
+            : "Tier 3 websites use allowances and manual unlocks during an attached schedule or Detox and never enter the hosts file."}
         </p>
         {#if ruleDraft.schedule_ids.length === 0 && !ruleDraftDetoxLocked}
           <section class="inline-warning">
