@@ -2,6 +2,8 @@
 
 BlocKuntu is a local focus blocker for Debian and Ubuntu; support for other distributions is still in progress. A privileged daemon enforces website and application rules, while [Firefox](https://addons.mozilla.org/en-US/firefox/addon/blockuntu/) and [Chrome](https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc) extensions enforce website rules. BlocKuntu resists casual bypasses, but cannot protect against a user with unrestricted `sudo` or root access.
 
+https://github.com/user-attachments/assets/4178a567-3bb1-4f56-9f0b-6fb59eb27bc4
+
 ## What it does
 
 - Blocks websites and applications through reusable lists.
