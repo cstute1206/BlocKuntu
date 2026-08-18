@@ -852,17 +852,6 @@ button:disabled {
   background: #c94f4f;
 }
 
-.rule-status-dot {
-  background: #d89b24;
-  border-radius: 999px;
-  height: 10px;
-  width: 10px;
-}
-
-.rule-status-dot.active {
-  background: #c94f4f;
-}
-
 .table-wrap {
   margin-top: 14px;
   overflow-x: auto;
@@ -1030,6 +1019,24 @@ th {
   color: #68766f;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.settings-external-link {
+  align-items: center;
+  color: #386dc0;
+  display: inline-flex;
+  font-size: 0.88rem;
+  font-weight: 700;
+  gap: 4px;
+  text-decoration: none;
+}
+
+.settings-external-link:hover {
+  text-decoration: underline;
+}
+
+.settings-external-link svg {
+  flex: 0 0 auto;
 }
 
 .danger-action {
@@ -1515,10 +1522,6 @@ pre {
   margin-top: 14px;
 }
 
-.notification-selection-actions {
-  margin-bottom: 14px;
-}
-
 .repair-note,
 .log-file-note {
   align-items: flex-start;
@@ -1534,6 +1537,11 @@ pre {
   color: #386dc0;
   flex: 0 0 auto;
   margin-top: 1px;
+}
+
+.log-export-button {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .repair-note code,
@@ -1561,6 +1569,134 @@ pre {
 
 .preference-row input[type="checkbox"] {
   justify-self: end;
+}
+
+.notification-master {
+  margin-bottom: 16px;
+}
+
+.notification-groups {
+  display: grid;
+  gap: 14px;
+}
+
+.notifications-paused {
+  opacity: 0.62;
+}
+
+.notification-group {
+  background: #f7faf8;
+  border: 1px solid #dfe7e2;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.notification-group-header {
+  display: grid;
+  gap: 3px;
+}
+
+.notification-group-header h4 {
+  color: #29332f;
+  font-size: 0.92rem;
+  margin: 0;
+}
+
+.notification-group-header p,
+.notification-choice small,
+.notification-activity-row small {
+  color: #68766f;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.notification-choice-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.notification-choice,
+.notification-activity-row {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #dfe7e2;
+  border-radius: 7px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 58px;
+  padding: 10px;
+}
+
+.notification-choice > span,
+.notification-activity-row > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.notification-choice strong,
+.notification-activity-row strong {
+  color: #29332f;
+}
+
+.notification-choice input[type="checkbox"] {
+  justify-self: end;
+}
+
+.notification-choice-primary {
+  margin-bottom: 10px;
+}
+
+.notification-thresholds {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.notification-thresholds > label {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.notification-thresholds-disabled {
+  opacity: 0.62;
+}
+
+.notification-custom-threshold span {
+  color: #63716b;
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.notification-custom-threshold input {
+  min-width: 0;
+  width: 100%;
+}
+
+.notification-activity-list {
+  display: grid;
+  gap: 8px;
+}
+
+.notification-inline-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.notification-inline-options label {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .log-command-list {
@@ -1679,6 +1815,15 @@ pre {
 
   .preference-row input[type="checkbox"] {
     justify-self: start;
+  }
+
+  .notification-choice-grid,
+  .notification-thresholds {
+    grid-template-columns: 1fr;
+  }
+
+  .notification-activity-row {
+    grid-template-columns: 1fr;
   }
 
 }

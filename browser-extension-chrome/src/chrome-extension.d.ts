@@ -61,7 +61,11 @@ declare namespace BlockuntuChromeExtension {
   }
 
   interface AlarmsApi {
-    create(name: string, alarmInfo: { periodInMinutes: number }): void;
+    create(
+      name: string,
+      alarmInfo: { delayInMinutes?: number; periodInMinutes?: number }
+    ): void;
+    get(name: string, callback: (alarm?: Alarm) => void): void;
     onAlarm: ExtensionEvent<(alarm: Alarm) => void>;
   }
 

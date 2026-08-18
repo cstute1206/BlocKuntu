@@ -7,10 +7,19 @@ const HEARTBEAT_TIMEOUT_MS = 75_000;
 const RPC_TIMEOUT_MS = 3_000;
 const VISIT_HEARTBEAT_INTERVAL_MS = 10_000;
 const REVALIDATE_TABS_INTERVAL_MS = 5_000;
+const EXISTING_TAB_FAILURE_THRESHOLD = 3;
+const EXISTING_TAB_FAILURE_GRACE_MS = 10_000;
+const RPC_SLOW_THRESHOLD_MS = 500;
+const NATIVE_RECONNECT_INITIAL_MS = 1_000;
+const NATIVE_RECONNECT_MAX_MS = 30_000;
+const ALARM_PERIOD_MINUTES = 0.5;
 const HEARTBEAT_ALARM = "blockuntu-heartbeat";
 const VISIT_ALARM = "blockuntu-visit-heartbeat";
 const REVALIDATE_ALARM = "blockuntu-revalidate-tabs";
 const INTEGRATION_DISABLED_STORAGE_KEY = "blockuntuIntegrationDisabled";
+const DIAGNOSTIC_QUEUE_STORAGE_KEY = "blockuntuDiagnosticQueue";
+const MAX_DIAGNOSTIC_QUEUE_LENGTH = 200;
+const DIAGNOSTIC_BATCH_SIZE = 50;
 
 type JsonObject = Record<string, unknown>;
 type ChromiumBrowserName = "chrome" | "chromium" | "brave" | "opera" | "edge" | "vivaldi";
@@ -26,6 +35,27 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeoutId: number;
+  startedAt: number;
+  timeoutMs: number;
+}
+
+interface ConsecutiveFailure {
+  count: number;
+  firstFailedAt: number;
+  lastFailedAt: number;
+  lastReason: string;
+}
+
+interface DiagnosticEvent extends JsonObject {
+  id: string;
+  component: string;
+  severity: "info" | "warn" | "error";
+  kind: string;
+  message: string;
+  observed_at: string;
+  request_id?: string;
+  method?: string;
+  browser_session?: string;
 }
 
 interface ActiveVisit {
@@ -47,23 +77,34 @@ interface BlockNavigationReason extends JsonObject {
   allowance_reset_at?: string;
   last_heartbeat_ok_at?: string;
   heartbeat_timeout_seconds?: number;
+  consecutive_failures?: number;
+  failure_started_at?: string;
+  last_transport_error?: string;
   message?: string;
 }
 
 let nativePort: BlockuntuChromeExtension.RuntimePort | null = null;
 let nextRequestId = 1;
-let heartbeatInFlight = false;
 let heartbeatPromise: Promise<boolean> | null = null;
 let lastHeartbeatOkAt = 0;
-let backendHealthy = false;
+let heartbeatFailures: ConsecutiveFailure | null = null;
+let nativeReconnectTimerId: number | null = null;
+let nativeReconnectDelayMs = NATIVE_RECONNECT_INITIAL_MS;
 let blockingDisabled = false;
 let browserIdentityPromise: Promise<ChromiumBrowserName> | null = null;
+let diagnosticQueue: DiagnosticEvent[] = [];
+let diagnosticSequence = 1;
+let diagnosticFlushPromise: Promise<void> | null = null;
+const extensionSessionId = `chromium-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 const pendingRequests = new Map<number, PendingRequest>();
 const activeVisits = new Map<number, ActiveVisit>();
 const pendingVisitStarts = new Map<number, string>();
 const navigationTokens = new Map<number, number>();
+const revalidationFailures = new Map<number, ConsecutiveFailure>();
+const revalidationsInFlight = new Set<number>();
 const settingsLoaded = loadStoredBlockingMode();
+const diagnosticQueueLoaded = loadDiagnosticQueue();
 
 function connectNativeHost(): BlockuntuChromeExtension.RuntimePort {
   if (nativePort) {
@@ -79,8 +120,12 @@ function connectNativeHost(): BlockuntuChromeExtension.RuntimePort {
       : "native host disconnected";
 
     nativePort = null;
-    markBackendUnhealthy(message);
+    console.warn(
+      `BlocKuntu native host disconnected; pending=${pendingRequests.size}; reason=${message}`
+    );
+    recordExtensionDiagnostic("warn", "native_host_disconnected", message);
     rejectAllPending(message);
+    scheduleNativeReconnect();
   });
 
   nativePort = port;
@@ -89,6 +134,11 @@ function connectNativeHost(): BlockuntuChromeExtension.RuntimePort {
 
 function handleNativeMessage(message: unknown): void {
   if (!isObject(message)) {
+    recordExtensionDiagnostic(
+      "error",
+      "native_response_invalid",
+      "native host returned a non-object response"
+    );
     rejectAllPending("native host returned a non-object response");
     return;
   }
@@ -98,16 +148,41 @@ function handleNativeMessage(message: unknown): void {
     const pending = pendingRequests.get(id);
     if (!pending) {
       console.warn(`BlocKuntu received a response for unknown request ${id}.`);
+      recordExtensionDiagnostic(
+        "warn",
+        "rpc_response_unknown",
+        `received a response for unknown request id=${id}`,
+        String(id)
+      );
       return;
     }
 
     pendingRequests.delete(id);
     globalThis.clearTimeout(pending.timeoutId);
+    const elapsedMs = Math.round(performance.now() - pending.startedAt);
+    resetNativeReconnectBackoff();
 
     if (isObject(message.error)) {
-      pending.reject(new Error(JSON.stringify(message.error)));
+      const reason = JSON.stringify(message.error);
+      console.warn(
+        `BlocKuntu RPC failed id=${id} method=${pending.method} elapsed_ms=${elapsedMs} error=${reason}`
+      );
+      const nativeDiagnostic = message.error.blockuntu_diagnostic;
+      if (isObject(nativeDiagnostic)) {
+        queueImportedDiagnostic(nativeDiagnostic);
+      }
+      recordRpcDiagnostic("error", "rpc_failed", pending.method, reason, String(id));
+      pending.reject(new Error(reason));
     } else {
+      if (elapsedMs >= RPC_SLOW_THRESHOLD_MS) {
+        const detail = `id=${id} method=${pending.method} elapsed_ms=${elapsedMs}`;
+        console.warn(`BlocKuntu RPC slow ${detail}`);
+        recordRpcDiagnostic("warn", "rpc_slow", pending.method, detail, String(id));
+      }
       pending.resolve(message.result);
+      if (pending.method !== "record_diagnostics") {
+        void flushDiagnostics();
+      }
     }
     return;
   }
@@ -124,7 +199,8 @@ function sendRpc(method: string, params: JsonObject, timeoutMs = RPC_TIMEOUT_MS)
       port = connectNativeHost();
     } catch (error) {
       const message = errorMessage(error);
-      markBackendUnhealthy(message);
+      console.warn(`BlocKuntu RPC connect failed method=${method} error=${message}`);
+      recordRpcDiagnostic("error", "rpc_connect_failed", method, message);
       reject(new Error(message));
       return;
     }
@@ -134,9 +210,22 @@ function sendRpc(method: string, params: JsonObject, timeoutMs = RPC_TIMEOUT_MS)
       nextRequestId = 1;
     }
 
+    const startedAt = performance.now();
     const timeoutId = globalThis.setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error(`${method} timed out after ${timeoutMs}ms`));
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      const message = `${method} timed out after ${timeoutMs}ms`;
+      console.warn(
+        `BlocKuntu RPC timeout id=${id} method=${method} elapsed_ms=${elapsedMs} pending=${pendingRequests.size}`
+      );
+      recordRpcDiagnostic(
+        "error",
+        "rpc_timeout",
+        method,
+        `elapsed_ms=${elapsedMs} pending=${pendingRequests.size}`,
+        String(id)
+      );
+      reject(new Error(message));
     }, timeoutMs);
 
     pendingRequests.set(id, {
@@ -144,6 +233,8 @@ function sendRpc(method: string, params: JsonObject, timeoutMs = RPC_TIMEOUT_MS)
       resolve,
       reject,
       timeoutId,
+      startedAt,
+      timeoutMs,
     });
 
     try {
@@ -157,7 +248,8 @@ function sendRpc(method: string, params: JsonObject, timeoutMs = RPC_TIMEOUT_MS)
       globalThis.clearTimeout(timeoutId);
       pendingRequests.delete(id);
       const message = errorMessage(error);
-      markBackendUnhealthy(message);
+      console.warn(`BlocKuntu RPC send failed id=${id} method=${method} error=${message}`);
+      recordRpcDiagnostic("error", "rpc_send_failed", method, message, String(id));
       reject(new Error(message));
     }
   });
@@ -166,8 +258,40 @@ function sendRpc(method: string, params: JsonObject, timeoutMs = RPC_TIMEOUT_MS)
 function rejectAllPending(reason: string): void {
   for (const [id, pending] of pendingRequests) {
     globalThis.clearTimeout(pending.timeoutId);
+    const elapsedMs = Math.round(performance.now() - pending.startedAt);
+    console.warn(
+      `BlocKuntu RPC abandoned id=${id} method=${pending.method} elapsed_ms=${elapsedMs} timeout_ms=${pending.timeoutMs} reason=${reason}`
+    );
+    recordRpcDiagnostic(
+      "error",
+      "rpc_abandoned",
+      pending.method,
+      `elapsed_ms=${elapsedMs} timeout_ms=${pending.timeoutMs} reason=${reason}`,
+      String(id)
+    );
     pending.reject(new Error(`${pending.method} failed: ${reason}`));
     pendingRequests.delete(id);
+  }
+}
+
+function scheduleNativeReconnect(): void {
+  if (blockingDisabled || nativeReconnectTimerId !== null) {
+    return;
+  }
+
+  const delayMs = nativeReconnectDelayMs;
+  nativeReconnectDelayMs = Math.min(nativeReconnectDelayMs * 2, NATIVE_RECONNECT_MAX_MS);
+  nativeReconnectTimerId = globalThis.setTimeout(() => {
+    nativeReconnectTimerId = null;
+    void sendHeartbeat();
+  }, delayMs);
+}
+
+function resetNativeReconnectBackoff(): void {
+  nativeReconnectDelayMs = NATIVE_RECONNECT_INITIAL_MS;
+  if (nativeReconnectTimerId !== null) {
+    globalThis.clearTimeout(nativeReconnectTimerId);
+    nativeReconnectTimerId = null;
   }
 }
 
@@ -216,7 +340,6 @@ function sendHeartbeat(): Promise<boolean> {
     return heartbeatPromise;
   }
 
-  heartbeatInFlight = true;
   heartbeatPromise = browserIdentity()
     .then((browser) =>
       sendRpc(
@@ -234,15 +357,24 @@ function sendHeartbeat(): Promise<boolean> {
     .then((result) => {
       applyHeartbeatResult(result);
       lastHeartbeatOkAt = Date.now();
-      backendHealthy = true;
+      if (heartbeatFailures) {
+        const message = `heartbeat recovered after ${heartbeatFailures.count} failure(s); outage_ms=${Date.now() - heartbeatFailures.firstFailedAt}`;
+        console.info(`BlocKuntu ${message}`);
+        recordExtensionDiagnostic("info", "heartbeat_recovered", message, undefined, "extension_heartbeat");
+      }
+      heartbeatFailures = null;
+      resetNativeReconnectBackoff();
+      void flushDiagnostics();
       return true;
     })
     .catch((error) => {
-      markBackendUnhealthy(`heartbeat failed: ${errorMessage(error)}`);
+      recordHeartbeatFailure(`heartbeat failed: ${errorMessage(error)}`);
+      if (nativePort === null) {
+        scheduleNativeReconnect();
+      }
       return false;
     })
     .finally(() => {
-      heartbeatInFlight = false;
       heartbeatPromise = null;
     });
 
@@ -254,24 +386,35 @@ function refreshHealthState(): boolean {
     return true;
   }
 
-  if (lastHeartbeatOkAt === 0) {
-    backendHealthy = false;
-    return false;
-  }
-
-  if (Date.now() - lastHeartbeatOkAt > HEARTBEAT_TIMEOUT_MS) {
-    markBackendUnhealthy("heartbeat timed out");
-    return false;
-  }
-
-  return backendHealthy;
+  return lastHeartbeatOkAt > 0 && Date.now() - lastHeartbeatOkAt <= HEARTBEAT_TIMEOUT_MS;
 }
 
-function markBackendUnhealthy(reason: string): void {
-  if (backendHealthy) {
-    console.warn(`BlocKuntu backend unhealthy: ${reason}`);
-  }
-  backendHealthy = false;
+function recordHeartbeatFailure(reason: string): void {
+  const now = Date.now();
+  heartbeatFailures = nextFailure(heartbeatFailures, reason, now);
+  const heartbeatAgeMs = lastHeartbeatOkAt > 0 ? now - lastHeartbeatOkAt : null;
+  console.warn(
+    `BlocKuntu heartbeat failed count=${heartbeatFailures.count} outage_ms=${now - heartbeatFailures.firstFailedAt} last_ok_age_ms=${heartbeatAgeMs ?? "never"} reason=${reason}`
+  );
+  recordExtensionDiagnostic(
+    "error",
+    "heartbeat_failed",
+    `count=${heartbeatFailures.count} outage_ms=${now - heartbeatFailures.firstFailedAt} last_ok_age_ms=${heartbeatAgeMs ?? "never"} reason=${reason}`,
+    undefined,
+    "extension_heartbeat"
+  );
+}
+
+function recordTransportFailure(method: string, reason: string): void {
+  console.warn(
+    `BlocKuntu transport request failed method=${method} heartbeat_fresh=${refreshHealthState()} reason=${reason}`
+  );
+  recordRpcDiagnostic(
+    "error",
+    "transport_request_failed",
+    method,
+    `heartbeat_fresh=${refreshHealthState()} reason=${reason}`
+  );
 }
 
 function handleBeforeNavigate(details: BlockuntuChromeExtension.NavigationDetails): void {
@@ -284,6 +427,7 @@ function handleBeforeNavigate(details: BlockuntuChromeExtension.NavigationDetail
 
 async function handleNavigation(details: BlockuntuChromeExtension.NavigationDetails): Promise<void> {
   const token = nextNavigationToken(details.tabId);
+  revalidationFailures.delete(details.tabId);
 
   await settingsLoaded;
   if (blockingDisabled) {
@@ -317,6 +461,8 @@ async function handleNavigation(details: BlockuntuChromeExtension.NavigationDeta
         return;
       }
 
+      revalidationFailures.delete(details.tabId);
+
       if (isBlockDecision(result)) {
         redirectToBlocked(details, blockReasonFromResult(result));
         return;
@@ -335,7 +481,7 @@ async function handleNavigation(details: BlockuntuChromeExtension.NavigationDeta
       void startVisitForNavigation(details, token);
     })
     .catch((error) => {
-      markBackendUnhealthy(`URL evaluation failed: ${errorMessage(error)}`);
+      recordTransportFailure("evaluate_url", errorMessage(error));
       if (isCurrentNavigation(details.tabId, token)) {
         redirectToBlocked(
           details,
@@ -405,7 +551,7 @@ function startVisitForNavigation(
       }
     })
     .catch((error) => {
-      markBackendUnhealthy(`visit start failed: ${errorMessage(error)}`);
+      recordTransportFailure("record_visit_start", errorMessage(error));
       if (isCurrentNavigation(details.tabId, token)) {
         redirectToBlocked(
           details,
@@ -464,7 +610,7 @@ function endVisitForTab(tabId: number): Promise<void> {
   })
     .then(() => undefined)
     .catch((error) => {
-      markBackendUnhealthy(`visit end failed: ${errorMessage(error)}`);
+      recordTransportFailure("record_visit_end", errorMessage(error));
     });
 }
 
@@ -492,7 +638,7 @@ async function heartbeatActiveVisitsAsync(): Promise<void> {
       visit_id: visit.visitId,
       now: new Date().toISOString(),
     }).catch((error) => {
-      markBackendUnhealthy(`visit heartbeat failed: ${errorMessage(error)}`);
+      recordTransportFailure("record_visit_heartbeat", errorMessage(error));
     });
   }
 }
@@ -580,6 +726,8 @@ function setBlockingDisabled(disabled: boolean): void {
   });
 
   if (disabled) {
+    revalidationFailures.clear();
+    revalidationsInFlight.clear();
     for (const tabId of activeVisits.keys()) {
       void endVisitForTab(tabId);
     }
@@ -598,6 +746,155 @@ function loadStoredBlockingMode(): Promise<void> {
       resolve();
     });
   });
+}
+
+function recordRpcDiagnostic(
+  severity: DiagnosticEvent["severity"],
+  kind: string,
+  method: string,
+  message: string,
+  requestId?: string
+): void {
+  if (method === "record_diagnostics") {
+    return;
+  }
+  recordExtensionDiagnostic(severity, kind, message, requestId, method);
+}
+
+function recordExtensionDiagnostic(
+  severity: DiagnosticEvent["severity"],
+  kind: string,
+  message: string,
+  requestId?: string,
+  method?: string
+): void {
+  void browserIdentity().then((browser) =>
+    queueDiagnostic({
+      id: `extension:${extensionSessionId}:${diagnosticSequence++}`,
+      component: extensionComponent(browser),
+      severity,
+      kind,
+      message: message.slice(0, 4_000),
+      observed_at: new Date().toISOString(),
+      request_id: requestId,
+      method,
+      browser_session: extensionSessionId,
+    })
+  );
+}
+
+function queueImportedDiagnostic(value: JsonObject): void {
+  const id = stringField(value, "id");
+  const component = stringField(value, "component");
+  const severity = stringField(value, "severity");
+  const kind = stringField(value, "kind");
+  const message = stringField(value, "message");
+  if (
+    !id ||
+    !component ||
+    !kind ||
+    !message ||
+    (severity !== "info" && severity !== "warn" && severity !== "error")
+  ) {
+    return;
+  }
+  queueDiagnostic({
+    id,
+    component,
+    severity,
+    kind,
+    message: message.slice(0, 4_000),
+    observed_at: stringField(value, "observed_at") ?? new Date().toISOString(),
+    request_id: stringField(value, "request_id") ?? undefined,
+    method: stringField(value, "method") ?? undefined,
+    browser_session: stringField(value, "browser_session") ?? extensionSessionId,
+  });
+}
+
+function queueDiagnostic(event: DiagnosticEvent): void {
+  void diagnosticQueueLoaded.then(async () => {
+    if (diagnosticQueue.some((queued) => queued.id === event.id)) {
+      return;
+    }
+    diagnosticQueue.push(event);
+    if (diagnosticQueue.length > MAX_DIAGNOSTIC_QUEUE_LENGTH) {
+      diagnosticQueue.splice(0, diagnosticQueue.length - MAX_DIAGNOSTIC_QUEUE_LENGTH);
+    }
+    await persistDiagnosticQueue();
+  });
+}
+
+function loadDiagnosticQueue(): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([DIAGNOSTIC_QUEUE_STORAGE_KEY], (items) => {
+      const error = chrome.runtime.lastError;
+      if (error?.message) {
+        console.warn(`BlocKuntu failed to load diagnostic queue: ${error.message}`);
+      } else {
+        const stored = items[DIAGNOSTIC_QUEUE_STORAGE_KEY];
+        if (Array.isArray(stored)) {
+          diagnosticQueue = stored
+            .filter(isDiagnosticEvent)
+            .slice(-MAX_DIAGNOSTIC_QUEUE_LENGTH);
+        }
+      }
+      resolve();
+    });
+  });
+}
+
+function persistDiagnosticQueue(): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [DIAGNOSTIC_QUEUE_STORAGE_KEY]: diagnosticQueue }, () => {
+      const error = chrome.runtime.lastError;
+      if (error?.message) {
+        console.warn(`BlocKuntu failed to persist diagnostic queue: ${error.message}`);
+      }
+      resolve();
+    });
+  });
+}
+
+async function flushDiagnostics(): Promise<void> {
+  await diagnosticQueueLoaded;
+  if (diagnosticFlushPromise) {
+    return diagnosticFlushPromise;
+  }
+  if (diagnosticQueue.length === 0 || blockingDisabled) {
+    return;
+  }
+
+  diagnosticFlushPromise = (async () => {
+    while (diagnosticQueue.length > 0) {
+      const batch = diagnosticQueue.slice(0, DIAGNOSTIC_BATCH_SIZE);
+      await sendRpc("record_diagnostics", { events: batch });
+      const acceptedIds = new Set(batch.map((event) => event.id));
+      diagnosticQueue = diagnosticQueue.filter((event) => !acceptedIds.has(event.id));
+      await persistDiagnosticQueue();
+    }
+  })()
+    .catch((error: unknown) => {
+      console.warn(`BlocKuntu diagnostic flush failed: ${errorMessage(error)}`);
+    })
+    .finally(() => {
+      diagnosticFlushPromise = null;
+    });
+  return diagnosticFlushPromise;
+}
+
+function isDiagnosticEvent(value: unknown): value is DiagnosticEvent {
+  if (!isObject(value)) {
+    return false;
+  }
+  const severity = stringField(value, "severity");
+  return Boolean(
+    stringField(value, "id") &&
+      stringField(value, "component") &&
+      stringField(value, "kind") &&
+      stringField(value, "message") &&
+      stringField(value, "observed_at") &&
+      (severity === "info" || severity === "warn" || severity === "error")
+  );
 }
 
 function queryWebTabs(): Promise<BlockuntuChromeExtension.Tab[]> {
@@ -641,7 +938,19 @@ async function revalidateTab(tabId: number, url: string): Promise<void> {
   if (!isWebUrl(url) || isOwnBlockedPage(url) || isExtensionUrl(url)) {
     return;
   }
+  if (revalidationsInFlight.has(tabId)) {
+    return;
+  }
 
+  revalidationsInFlight.add(tabId);
+  try {
+    await revalidateTabOnce(tabId, url);
+  } finally {
+    revalidationsInFlight.delete(tabId);
+  }
+}
+
+async function revalidateTabOnce(tabId: number, url: string): Promise<void> {
   const details = { tabId, frameId: 0, url };
   const backendReady = await ensureBackendReady();
   if (blockingDisabled) {
@@ -650,10 +959,11 @@ async function revalidateTab(tabId: number, url: string): Promise<void> {
   }
 
   if (!backendReady) {
-    activeVisits.delete(tabId);
-    redirectToBlocked(
+    handleExistingTabFailure(
       details,
-      backendBlockReason("backend_unhealthy", "BlocKuntu daemon heartbeat is not healthy")
+      "backend_unhealthy",
+      "BlocKuntu daemon heartbeat is not healthy",
+      heartbeatFailures?.lastReason ?? "heartbeat is missing or stale"
     );
     return;
   }
@@ -663,6 +973,7 @@ async function revalidateTab(tabId: number, url: string): Promise<void> {
       url,
       now: new Date().toISOString(),
     });
+    revalidationFailures.delete(tabId);
 
     if (isBlockDecision(result)) {
       void endVisitForTab(tabId);
@@ -678,23 +989,75 @@ async function revalidateTab(tabId: number, url: string): Promise<void> {
     const activeVisit = activeVisits.get(tabId);
     if (!activeVisit) {
       void startVisitForTab(tabId, url).catch((error) => {
-        markBackendUnhealthy(`visit start failed: ${errorMessage(error)}`);
+        recordTransportFailure("record_visit_start", errorMessage(error));
       });
     } else if (activeVisit.url !== url) {
       void endVisitForTab(tabId).then(() =>
         startVisitForTab(tabId, url).catch((error) => {
-          markBackendUnhealthy(`visit start failed: ${errorMessage(error)}`);
+          recordTransportFailure("record_visit_start", errorMessage(error));
         })
       );
     }
   } catch (error) {
-    markBackendUnhealthy(`tab revalidation failed: ${errorMessage(error)}`);
-    activeVisits.delete(tabId);
-    redirectToBlocked(
+    const reason = errorMessage(error);
+    recordTransportFailure("evaluate_url", reason);
+    handleExistingTabFailure(
       details,
-      backendBlockReason("backend_unavailable", "BlocKuntu daemon did not revalidate the tab")
+      "backend_unavailable",
+      "BlocKuntu daemon did not revalidate the tab",
+      reason
     );
   }
+}
+
+function handleExistingTabFailure(
+  details: BlockuntuChromeExtension.NavigationDetails,
+  kind: "backend_unhealthy" | "backend_unavailable",
+  message: string,
+  reason: string
+): void {
+  const now = Date.now();
+  const failure = nextFailure(revalidationFailures.get(details.tabId) ?? null, reason, now);
+  revalidationFailures.set(details.tabId, failure);
+  const elapsedMs = now - failure.firstFailedAt;
+  const failClosed =
+    failure.count >= EXISTING_TAB_FAILURE_THRESHOLD &&
+    elapsedMs >= EXISTING_TAB_FAILURE_GRACE_MS;
+
+  const diagnosticMessage = `tab_id=${details.tabId} count=${failure.count} elapsed_ms=${elapsedMs} action=${failClosed ? "redirect" : "retry"} reason=${reason}`;
+  console.warn(`BlocKuntu existing-tab revalidation failed ${diagnosticMessage}`);
+  recordExtensionDiagnostic(
+    failClosed ? "error" : "warn",
+    "existing_tab_revalidation_failed",
+    diagnosticMessage,
+    undefined,
+    "evaluate_url"
+  );
+
+  if (!failClosed) {
+    return;
+  }
+
+  activeVisits.delete(details.tabId);
+  revalidationFailures.delete(details.tabId);
+  const blockReason = backendBlockReason(kind, message);
+  blockReason.consecutive_failures = failure.count;
+  blockReason.failure_started_at = new Date(failure.firstFailedAt).toISOString();
+  blockReason.last_transport_error = failure.lastReason;
+  redirectToBlocked(details, blockReason);
+}
+
+function nextFailure(
+  previous: ConsecutiveFailure | null,
+  reason: string,
+  now: number
+): ConsecutiveFailure {
+  return {
+    count: (previous?.count ?? 0) + 1,
+    firstFailedAt: previous?.firstFailedAt ?? now,
+    lastFailedAt: now,
+    lastReason: reason,
+  };
 }
 
 function blockReasonFromResult(result: unknown): BlockNavigationReason {
@@ -783,10 +1146,29 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+function ensureLifecycleAlarm(name: string): void {
+  chrome.alarms.get(name, (alarm) => {
+    const error = chrome.runtime.lastError;
+    if (error?.message) {
+      console.warn(`BlocKuntu failed to inspect lifecycle alarm ${name}: ${error.message}`);
+      return;
+    }
+    if (alarm) {
+      return;
+    }
+    chrome.alarms.create(name, {
+      delayInMinutes: ALARM_PERIOD_MINUTES,
+      periodInMinutes: ALARM_PERIOD_MINUTES,
+    });
+  });
+}
+
 chrome.webNavigation.onBeforeNavigate.addListener(handleBeforeNavigate);
 chrome.webNavigation.onHistoryStateUpdated.addListener(handleBeforeNavigate);
 chrome.tabs.onRemoved.addListener((tabId: number) => {
   navigationTokens.delete(tabId);
+  revalidationFailures.delete(tabId);
+  revalidationsInFlight.delete(tabId);
   void endVisitForTab(tabId);
 });
 chrome.tabs.onActivated.addListener((activeInfo) => {
@@ -799,7 +1181,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === HEARTBEAT_ALARM) {
-    sendHeartbeat();
+    void sendHeartbeat();
   }
   if (alarm.name === VISIT_ALARM) {
     heartbeatActiveVisits();
@@ -808,11 +1190,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     revalidateOpenTabs();
   }
 });
-chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 1 });
-chrome.alarms.create(VISIT_ALARM, { periodInMinutes: 1 });
-chrome.alarms.create(REVALIDATE_ALARM, { periodInMinutes: 1 });
+ensureLifecycleAlarm(HEARTBEAT_ALARM);
+ensureLifecycleAlarm(VISIT_ALARM);
+ensureLifecycleAlarm(REVALIDATE_ALARM);
 
-sendHeartbeat();
+void sendHeartbeat();
 globalThis.setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
 globalThis.setInterval(refreshHealthState, 1_000);
 globalThis.setInterval(heartbeatActiveVisits, VISIT_HEARTBEAT_INTERVAL_MS);

@@ -13,7 +13,7 @@ use focus_core::{
     AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision,
     DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState,
     NotificationPreferences, RuleConfig, RulePatternKind, RuleTier, ScheduleConfig, UnlockState,
-    VisitState, Weekday,
+    VisitState, Weekday, EVENT_DETAIL_RETENTION_DAYS,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -77,6 +77,11 @@ const MAX_NOTIFICATION_THRESHOLD_MINUTES: u32 = 24 * 60;
 const MAX_NOTIFICATION_THRESHOLDS: usize = 10;
 const MAX_PENDING_NOTIFICATIONS: u32 = 50;
 const MAX_NOTIFICATION_DELIVERY_DETAIL_LENGTH: usize = 2_000;
+const MAX_DIAGNOSTIC_EVENTS_PER_BATCH: usize = 100;
+const MAX_DIAGNOSTIC_ID_LENGTH: usize = 160;
+const MAX_DIAGNOSTIC_COMPONENT_LENGTH: usize = 80;
+const MAX_DIAGNOSTIC_KIND_LENGTH: usize = 80;
+const MAX_DIAGNOSTIC_MESSAGE_LENGTH: usize = 4_000;
 const BLOCK_NOTIFICATION_COOLDOWN_SECONDS: i64 = 60;
 const BLOCK_NOTIFICATION_TTL_MINUTES: i64 = 2;
 const LIFECYCLE_NOTIFICATION_TTL_MINUTES: i64 = 10;
@@ -549,6 +554,28 @@ struct ScheduleActivitySummaryParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct RecordDiagnosticsParams {
+    events: Vec<ClientDiagnosticEvent>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ClientDiagnosticEvent {
+    id: String,
+    component: String,
+    severity: String,
+    kind: String,
+    message: String,
+    #[serde(default)]
+    observed_at: Option<String>,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    browser_session: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SetNotificationPreferencesParams {
     preferences: NotificationPreferences,
 }
@@ -687,6 +714,11 @@ fn handle_method(context: &RpcContext, method: &str, params: Value) -> Result<Va
             detox_sessions_method(context, params)
         }
         "log_summary" => log_summary(context),
+        "export_event_log" => export_event_log_method(context),
+        "record_diagnostics" => {
+            let params = parse_params::<RecordDiagnosticsParams>(params)?;
+            record_diagnostics_method(context, params)
+        }
         "schedule_activity_summary" => {
             let params = parse_params::<ScheduleActivitySummaryParams>(params)?;
             schedule_activity_summary(context, params)
@@ -2246,34 +2278,192 @@ fn detox_sessions_method(context: &RpcContext, params: DetoxSessionsParams) -> R
 }
 
 fn log_summary(context: &RpcContext) -> Result<Value> {
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let summary = core.database().event_summary()?;
+
+    Ok(json!({
+        "path": context.event_log_path.display().to_string(),
+        "total_events": summary.total_events,
+        "event_counts": summary.event_counts,
+        "statistics_period": "all_time",
+        "detail_retention_days": EVENT_DETAIL_RETENTION_DAYS,
+    }))
+}
+
+fn export_event_log_method(context: &RpcContext) -> Result<Value> {
     let contents = match fs::read_to_string(&context.event_log_path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error.into()),
     };
-
-    let mut event_counts = BTreeMap::<String, u64>::new();
-    for line in contents.lines() {
-        if let Some(kind) = event_kind_from_log_line(line) {
-            *event_counts.entry(kind).or_default() += 1;
-        }
-    }
-    let total_events = event_counts.values().sum::<u64>();
-
+    let exported_at = Utc::now();
     Ok(json!({
-        "path": context.event_log_path.display().to_string(),
-        "total_events": total_events,
-        "event_counts": event_counts,
+        "status": "ok",
+        "log": retained_event_log_contents(
+            &contents,
+            exported_at - Duration::days(EVENT_DETAIL_RETENTION_DAYS),
+        ),
+        "retention_days": EVENT_DETAIL_RETENTION_DAYS,
+        "exported_at": exported_at,
     }))
 }
 
-fn event_kind_from_log_line(line: &str) -> Option<String> {
-    let kind = line
-        .split_whitespace()
-        .find_map(|field| field.strip_prefix("kind="))?
-        .strip_prefix('"')?
-        .strip_suffix('"')?;
-    (!kind.is_empty()).then(|| kind.to_string())
+fn retained_event_log_contents(contents: &str, cutoff: DateTime<Utc>) -> String {
+    contents
+        .split_inclusive('\n')
+        .filter(|line| {
+            line.split_whitespace()
+                .next()
+                .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+                .is_none_or(|timestamp| timestamp.with_timezone(&Utc) >= cutoff)
+        })
+        .collect()
+}
+
+fn record_diagnostics_method(
+    context: &RpcContext,
+    params: RecordDiagnosticsParams,
+) -> Result<Value> {
+    if params.events.is_empty() || params.events.len() > MAX_DIAGNOSTIC_EVENTS_PER_BATCH {
+        return Err(DaemonError::InvalidRequest(format!(
+            "diagnostic batch must contain 1 to {MAX_DIAGNOSTIC_EVENTS_PER_BATCH} events"
+        )));
+    }
+
+    let received_at = Utc::now();
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    let mut accepted = 0_u64;
+    let mut duplicates = 0_u64;
+    let mut rejected = 0_u64;
+    for event in params.events {
+        if validate_client_diagnostic(&event).is_err() {
+            rejected += 1;
+            continue;
+        }
+        let details = serde_json::to_string(&json!({
+            "severity": event.severity,
+            "kind": event.kind,
+            "message": event.message,
+            "observed_at": event.observed_at,
+            "request_id": event.request_id,
+            "method": event.method,
+            "browser_session": event.browser_session,
+        }))?;
+        if core.database().record_diagnostic_event(
+            &event.id,
+            &event.component,
+            &details,
+            received_at,
+        )? {
+            accepted += 1;
+        } else {
+            duplicates += 1;
+        }
+    }
+
+    Ok(json!({
+        "status": "accepted",
+        "accepted": accepted,
+        "duplicates": duplicates,
+        "rejected": rejected,
+    }))
+}
+
+fn validate_client_diagnostic(event: &ClientDiagnosticEvent) -> Result<()> {
+    validate_diagnostic_token("id", &event.id, MAX_DIAGNOSTIC_ID_LENGTH, true)?;
+    validate_diagnostic_token(
+        "component",
+        &event.component,
+        MAX_DIAGNOSTIC_COMPONENT_LENGTH,
+        false,
+    )?;
+    validate_diagnostic_token("kind", &event.kind, MAX_DIAGNOSTIC_KIND_LENGTH, false)?;
+    if !matches!(event.severity.as_str(), "info" | "warn" | "error") {
+        return Err(DaemonError::InvalidRequest(
+            "diagnostic severity must be info, warn, or error".to_string(),
+        ));
+    }
+    if event.message.is_empty() || event.message.len() > MAX_DIAGNOSTIC_MESSAGE_LENGTH {
+        return Err(DaemonError::InvalidRequest(format!(
+            "diagnostic message must contain 1 to {MAX_DIAGNOSTIC_MESSAGE_LENGTH} bytes"
+        )));
+    }
+    if event.message.chars().any(|character| character == '\0') {
+        return Err(DaemonError::InvalidRequest(
+            "diagnostic message contains a null byte".to_string(),
+        ));
+    }
+    if let Some(observed_at) = &event.observed_at {
+        DateTime::parse_from_rfc3339(observed_at).map_err(|_| {
+            DaemonError::InvalidRequest("diagnostic observed_at is not RFC 3339".to_string())
+        })?;
+    }
+    for (field, value) in [
+        ("request_id", event.request_id.as_deref()),
+        ("method", event.method.as_deref()),
+        ("browser_session", event.browser_session.as_deref()),
+    ] {
+        if value.is_some_and(|value| value.len() > MAX_DIAGNOSTIC_ID_LENGTH) {
+            return Err(DaemonError::InvalidRequest(format!(
+                "diagnostic {field} is too long"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_diagnostic_token(
+    field: &str,
+    value: &str,
+    max_length: usize,
+    allow_colon: bool,
+) -> Result<()> {
+    let valid = !value.is_empty()
+        && value.len() <= max_length
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '_' | '-' | '.')
+                || (allow_colon && character == ':')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(DaemonError::InvalidRequest(format!(
+            "diagnostic {field} is invalid"
+        )))
+    }
+}
+
+pub(crate) fn record_daemon_diagnostic(
+    context: &RpcContext,
+    severity: &str,
+    kind: &str,
+    message: &str,
+) {
+    let details = json!({
+        "severity": severity,
+        "kind": kind,
+        "message": message,
+    })
+    .to_string();
+    let result = context
+        .core
+        .lock()
+        .map_err(|_| DaemonError::LockPoisoned)
+        .and_then(|core| {
+            core.database()
+                .record_event(
+                    "runtime_diagnostic",
+                    Some("daemon"),
+                    Some(&details),
+                    Utc::now(),
+                )
+                .map(|_| ())
+                .map_err(DaemonError::from)
+        });
+    if let Err(error) = result {
+        eprintln!("BlocKuntu could not persist daemon diagnostic: {error}");
+    }
 }
 
 fn running_apps_method(context: &RpcContext, params: ListRunningAppsParams) -> Result<Value> {
@@ -2615,7 +2805,7 @@ fn set_protected_access_mode(context: &RpcContext, mode: ProtectedAccessMode) ->
         "protected_access_mode_updated",
         Some("protected_changes"),
         Some(&format!(
-            "Tier 1 edits, uninstall, unsupported-browser blocking, and Chromium private-browsing settings are available {}",
+            "Tier 1 edits, uninstall, unsupported-browser blocking and Chromium private-browsing settings are available {}",
             protected_access_mode_description(mode)
         )),
         now,
@@ -5160,19 +5350,29 @@ mod tests {
     }
 
     #[test]
-    fn summarizes_events_from_the_plain_log_file() {
+    fn summarizes_all_time_events_from_sqlite() {
         let temp = tempfile::tempdir().expect("temp dir should be created");
         let log_path = temp.path().join("blockuntu.log");
-        std::fs::write(
-            &log_path,
-            concat!(
-                "2026-07-15T10:00:00Z kind=\"website_blocked\" target=\"example.com\" details=None\n",
-                "2026-07-15T10:01:00Z kind=\"app_blocked\" target=\"game\" details=None\n",
-                "2026-07-15T10:02:00Z kind=\"website_blocked\" target=\"example.org\" details=None\n"
-            ),
-        )
-        .expect("event log should write");
         let context = rpc_context().with_event_log_path(&log_path);
+        {
+            let core = context.core.lock().expect("core should lock");
+            for (kind, target, second) in [
+                ("website_blocked", "example.com", 0),
+                ("app_blocked", "game", 1),
+                ("website_blocked", "example.org", 2),
+            ] {
+                core.database()
+                    .record_event(
+                        kind,
+                        Some(target),
+                        None,
+                        Utc.with_ymd_and_hms(2026, 7, 15, 10, 0, second)
+                            .single()
+                            .expect("timestamp should be valid"),
+                    )
+                    .expect("event should write");
+            }
+        }
         let request = json!({
             "jsonrpc": "2.0",
             "id": 8,
@@ -5190,6 +5390,75 @@ mod tests {
         assert_eq!(response["result"]["total_events"], 3);
         assert_eq!(response["result"]["event_counts"]["website_blocked"], 2);
         assert_eq!(response["result"]["event_counts"]["app_blocked"], 1);
+        assert_eq!(response["result"]["statistics_period"], "all_time");
+        assert_eq!(response["result"]["detail_retention_days"], 30);
+    }
+
+    #[test]
+    fn records_deduplicated_client_diagnostics_and_exports_one_log() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let log_path = temp.path().join("blockuntu.log");
+        std::fs::write(
+            &log_path,
+            "2020-01-01T00:00:00Z kind=\"old_detail\" target=None details=None\n",
+        )
+        .expect("old log entry should write");
+        let mut database = Database::in_memory().expect("database should initialize");
+        database
+            .set_event_log_path(&log_path)
+            .expect("event log should initialize");
+        let core = FocusCore::new(Config::default(), database).expect("core should initialize");
+        let context = RpcContext::new(Arc::new(Mutex::new(core)))
+            .with_event_log_path(&log_path)
+            .with_trusted_client_time();
+        let diagnostic = json!({
+            "id": "extension:test-session:1",
+            "component": "firefox_extension",
+            "severity": "error",
+            "kind": "heartbeat_failed",
+            "message": "method=extension_heartbeat elapsed_ms=3000",
+            "observed_at": Utc::now().to_rfc3339(),
+            "request_id": "41",
+            "method": "extension_heartbeat",
+            "browser_session": "test-session"
+        });
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 81,
+            "method": "record_diagnostics",
+            "params": { "events": [diagnostic] }
+        });
+        let first: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("first response should parse");
+        let duplicate: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&request).unwrap(),
+        ))
+        .expect("duplicate response should parse");
+        assert_eq!(first["result"]["accepted"], 1);
+        assert_eq!(duplicate["result"]["duplicates"], 1);
+
+        let export = json!({
+            "jsonrpc": "2.0",
+            "id": 82,
+            "method": "export_event_log",
+            "params": {}
+        });
+        let exported: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&export).unwrap(),
+        ))
+        .expect("export response should parse");
+        let log = exported["result"]["log"]
+            .as_str()
+            .expect("log should be a string");
+        assert!(log.contains("kind=\"runtime_diagnostic\""));
+        assert!(log.contains("firefox_extension"));
+        assert!(log.contains("heartbeat_failed"));
+        assert!(!log.contains("old_detail"));
     }
 
     #[test]

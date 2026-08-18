@@ -7,6 +7,7 @@
     CheckCircle2,
     Clock3,
     Download,
+    ExternalLink,
     FileText,
     Gauge,
     KeyRound,
@@ -16,6 +17,7 @@
     X,
     XCircle
   } from "@lucide/svelte";
+  import { openLatestRelease } from "../../lib/api";
   import type {
     EnforcementStatus,
     HealthCheck,
@@ -69,6 +71,9 @@
     policyImportRunning: boolean;
     policyTransferMessage: string | null;
     policyTransferError: string | null;
+    logExportRunning: boolean;
+    logExportMessage: string | null;
+    logExportError: string | null;
     onRefreshHealth: () => void | Promise<void>;
     onRunUninstallBlockuntu: () => void | Promise<void>;
     onUnlockTier1Edit: () => void | Promise<void>;
@@ -78,6 +83,7 @@
       scope: ChromiumIncognitoDisableScope
     ) => void | Promise<void>;
     onExportPolicyToml: () => void | Promise<void>;
+    onExportEventLog: () => void | Promise<void>;
     onImportPolicyToml: () => void | Promise<void>;
     onUpdateNotificationPreferences: (
       preferences: NotificationPreferences
@@ -95,6 +101,8 @@
     { id: "protected", label: "Protected changes and uninstall", icon: KeyRound },
     { id: "notifications", label: "Notifications", icon: Bell }
   ];
+
+  const latestReleaseUrl = "https://github.com/cstute1206/BlocKuntu/releases/latest";
 
   let {
     health,
@@ -131,6 +139,9 @@
     policyImportRunning,
     policyTransferMessage,
     policyTransferError,
+    logExportRunning,
+    logExportMessage,
+    logExportError,
     onRefreshHealth,
     onRunUninstallBlockuntu,
     onUnlockTier1Edit,
@@ -138,6 +149,7 @@
     onUpdateChromiumIncognitoMode,
     onUpdateChromiumIncognitoDisableScope,
     onExportPolicyToml,
+    onExportEventLog,
     onImportPolicyToml,
     onUpdateNotificationPreferences,
     onShowFirstRunOverview,
@@ -146,6 +158,19 @@
     onHideRecoveryCredentials,
     onClose
   }: Props = $props();
+
+  let latestReleaseError = $state<string | null>(null);
+
+  async function openLatestReleaseLink(event: MouseEvent): Promise<void> {
+    event.preventDefault();
+    latestReleaseError = null;
+
+    try {
+      await openLatestRelease();
+    } catch {
+      latestReleaseError = "Unable to open the latest BlocKuntu release in your default browser.";
+    }
+  }
 
   let activeSection: SettingsSection = $state("health");
   let customAllowanceThreshold = $state("");
@@ -243,23 +268,6 @@
     });
   }
 
-  function selectAllNotificationOptions(enabled: boolean): void {
-    if (!notificationPreferences) return;
-    updateNotificationPreferences({
-      enabled,
-      website_blocked: enabled,
-      application_blocked: enabled,
-      allowance_warnings: enabled,
-      allowance_warning_minutes: enabled
-        ? [...new Set([...notificationPreferences.allowance_warning_minutes, 5, 1])]
-        : [],
-      schedule_started: enabled,
-      schedule_ended: enabled,
-      detox_started: enabled,
-      detox_ended: enabled
-    });
-  }
-
   function closeOnEscape(event: KeyboardEvent): void {
     if (event.key === "Escape") onClose();
   }
@@ -282,7 +290,7 @@
     if (mode === protectedAccessMode) return;
     if (
       window.confirm(
-        `Set protected settings access to ${protectedAccessModeLabel(mode)}?\n\nThis applies to Tier 1 edits and uninstall, Tier 1 blocked browsers, and changes to Chromium private-browsing settings.`
+        `Set protected settings access to ${protectedAccessModeLabel(mode)}?\n\nThis applies to Tier 1 edits and uninstall, Tier 1 blocked browsers and changes to Chromium private-browsing settings.`
       )
     ) {
       void onUpdateProtectedAccessMode(mode);
@@ -383,26 +391,29 @@
             {#if policyTransferError}<p class="result-text danger-text">{policyTransferError}</p>{/if}
             <p class="settings-note"><strong>Append keeps your current rules.</strong> Imported rules are added; when an imported rule has the same ID as an existing rule, the imported version replaces that rule. No rules are removed simply because they are absent from the imported file.</p>
             <section class="settings-subsection">
-              <div class="settings-subsection-header"><h4>Logging</h4><p>BlocKuntu writes plain local event and notification-delivery entries; there is no GUI log viewer.</p></div>
+              <div class="settings-subsection-header"><h4>Logging</h4><p>BlocKuntu keeps one unified diagnostic stream for enforcement and component-runtime events.</p></div>
               <div class="log-file-note">
                 <FileText size={18} aria-hidden="true" />
-                <div><strong>Event log</strong><code>/etc/blockuntu/blockuntu.log</code><small>The daemon appends queued, accepted, and failed notification details here. Use a terminal to inspect it.</small></div>
+                <div><strong>Diagnostic log</strong><code>/etc/blockuntu/blockuntu.log</code><small>Detailed entries are retained for 30 days. Lifetime counters used by Statistics are retained separately. Exports can contain visited URLs and application activity.</small></div>
+                <button class="secondary log-export-button" onclick={onExportEventLog} disabled={logExportRunning}><Download size={17} aria-hidden="true" /><span>{logExportRunning ? "Exporting" : "Export .log"}</span></button>
               </div>
+              {#if logExportMessage}<p class="result-text">{logExportMessage}</p>{/if}
+              {#if logExportError}<p class="result-text danger-text">{logExportError}</p>{/if}
               <div class="log-command-list"><code>sudo tail -f /etc/blockuntu/blockuntu.log</code><code>sudo less /etc/blockuntu/blockuntu.log</code></div>
             </section>
           </section>
         {:else if activeSection === "protected"}
           <section class="settings-panel">
-            <div class="settings-panel-header"><div><h3>Protected changes and uninstall</h3><p>Manage Tier 1 editing, maintenance, and the protected uninstall flow.</p></div></div>
+            <div class="settings-panel-header"><div><h3>Protected changes and uninstall</h3><p>Manage Tier 1 editing, maintenance and the protected uninstall flow.</p></div></div>
             <div class="protected-changes-stack">
               <div class="status-list">
                 <div class="status-row"><span>Protected actions</span><strong data-state={protectedAccessOpen ? "active" : "stopped"}>{protectedAccessOpen ? "available" : "unavailable"}</strong></div>
                 <div class="status-row"><span>Available</span><small>{protectedAccessLabel}</small></div>
                 <div class="status-row"><span>Edit unlock</span><small>{protectionState}</small></div>
               </div>
-              <label class="preference-row"><span><strong>Protected settings access</strong><small>This one setting controls when Tier 1 edits and uninstall can be authorized, Tier 1 blocked browsers are active, and Chromium private-browsing settings can be changed. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={requestProtectedAccessModeChange}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
+              <label class="preference-row"><span><strong>Protected settings access</strong><small>This one setting controls when Tier 1 edits and uninstall can be authorized, Tier 1 blocked browsers are active and Chromium private-browsing settings can be changed. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={requestProtectedAccessModeChange}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
               <p class="settings-note">Tier 1 blocked browsers are currently {unsupportedBrowserBlockActive ? "active" : "inactive"}. Chromium private-browsing settings are currently {protectedAccessOpen ? "available to change" : "locked by the protected settings access window"}.</p>
-              <label class="preference-row"><span><strong>Chromium private browsing</strong><small>Choose how Chrome, Chromium, Brave, Opera, Edge, and Vivaldi handle private windows. Manual consent is controlled by the browser and a user can revoke it; BlocKuntu cannot policy-force the extension toggle.</small></span><select value={chromiumIncognitoMode} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoMode((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoMode)}><option value="disabled">Disable private browsing</option><option value="manual_consent">Allow with manual extension consent</option><option value="policy_url_blocking">Block URLs by browser policy</option></select></label>
+              <label class="preference-row"><span><strong>Chromium private browsing</strong><small>Choose how Chrome, Chromium, Brave, Opera, Edge and Vivaldi handle private windows. Manual consent is controlled by the browser and a user can revoke it; BlocKuntu cannot policy-force the extension toggle.</small></span><select value={chromiumIncognitoMode} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoMode((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoMode)}><option value="disabled">Disable private browsing</option><option value="manual_consent">Allow with manual extension consent</option><option value="policy_url_blocking">Block URLs by browser policy</option></select></label>
               {#if chromiumIncognitoMode === "disabled"}
                 <label class="preference-row"><span><strong>When to disable private browsing</strong><small>All the time is the default. The scoped option makes private browsing available outside every active schedule and Detox session.</small></span><select value={chromiumIncognitoDisableScope} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoDisableScope((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoDisableScope)}><option value="all_time">All the time</option><option value="active_schedule_or_detox">Only during an active schedule or Detox</option></select></label>
                 <p class="settings-note">{chromiumIncognitoPrivateBrowsingDisabled ? "Private windows are currently disabled through the browser policy." : "Private windows are currently available and will be disabled when a schedule or Detox becomes active."}</p>
@@ -433,19 +444,36 @@
           <section class="settings-panel">
             <div class="settings-panel-header"><div><h3>Notifications</h3><p>Choose which enforcement events BlocKuntu sends to the desktop.</p></div></div>
             {#if notificationPreferences}
-              <div class="button-row compact-row settings-action-row notification-selection-actions"><button class="secondary" onclick={() => selectAllNotificationOptions(true)} disabled={notificationPreferencesSaving}>Select all</button><button class="secondary" onclick={() => selectAllNotificationOptions(false)} disabled={notificationPreferencesSaving}>Unselect all</button></div>
-              <div class="preference-list">
-                <label class="preference-row"><span><strong>Desktop notifications</strong><small>Master switch for every notification below.</small></span><input type="checkbox" checked={notificationPreferences.enabled} disabled={notificationPreferencesSaving} onchange={(event) => updateNotificationBoolean("enabled", event)} /></label>
-                <label class="preference-row"><span><strong>Website blocked</strong><small>Notify when the browser integration blocks a website.</small></span><input type="checkbox" checked={notificationPreferences.website_blocked} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("website_blocked", event)} /></label>
-                <label class="preference-row"><span><strong>Application blocked</strong><small>Notify after BlocKuntu successfully closes a blocked application.</small></span><input type="checkbox" checked={notificationPreferences.application_blocked} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("application_blocked", event)} /></label>
-                <label class="preference-row"><span><strong>Allowance warnings</strong><small>Notify once when an allowance crosses an enabled threshold.</small></span><input type="checkbox" checked={notificationPreferences.allowance_warnings} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("allowance_warnings", event)} /></label>
-                <label class="preference-row"><span><strong>Below 5 minutes</strong><small>Standard early allowance warning.</small></span><input type="checkbox" checked={notificationPreferences.allowance_warning_minutes.includes(5)} disabled={notificationPreferencesSaving || !notificationPreferences.enabled || !notificationPreferences.allowance_warnings} onchange={(event) => updateAllowanceThreshold(5, event)} /></label>
-                <label class="preference-row"><span><strong>Below 1 minute</strong><small>Final allowance warning before the limit is exhausted.</small></span><input type="checkbox" checked={notificationPreferences.allowance_warning_minutes.includes(1)} disabled={notificationPreferencesSaving || !notificationPreferences.enabled || !notificationPreferences.allowance_warnings} onchange={(event) => updateAllowanceThreshold(1, event)} /></label>
-                <label class="preference-row"><span><strong>Additional threshold</strong><small>Optional custom warning from 1 to 1440 minutes.</small></span><input type="number" min="1" max="1440" step="1" placeholder="Minutes" bind:value={customAllowanceThreshold} disabled={notificationPreferencesSaving || !notificationPreferences.enabled || !notificationPreferences.allowance_warnings} onchange={updateCustomAllowanceThreshold} /></label>
-                <label class="preference-row"><span><strong>Schedule started</strong><small>Notify when a configured schedule becomes active.</small></span><input type="checkbox" checked={notificationPreferences.schedule_started} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("schedule_started", event)} /></label>
-                <label class="preference-row"><span><strong>Schedule ended</strong><small>Notify when a configured schedule becomes inactive.</small></span><input type="checkbox" checked={notificationPreferences.schedule_ended} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("schedule_ended", event)} /></label>
-                <label class="preference-row"><span><strong>Detox started</strong><small>Notify when a Detox session starts.</small></span><input type="checkbox" checked={notificationPreferences.detox_started} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("detox_started", event)} /></label>
-                <label class="preference-row"><span><strong>Detox ended</strong><small>Notify when a Detox expires or is ended early.</small></span><input type="checkbox" checked={notificationPreferences.detox_ended} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("detox_ended", event)} /></label>
+              <label class="preference-row notification-master">
+                <span><strong>Desktop notifications</strong><small>{notificationPreferences.enabled ? "Notifications are on. Choose the events you want below." : "Notifications are paused. Your choices below are remembered."}</small></span>
+                <input type="checkbox" checked={notificationPreferences.enabled} disabled={notificationPreferencesSaving} onchange={(event) => updateNotificationBoolean("enabled", event)} />
+              </label>
+              <div class:notifications-paused={!notificationPreferences.enabled} class="notification-groups">
+                <section class="notification-group" aria-labelledby="notification-blocking-title">
+                  <header class="notification-group-header"><h4 id="notification-blocking-title">Blocking</h4><p>Choose whether a blocked target should notify you.</p></header>
+                  <div class="notification-choice-grid">
+                    <label class="notification-choice"><span><strong>Website blocked</strong><small>When the browser integration blocks a website.</small></span><input type="checkbox" checked={notificationPreferences.website_blocked} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("website_blocked", event)} /></label>
+                    <label class="notification-choice"><span><strong>Application blocked</strong><small>After BlocKuntu successfully closes a blocked application.</small></span><input type="checkbox" checked={notificationPreferences.application_blocked} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("application_blocked", event)} /></label>
+                  </div>
+                </section>
+
+                <section class="notification-group" aria-labelledby="notification-allowance-title">
+                  <header class="notification-group-header"><h4 id="notification-allowance-title">Allowance time</h4><p>Receive a warning before a controlled-access allowance runs out.</p></header>
+                  <label class="notification-choice notification-choice-primary"><span><strong>Warn before allowance expires</strong><small>Select one or more remaining-time thresholds below.</small></span><input type="checkbox" checked={notificationPreferences.allowance_warnings} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("allowance_warnings", event)} /></label>
+                  <div class:notification-thresholds-disabled={!notificationPreferences.allowance_warnings || !notificationPreferences.enabled} class="notification-thresholds">
+                    <label><input type="checkbox" checked={notificationPreferences.allowance_warning_minutes.includes(5)} disabled={notificationPreferencesSaving || !notificationPreferences.enabled || !notificationPreferences.allowance_warnings} onchange={(event) => updateAllowanceThreshold(5, event)} /><span>5 minutes left</span></label>
+                    <label><input type="checkbox" checked={notificationPreferences.allowance_warning_minutes.includes(1)} disabled={notificationPreferencesSaving || !notificationPreferences.enabled || !notificationPreferences.allowance_warnings} onchange={(event) => updateAllowanceThreshold(1, event)} /><span>1 minute left</span></label>
+                    <label class="notification-custom-threshold"><span>Custom</span><input type="number" min="1" max="1440" step="1" placeholder="Minutes" bind:value={customAllowanceThreshold} disabled={notificationPreferencesSaving || !notificationPreferences.enabled || !notificationPreferences.allowance_warnings} onchange={updateCustomAllowanceThreshold} /></label>
+                  </div>
+                </section>
+
+                <section class="notification-group" aria-labelledby="notification-activity-title">
+                  <header class="notification-group-header"><h4 id="notification-activity-title">Activity</h4><p>Choose which schedule and Detox lifecycle changes should notify you.</p></header>
+                  <div class="notification-activity-list">
+                    <div class="notification-activity-row"><span><strong>Schedules</strong><small>When a configured schedule changes state.</small></span><div class="notification-inline-options"><label><input type="checkbox" checked={notificationPreferences.schedule_started} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("schedule_started", event)} /> Started</label><label><input type="checkbox" checked={notificationPreferences.schedule_ended} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("schedule_ended", event)} /> Ended</label></div></div>
+                    <div class="notification-activity-row"><span><strong>Detox</strong><small>When a Detox session starts or ends.</small></span><div class="notification-inline-options"><label><input type="checkbox" checked={notificationPreferences.detox_started} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("detox_started", event)} /> Started</label><label><input type="checkbox" checked={notificationPreferences.detox_ended} disabled={notificationPreferencesSaving || !notificationPreferences.enabled} onchange={(event) => updateNotificationBoolean("detox_ended", event)} /> Ended</label></div></div>
+                  </div>
+                </section>
               </div>
               <p class="settings-note">Notifications are delivered only while the BlocKuntu GUI or tray process is running. Repeated block events are automatically deduplicated.</p>
             {:else}
@@ -458,7 +486,9 @@
               <div class="status-list installation-info">
                 <div class="status-row"><span>Build</span><small>{buildNumber ?? "Unavailable"}</small></div>
                 <div class="status-row"><span>Installation serial</span><small>{installationSerial ?? "Unavailable"}</small></div>
+                <div class="status-row"><span>Updates</span><a class="settings-external-link" href={latestReleaseUrl} target="_blank" rel="noreferrer" onclick={openLatestReleaseLink}>Get the latest version <ExternalLink size={15} aria-hidden="true" /></a></div>
               </div>
+              {#if latestReleaseError}<p class="result-text danger-text">{latestReleaseError}</p>{/if}
             </section>
           </section>
         {/if}

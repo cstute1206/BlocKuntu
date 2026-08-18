@@ -70,12 +70,6 @@
     return ruleDraftActive && !(savedRule?.tier === "hard" && tier1EditUnlocked);
   }
 
-  function ruleStatusIsActive(rule: Rule): boolean {
-    return (
-      ruleIsActive(rule, config?.schedules ?? []) || activeDetoxSiteRuleIds.includes(rule.id)
-    );
-  }
-
   function addPattern(): void {
     if (!ruleDraft) return;
     ruleDraft.patterns = [
@@ -141,13 +135,7 @@
     <div class="rule-list">
       {#each config?.rules ?? [] as rule (rule.id)}
         <button class:active={ruleDraft?.id === rule.id} onclick={() => onSelectRule(rule)}>
-          <span
-            class:active={ruleStatusIsActive(rule)}
-            class="rule-status-dot"
-            role="img"
-            aria-label={ruleStatusIsActive(rule) ? "Active" : "Inactive"}
-            title={ruleStatusIsActive(rule) ? "Active" : "Inactive"}
-          ></span>
+          <span class:hard={rule.tier === "hard"} class="tier-dot"></span>
           <span>{rule.name}</span>
           <em>{rule.tier === "hard" ? "Tier 1" : rule.tier === "scheduled_block" ? "Tier 2" : "Tier 3"}</em>
         </button>
@@ -214,8 +202,8 @@
       {#if ruleDraft.tier !== "hard"}
         <p class="tier2-schedule-note">
           {ruleDraft.tier === "scheduled_block"
-            ? "Tier 2 websites block strictly during an attached schedule or Detox, cannot be unlocked, and domain patterns enter the hosts file while active."
-            : "Tier 3 websites use allowances and manual unlocks during an attached schedule or Detox, and never enter the hosts file."}
+            ? "Tier 2 websites block strictly during an attached schedule or Detox, cannot be unlocked and domain patterns enter the hosts file while active."
+            : "Tier 3 websites use allowances and manual unlocks during an attached schedule or Detox and never enter the hosts file."}
         </p>
         {#if ruleDraft.schedule_ids.length === 0 && !ruleDraftDetoxLocked}
           <section class="inline-warning">

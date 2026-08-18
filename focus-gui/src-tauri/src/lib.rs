@@ -1,6 +1,6 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,6 +48,8 @@ const FIREFOX_EXTENSION_STORE_URL: &str =
     "https://addons.mozilla.org/en-US/firefox/addon/blockuntu/";
 const CHROME_EXTENSION_STORE_URL: &str =
     "https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc";
+const LATEST_RELEASE_URL: &str =
+    "https://github.com/cstute1206/BlocKuntu/releases/latest";
 const FIREFOX_COMMANDS: [&str; 2] = ["/usr/bin/firefox", "/bin/firefox"];
 const LIBREWOLF_COMMANDS: [&str; 3] = [
     "/usr/bin/librewolf",
@@ -209,7 +211,7 @@ enum GuiError {
     UninstallCommand(String),
     #[error("unsupported extension store URL")]
     UnsupportedExtensionStoreUrl,
-    #[error("opening an extension store requires xdg-open, but it was not found")]
+    #[error("opening an external link requires xdg-open, but it was not found")]
     MissingUrlOpener,
 }
 
@@ -396,6 +398,41 @@ fn export_policy_toml(socket_path: Option<String>) -> Result<PolicyFileResult, G
 }
 
 #[tauri::command]
+fn export_event_log(socket_path: Option<String>) -> Result<PolicyFileResult, GuiError> {
+    let Some(path) = event_log_export_path() else {
+        return Ok(PolicyFileResult {
+            status: "cancelled".to_string(),
+            detail: "Log export cancelled.".to_string(),
+            path: None,
+            config: None,
+        });
+    };
+    let path = with_extension(path, "log");
+    let socket = resolve_socket_path(socket_path.as_deref());
+    let value = call_daemon_with_timeout(
+        &socket,
+        "export_event_log",
+        json!({}),
+        Duration::from_secs(30),
+    )?;
+    let contents = value
+        .get("log")
+        .and_then(Value::as_str)
+        .ok_or(GuiError::InvalidRpcResponse)?;
+    write_private_file_atomically(&path, contents.as_bytes())?;
+
+    Ok(PolicyFileResult {
+        status: "ok".to_string(),
+        detail: format!(
+            "Last 30 days of diagnostics exported to {}.",
+            path.display()
+        ),
+        path: Some(path.display().to_string()),
+        config: None,
+    })
+}
+
+#[tauri::command]
 fn import_policy_toml(socket_path: Option<String>) -> Result<PolicyFileResult, GuiError> {
     let Some(path) = policy_import_path() else {
         return Ok(PolicyFileResult {
@@ -476,6 +513,15 @@ fn open_extension_store(url: String) -> Result<(), GuiError> {
         return Err(GuiError::UnsupportedExtensionStoreUrl);
     }
 
+    open_external_url(&url)
+}
+
+#[tauri::command]
+fn open_latest_release() -> Result<(), GuiError> {
+    open_external_url(LATEST_RELEASE_URL)
+}
+
+fn open_external_url(url: &str) -> Result<(), GuiError> {
     let opener =
         command_path(&["/usr/bin/xdg-open", "/bin/xdg-open"]).ok_or(GuiError::MissingUrlOpener)?;
     Command::new(opener).arg(url).spawn()?;
@@ -1171,6 +1217,15 @@ fn command_failure_detail(command: &str, output: &std::process::Output) -> Strin
 }
 
 fn call_daemon(socket_path: &str, method: &str, params: Value) -> Result<Value, GuiError> {
+    call_daemon_with_timeout(socket_path, method, params, Duration::from_secs(3))
+}
+
+fn call_daemon_with_timeout(
+    socket_path: &str,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+) -> Result<Value, GuiError> {
     let request = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -1180,8 +1235,8 @@ fn call_daemon(socket_path: &str, method: &str, params: Value) -> Result<Value, 
     let request_bytes = serde_json::to_vec(&request)?;
 
     let mut stream = UnixStream::connect(socket_path)?;
-    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
     stream.write_all(&request_bytes)?;
     stream.shutdown(std::net::Shutdown::Write)?;
 
@@ -1207,6 +1262,17 @@ fn policy_export_path() -> Option<PathBuf> {
         .save_file()
 }
 
+fn event_log_export_path() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Export BlocKuntu diagnostic log")
+        .set_file_name(format!(
+            "blockuntu-diagnostics-{}.log",
+            Utc::now().format("%Y-%m-%dT%H-%M-%SZ")
+        ))
+        .add_filter("BlocKuntu log", &["log"])
+        .save_file()
+}
+
 fn policy_import_path() -> Option<PathBuf> {
     rfd::FileDialog::new()
         .set_title("Append BlocKuntu policy")
@@ -1219,6 +1285,40 @@ fn with_toml_extension(mut path: PathBuf) -> PathBuf {
         path.set_extension("toml");
     }
     path
+}
+
+fn with_extension(mut path: PathBuf, extension: &str) -> PathBuf {
+    if path.extension().is_none() {
+        path.set_extension(extension);
+    }
+    path
+}
+
+fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Result<(), GuiError> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("blockuntu-diagnostics.log");
+    let temporary_path = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let result = (|| -> Result<(), GuiError> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temporary_path)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        fs::rename(&temporary_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
 }
 
 fn development_runtime_check() -> HealthCheck {
@@ -1968,7 +2068,7 @@ fn unsupported_browser_rule_check(socket_path: &str) -> HealthCheck {
                 },
                 detail: if hard_enabled {
                     format!(
-                        "Tier 1 hard application rule active with {matcher_count} matcher(s), including Chromium Flatpak and Brave, Opera, and Vivaldi Snaps"
+                        "Tier 1 hard application rule active with {matcher_count} matcher(s), including Chromium Flatpak and Brave, Opera and Vivaldi Snaps"
                     )
                 } else {
                     "mandatory Tier 1 hard application rule is missing".to_string()
@@ -2355,11 +2455,13 @@ pub fn run() {
             enforcement_status,
             config_snapshot,
             export_policy_toml,
+            export_event_log,
             import_policy_toml,
             evaluate_url,
             request_unlock,
             installation_info,
             open_extension_store,
+            open_latest_release,
             recovery_credentials,
             uninstall_blockuntu,
             system_health

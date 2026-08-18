@@ -54,6 +54,19 @@ declare namespace BlockuntuWebExtension {
     onActivated: ExtensionEvent<(activeInfo: { tabId: number }) => void>;
   }
 
+  interface Alarm {
+    name: string;
+  }
+
+  interface AlarmsApi {
+    create(
+      name: string,
+      alarmInfo: { delayInMinutes?: number; periodInMinutes?: number }
+    ): Promise<void>;
+    get(name: string): Promise<Alarm | undefined>;
+    onAlarm: ExtensionEvent<(alarm: Alarm) => void>;
+  }
+
   interface StorageArea {
     get(keys?: string | string[] | StorageItems | null): Promise<StorageItems>;
     set(items: StorageItems): Promise<void>;
@@ -64,6 +77,7 @@ declare namespace BlockuntuWebExtension {
   }
 
   interface BrowserApi {
+    alarms: AlarmsApi;
     runtime: RuntimeApi;
     storage: StorageApi;
     webNavigation: WebNavigationApi;

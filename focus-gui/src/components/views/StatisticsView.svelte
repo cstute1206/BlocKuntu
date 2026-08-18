@@ -43,7 +43,7 @@
       <h2>Recorded events</h2>
     </div>
     <p class="metric-value">{logSummary?.total_events ?? 0}</p>
-    <p class="muted">Counted from the BlocKuntu log file.</p>
+    <p class="muted">All-time count retained independently from the diagnostic log.</p>
   </article>
 
   <article class="panel">
@@ -52,6 +52,7 @@
       <h2>Log file</h2>
     </div>
     <code class="log-path">{logSummary?.path ?? "/etc/blockuntu/blockuntu.log"}</code>
+    <p class="statistics-note">Detailed log entries are retained for {logSummary?.detail_retention_days ?? 30} days; the event totals below are all-time.</p>
     <div class="event-mix-list">
       {#each eventCounts as bucket (bucket.kind)}
         <div class="event-mix-row">

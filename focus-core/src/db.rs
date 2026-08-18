@@ -1,12 +1,12 @@
-use std::collections::HashSet;
-use std::fs::OpenOptions;
+use std::collections::{BTreeMap, HashSet};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use chrono::{DateTime, Datelike, Duration, FixedOffset, SecondsFormat, TimeZone, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -14,6 +14,8 @@ use crate::{
     DetoxSession, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier, ScheduleConfig,
     ScheduleDay, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockState, VisitState, Weekday,
 };
+
+pub const EVENT_DETAIL_RETENTION_DAYS: i64 = 30;
 
 pub struct Database {
     conn: Connection,
@@ -31,6 +33,12 @@ pub struct HeartbeatState {
 pub struct ScheduleActivityTotal {
     pub schedule_id: String,
     pub total_active_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventSummary {
+    pub total_events: u64,
+    pub event_counts: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,11 +134,9 @@ impl Database {
         now: DateTime<Utc>,
     ) -> Result<i64, Error> {
         let created_at = format_time(now);
-        self.conn.execute(
-            "INSERT INTO events (kind, target, details, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![kind, target, details, created_at],
-        )?;
-        let id = self.conn.last_insert_rowid();
+        let transaction = self.conn.unchecked_transaction()?;
+        let id = insert_event(&transaction, kind, target, details, &created_at)?;
+        transaction.commit()?;
 
         if let Some(path) = &self.event_log_path {
             if let Err(error) = append_event_log(path, &created_at, kind, target, details) {
@@ -139,6 +145,124 @@ impl Database {
         }
 
         Ok(id)
+    }
+
+    pub fn record_diagnostic_event(
+        &self,
+        source_event_id: &str,
+        component: &str,
+        details: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, Error> {
+        let created_at = format_time(now);
+        let transaction = self.conn.unchecked_transaction()?;
+        let duplicate = transaction
+            .query_row(
+                "SELECT 1 FROM diagnostic_event_ids WHERE source_event_id = ?1",
+                params![source_event_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if duplicate {
+            return Ok(false);
+        }
+
+        let event_id = insert_event(
+            &transaction,
+            "runtime_diagnostic",
+            Some(component),
+            Some(details),
+            &created_at,
+        )?;
+        transaction.execute(
+            r#"
+            INSERT INTO diagnostic_event_ids (source_event_id, event_id, created_at)
+            VALUES (?1, ?2, ?3)
+            "#,
+            params![source_event_id, event_id, created_at],
+        )?;
+        transaction.commit()?;
+
+        if let Some(path) = &self.event_log_path {
+            if let Err(error) = append_event_log(
+                path,
+                &created_at,
+                "runtime_diagnostic",
+                Some(component),
+                Some(details),
+            ) {
+                eprintln!("BlocKuntu could not append to {}: {error}", path.display());
+            }
+        }
+
+        Ok(true)
+    }
+
+    pub fn event_summary(&self) -> Result<EventSummary, Error> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT kind, total_count FROM event_totals ORDER BY kind")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+        })?;
+        let mut event_counts = BTreeMap::new();
+        for row in rows {
+            let (kind, count) = row?;
+            event_counts.insert(kind, count);
+        }
+        let total_events = event_counts.values().copied().sum();
+        Ok(EventSummary {
+            total_events,
+            event_counts,
+        })
+    }
+
+    pub fn event_log_snapshot(&self) -> Result<String, Error> {
+        let mut statement = self.conn.prepare(
+            r#"
+            SELECT created_at, kind, target, details
+            FROM events
+            ORDER BY created_at, id
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        let mut snapshot = String::new();
+        for row in rows {
+            let (created_at, kind, target, details) = row?;
+            snapshot.push_str(&format_event_log_line(
+                &created_at,
+                &kind,
+                target.as_deref(),
+                details.as_deref(),
+            ));
+        }
+        Ok(snapshot)
+    }
+
+    pub fn enforce_event_retention(
+        &self,
+        now: DateTime<Utc>,
+        retention: Duration,
+    ) -> Result<usize, Error> {
+        let cutoff = format_time(now - retention);
+        let deleted = self
+            .conn
+            .execute("DELETE FROM events WHERE created_at < ?1", params![cutoff])?;
+
+        if let Some(path) = &self.event_log_path {
+            let snapshot = self.event_log_snapshot()?;
+            rewrite_event_log(path, &snapshot)?;
+        }
+
+        Ok(deleted)
     }
 
     pub fn notification_preferences(&self) -> Result<NotificationPreferences, Error> {
@@ -1940,11 +2064,69 @@ fn append_event_log(
         .append(true)
         .mode(0o640)
         .open(path)?;
-    writeln!(
-        file,
-        "{created_at} kind={kind:?} target={target:?} details={details:?}"
-    )?;
+    file.write_all(format_event_log_line(created_at, kind, target, details).as_bytes())?;
     file.sync_data()
+}
+
+fn format_event_log_line(
+    created_at: &str,
+    kind: &str,
+    target: Option<&str>,
+    details: Option<&str>,
+) -> String {
+    format!("{created_at} kind={kind:?} target={target:?} details={details:?}\n")
+}
+
+fn rewrite_event_log(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("blockuntu.log");
+    let temporary_path =
+        path.with_file_name(format!(".{file_name}.{}.retention.tmp", std::process::id()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o640)
+            .open(&temporary_path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o640))?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temporary_path, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
+}
+
+fn insert_event(
+    transaction: &Transaction<'_>,
+    kind: &str,
+    target: Option<&str>,
+    details: Option<&str>,
+    created_at: &str,
+) -> Result<i64, Error> {
+    transaction.execute(
+        "INSERT INTO events (kind, target, details, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![kind, target, details, created_at],
+    )?;
+    let id = transaction.last_insert_rowid();
+    transaction.execute(
+        r#"
+        INSERT INTO event_totals (kind, total_count)
+        VALUES (?1, 1)
+        ON CONFLICT(kind) DO UPDATE SET
+            total_count = total_count + 1
+        "#,
+        params![kind],
+    )?;
+    Ok(id)
 }
 
 pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
@@ -2004,6 +2186,21 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
 
         CREATE INDEX IF NOT EXISTS idx_events_kind_created
             ON events(kind, created_at);
+
+        CREATE TABLE IF NOT EXISTS event_totals (
+            kind TEXT PRIMARY KEY,
+            total_count INTEGER NOT NULL DEFAULT 0 CHECK (total_count >= 0)
+        );
+
+        CREATE TABLE IF NOT EXISTS diagnostic_event_ids (
+            source_event_id TEXT PRIMARY KEY,
+            event_id INTEGER NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_diagnostic_event_ids_created
+            ON diagnostic_event_ids(created_at);
 
         CREATE TABLE IF NOT EXISTS notification_preferences (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -2230,6 +2427,43 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
     migrate_policy_schedule_windows_day_groups(conn)?;
     migrate_policy_site_list_patterns_url_contains(conn)?;
     migrate_policy_rule_tiers(conn)?;
+    initialize_event_totals(conn)?;
+    Ok(())
+}
+
+fn initialize_event_totals(conn: &Connection) -> Result<(), Error> {
+    let initialized = conn
+        .query_row(
+            "SELECT value FROM service_state WHERE key = 'event_totals_initialized'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some();
+    if initialized {
+        return Ok(());
+    }
+
+    let transaction = conn.unchecked_transaction()?;
+    transaction.execute(
+        r#"
+        INSERT INTO event_totals (kind, total_count)
+        SELECT kind, COUNT(*)
+        FROM events
+        GROUP BY kind
+        ON CONFLICT(kind) DO UPDATE SET
+            total_count = excluded.total_count
+        "#,
+        [],
+    )?;
+    transaction.execute(
+        r#"
+        INSERT INTO service_state (key, value, updated_at)
+        VALUES ('event_totals_initialized', '1', ?1)
+        "#,
+        params![format_time(Utc::now())],
+    )?;
+    transaction.commit()?;
     Ok(())
 }
 
@@ -2806,6 +3040,88 @@ mod tests {
         assert!(contents.contains("kind=\"website_blocked\""));
         assert!(contents.contains("target=Some(\"https://example.com\")"));
         assert!(contents.contains("details=Some(\"line one\\nline two\")"));
+    }
+
+    #[test]
+    fn thirty_day_retention_keeps_all_time_event_totals() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let log_path = directory.path().join("blockuntu.log");
+        let mut database = Database::in_memory().expect("in-memory database");
+        database
+            .set_event_log_path(&log_path)
+            .expect("event log setup");
+        let now = Utc
+            .with_ymd_and_hms(2026, 8, 14, 12, 0, 0)
+            .single()
+            .expect("timestamp");
+
+        database
+            .record_event(
+                "website_blocked",
+                Some("old.example"),
+                None,
+                now - Duration::days(31),
+            )
+            .expect("old event");
+        database
+            .record_event(
+                "website_blocked",
+                Some("recent.example"),
+                None,
+                now - Duration::days(2),
+            )
+            .expect("recent event");
+
+        assert_eq!(
+            database
+                .enforce_event_retention(now, Duration::days(30))
+                .expect("retention should run"),
+            1
+        );
+        let summary = database.event_summary().expect("summary should load");
+        assert_eq!(summary.total_events, 2);
+        assert_eq!(summary.event_counts["website_blocked"], 2);
+
+        let snapshot = database.event_log_snapshot().expect("snapshot should load");
+        assert!(!snapshot.contains("old.example"));
+        assert!(snapshot.contains("recent.example"));
+        assert_eq!(
+            std::fs::read_to_string(&log_path).expect("retained log should load"),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn migration_backfills_existing_events_into_all_time_totals_once() {
+        let connection = Connection::open_in_memory().expect("database should open");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    target TEXT,
+                    details TEXT,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO events (kind, created_at) VALUES
+                    ('website_blocked', '2026-07-01T10:00:00Z'),
+                    ('website_blocked', '2026-07-02T10:00:00Z'),
+                    ('app_blocked', '2026-07-03T10:00:00Z');
+                "#,
+            )
+            .expect("legacy events should be created");
+        migrate_database(&connection).expect("migration should succeed");
+        migrate_database(&connection).expect("repeat migration should succeed");
+        let database = Database {
+            conn: connection,
+            event_log_path: None,
+        };
+
+        let summary = database.event_summary().expect("summary should load");
+        assert_eq!(summary.total_events, 3);
+        assert_eq!(summary.event_counts["website_blocked"], 2);
+        assert_eq!(summary.event_counts["app_blocked"], 1);
     }
 
     #[test]

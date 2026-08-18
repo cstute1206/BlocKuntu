@@ -3,7 +3,7 @@
 //! This crate intentionally has no privileged side effects. It does not edit
 //! `/etc`, call systemd, scan `/proc`, or bind sockets. Privileged enforcement
 //! belongs in `focusd`; this crate owns durable configuration parsing, SQLite
-//! runtime state, URL/app policy decisions, and unlock accounting.
+//! runtime state, URL/app policy decisions and unlock accounting.
 
 mod config;
 mod core;
@@ -20,8 +20,8 @@ pub use config::{
 };
 pub use core::FocusCore;
 pub use db::{
-    migrate_database, Database, HeartbeatState, NotificationEvent, NotificationPreferences,
-    ScheduleActivityTotal,
+    migrate_database, Database, EventSummary, HeartbeatState, NotificationEvent,
+    NotificationPreferences, ScheduleActivityTotal, EVENT_DETAIL_RETENTION_DAYS,
 };
 pub use emergency_uninstall::{emergency_uninstall_code_is_valid, installation_serial_is_valid};
 pub use error::{ConfigError, Error, UnlockError};

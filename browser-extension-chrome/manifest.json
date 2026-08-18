@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BlocKuntu",
-  "version": "0.2.3",
+  "version": "0.2.5",
   "description": "System-enforced focus blocking for Linux through the local BlocKuntu daemon.",
   "icons": {
     "16": "icons/blockuntu-16.png",

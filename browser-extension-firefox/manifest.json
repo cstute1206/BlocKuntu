@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BlocKuntu",
-  "version": "0.2.4",
+  "version": "0.2.6",
   "description": "System-enforced focus blocking for Linux through the local BlocKuntu daemon.",
   "browser_specific_settings": {
     "gecko": {
@@ -15,7 +15,7 @@
       "strict_min_version": "142.0"
     }
   },
-  "permissions": ["nativeMessaging", "storage", "tabs", "webNavigation"],
+  "permissions": ["alarms", "nativeMessaging", "storage", "tabs", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "scripts": ["dist/background.js"]

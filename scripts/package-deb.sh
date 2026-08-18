@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0-24"
+VERSION="0.1.0-26"
 ARCHITECTURE="$(dpkg --print-architecture 2>/dev/null || printf 'amd64')"
 BUILD=1
 OUTPUT_DIR="${REPO_ROOT}/target/debian"
@@ -25,7 +25,7 @@ store-installed extension.
 
 Options:
   --no-build          Use existing release artifacts.
-  --version VERSION   Package version, default 0.1.0-24.
+  --version VERSION   Package version, default 0.1.0-26.
   --output-dir DIR    Output directory, default target/debian.
   -h, --help          Show this help.
 USAGE
@@ -91,7 +91,12 @@ if [[ "${BUILD}" -eq 1 ]]; then
     cd focus-gui
     npm ci
     export BLOCKUNTU_BUILD_NUMBER="${VERSION}"
-    npm run tauri -- build --no-bundle
+    npm run build
+    cargo build \
+      --manifest-path src-tauri/Cargo.toml \
+      --release \
+      --locked \
+      --features tauri/custom-protocol
   )
   install -d "$(dirname -- "${PACKAGE_VERSION_STAMP}")"
   printf '%s\n' "${VERSION}" >"${PACKAGE_VERSION_STAMP}"

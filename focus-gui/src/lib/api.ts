@@ -43,6 +43,10 @@ export function exportPolicyToml(socketPath?: string): Promise<PolicyFileResult>
   return invoke("export_policy_toml", { socketPath });
 }
 
+export function exportEventLog(socketPath?: string): Promise<PolicyFileResult> {
+  return invoke("export_event_log", { socketPath });
+}
+
 export function importPolicyToml(socketPath?: string): Promise<PolicyFileResult> {
   return invoke("import_policy_toml", { socketPath });
 }
@@ -287,6 +291,10 @@ export function installationInfo(): Promise<InstallationInfo> {
 
 export function openExtensionStore(url: string): Promise<void> {
   return invoke("open_extension_store", { url });
+}
+
+export function openLatestRelease(): Promise<void> {
+  return invoke("open_latest_release");
 }
 
 export function uninstallBlockuntu(phrase: string): Promise<UninstallResult> {

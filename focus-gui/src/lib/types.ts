@@ -150,6 +150,8 @@ export interface LogSummary {
   path: string;
   total_events: number;
   event_counts: Record<string, number>;
+  statistics_period: "all_time";
+  detail_retention_days: number;
 }
 
 export interface NotificationPreferences {
