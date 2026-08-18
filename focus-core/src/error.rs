@@ -4,6 +4,8 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
     Config(#[from] ConfigError),
     #[error(transparent)]
     Database(#[from] rusqlite::Error),

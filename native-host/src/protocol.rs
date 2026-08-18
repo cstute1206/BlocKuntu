@@ -74,7 +74,12 @@ pub fn prepare_browser_response(
     daemon_response: &[u8],
 ) -> Vec<u8> {
     let Ok(response_value) = serde_json::from_slice::<Value>(daemon_response) else {
-        return fallback_response_for_kind(browser_kind, "daemon returned invalid JSON");
+        return fallback_response_for_kind(
+            browser_kind,
+            Value::Null,
+            "daemon returned invalid JSON",
+            None,
+        );
     };
 
     match browser_kind {
@@ -85,8 +90,20 @@ pub fn prepare_browser_response(
 }
 
 pub fn fallback_response_for_payload(browser_payload: &[u8], reason: &str) -> Vec<u8> {
+    fallback_response_for_payload_with_diagnostic(browser_payload, reason, None)
+}
+
+pub fn fallback_response_for_payload_with_diagnostic(
+    browser_payload: &[u8],
+    reason: &str,
+    diagnostic: Option<Value>,
+) -> Vec<u8> {
     let kind = classify_browser_payload(browser_payload);
-    fallback_response_for_kind(&kind, reason)
+    let id = serde_json::from_slice::<Value>(browser_payload)
+        .ok()
+        .and_then(|value| value.get("id").cloned())
+        .unwrap_or(Value::Null);
+    fallback_response_for_kind(&kind, id, reason, diagnostic)
 }
 
 pub fn classify_browser_payload(browser_payload: &[u8]) -> BrowserMessageKind {
@@ -145,7 +162,12 @@ fn legacy_heartbeat_response(response: &Value) -> Vec<u8> {
     }))
 }
 
-fn fallback_response_for_kind(kind: &BrowserMessageKind, reason: &str) -> Vec<u8> {
+fn fallback_response_for_kind(
+    kind: &BrowserMessageKind,
+    id: Value,
+    reason: &str,
+    diagnostic: Option<Value>,
+) -> Vec<u8> {
     match kind {
         BrowserMessageKind::LegacyHeartbeat => serialize(&json!({
             "type": "extension_heartbeat",
@@ -154,11 +176,12 @@ fn fallback_response_for_kind(kind: &BrowserMessageKind, reason: &str) -> Vec<u8
         })),
         BrowserMessageKind::JsonRpc => serialize(&json!({
             "jsonrpc": "2.0",
-            "id": null,
+            "id": id,
             "error": {
                 "code": -32000,
                 "message": "native host error",
-                "data": reason
+                "data": reason,
+                "blockuntu_diagnostic": diagnostic
             }
         })),
         BrowserMessageKind::LegacyUrl | BrowserMessageKind::Unknown => serialize(&json!({
@@ -177,8 +200,8 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        fallback_response_for_payload, prepare_browser_response, prepare_daemon_request,
-        BrowserMessageKind,
+        fallback_response_for_payload, fallback_response_for_payload_with_diagnostic,
+        prepare_browser_response, prepare_daemon_request, BrowserMessageKind,
     };
 
     #[test]
@@ -240,5 +263,38 @@ mod tests {
         let response: Value = serde_json::from_slice(&response).expect("response should parse");
         assert_eq!(response["type"], "extension_heartbeat");
         assert_eq!(response["status"], "error");
+    }
+
+    #[test]
+    fn preserves_jsonrpc_id_for_backend_failures() {
+        let response = fallback_response_for_payload(
+            br#"{"jsonrpc":"2.0","id":42,"method":"extension_heartbeat"}"#,
+            "backend unavailable",
+        );
+        let response: Value = serde_json::from_slice(&response).expect("response should parse");
+        assert_eq!(response["id"], 42);
+        assert_eq!(response["error"]["data"], "backend unavailable");
+    }
+
+    #[test]
+    fn attaches_native_diagnostic_to_jsonrpc_failure() {
+        let diagnostic = json!({
+            "id": "native:100:1",
+            "component": "native_host",
+            "severity": "error",
+            "kind": "rpc_failed",
+            "message": "method=extension_heartbeat elapsed_ms=3000"
+        });
+        let response = fallback_response_for_payload_with_diagnostic(
+            br#"{"jsonrpc":"2.0","id":42,"method":"extension_heartbeat"}"#,
+            "backend unavailable",
+            Some(diagnostic),
+        );
+        let response: Value = serde_json::from_slice(&response).expect("response should parse");
+        assert_eq!(response["id"], 42);
+        assert_eq!(
+            response["error"]["blockuntu_diagnostic"]["component"],
+            "native_host"
+        );
     }
 }

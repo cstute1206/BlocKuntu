@@ -1,12 +1,10 @@
 # BlocKuntu Features
 
-This is a concise description of the behavior available in the current  
-application. It is not a substitute for the installation and uninstall guides.
+This document lists the features of BlocKuntu.
 
 ## Rules and tiers
 
-Website and application lists can contain multiple entries and can be enabled or  
-disabled independently.
+Website and application lists can contain multiple entries and can be enabled or disabled independently with different blocking tiers.
 
 | Tier   | When it blocks                              | Access behavior                                                         |
 | ------ | ------------------------------------------- | ----------------------------------------------------------------------- |
@@ -14,110 +12,97 @@ disabled independently.
 | Tier 2 | During an attached schedule or active Detox | Strict. No allowance or manual unlock.                                  |
 | Tier 3 | During an attached schedule or active Detox | A daily allowance and a short manual unlock remain available.           |
 
-Tier 2 and Tier 3 lists therefore need a schedule or Detox to become active.  
-Tier 1 domain rules and active Tier 2 domain rules are also represented in the  
-managed hosts-file fallback. Tier 3 is intentionally browser-enforced so its  
-allowance and manual-unlock behavior can work.
-
-Website patterns support domains, exact URLs, URL prefixes, URL contains, and  
-path prefixes. Domain patterns can include subdomains. Application matching  
-supports executable paths with their names, command names, desktop IDs and window-title  
-matching, where the desktop session supports it.
-
 ## Schedules, allowances and Detox
 
-- Reusable schedules support multiple windows, grouped days, individual weekdays,  
-and overnight windows.
+- Reusable schedules support multiple windows, grouped days, individual weekdays and overnight windows.
 - Schedule times can be entered in 24-hour or AM/PM format.
-- Tier 3 daily allowances may be zero minutes.
-- Detox activates selected Tier 2 and Tier 3 lists for one minute through  
-twelve weeks. Tier 2 remains strict, while Tier 3 retains its normal allowance and  
-manual-unlock behavior.
-- While a schedule or detox is active you can only append new rows. You can only delete, while a detox is active. Tier 1 lists are active everytime, which is why you need the Tier 1 unlock key to delete rows from there.
+- Tier 2 and Tier 3 need to be attached to a schedule or Detox to be active.
+- Tier 3 offers a daily allowance, before the block becomes active.
+- Detox activates selected Tier 2 and Tier 3 lists for one minute through twelve weeks. Tier 2 remains strict, while Tier 3 retains its normal allowance and manual-unlock behavior.
+- While a schedule or Detox is active, you can append new rows. You can only delete rows while a Detox is active. Tier 1 lists are active at all times, which is why you need the Tier 1 unlock key to delete rows from them.
 
 ## Browser and application enforcement
 
-Firefox, LibreWolf, Waterfox, Chrome, Chromium, Brave, Opera, Microsoft Edge, and Vivaldi extensions send navigations through the local daemon
-using Native Messaging. They fail closed for top-level HTTP/HTTPS navigation if  
-they cannot verify the daemon connection. The daemon also monitors configured  
-applications and terminates matching processes.
+Install the extension for Firefox or Chrome:
 
-The Health section reports daemon, browser integration, policy, and hosts-file
-checks. Users install the Firefox extension from AMO in Firefox, LibreWolf, or Waterfox,
-and the Chrome Web Store extension in Chrome, Chromium, Brave, Opera, Microsoft Edge, or
-Vivaldi. After each extension's first successful heartbeat, BlocKuntu writes its managed policy
-and locks that same store-installed extension when the browser installation supports managed
-policy. Opera and Edge require turning on **Allow extensions from other stores**; Vivaldi requires
-enabling Web Store in its Google Extensions setting. Chromium Snap receives a
-per-user copy of the Native Messaging bridge and a manifest in its Snap-visible
-profile when BlocKuntu starts. The bridge uses an authenticated local TCP
-connection because strict Snaps cannot reach the daemon's Unix socket.
+Install the [Firefox extension](https://addons.mozilla.org/en-US/firefox/addon/blockuntu/).
 
-Chromium Flatpak and Brave, Opera, and Vivaldi Snaps are currently unsupported
-browser installations. Whenever the automatic Tier 1 blocked-browser list is
-active, BlocKuntu terminates those package variants; it does not treat a
-heartbeat from a browser of the same family as protection for them. This keeps
-Chromium Snap distinct from Chromium Flatpak. See
-[the installation limitation](INSTALLATION.md#unsupported-browser-packages)
-for the support boundary. Vivaldi Flatpak still requires clean-VM validation.
+Install the [Chrome extension](https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc).
 
-In **Settings → Protected changes and uninstall**, Chromium-family private browsing has three
-explicit modes: disable private windows, leave the extension toggle to the user's manual consent,
-or use the browser's private URL-blocklist policy. Manual consent can be revoked in the browser.
-Private windows are disabled all the time by default, or only while a schedule or Detox session is
-active. A separate protected-change window controls when either Chromium private-browsing setting
-can be altered: all the time (the default), only while no schedule or Detox is active, or Sunday
-from 20:00 through 23:59.
+For a list of supported browsers, see [Supported browsers](supportedBrowsers.md).
 
-URL-policy mode includes active Hard, Scheduled Block, and Controlled Access domain, exact-URL,
-and full URL-prefix patterns. Controlled Access patterns remain blocked there even when their daily
-allowance still has time. URL-contains and path-only patterns cannot be represented safely by the
-browser policy and are reported as omitted. The policy is limited to 1,000 patterns and requires a
-browser release that supports the private URL-blocklist policy, so validate the chosen
-browser/version in a clean VM.
+## Overview
 
-## Overview and Settings
+- Display active rules.
+- Test a URL.
+- Manually unlock Tier 3 websites.
 
-The Overview page contains:
+## Websites
 
-- a first-run welcome modal explaining tiers, extensions and recovery  
-credentials
-- a URL probe, where you can check the status of urls
-- a manual Tier 3 unlock form, that unlocks tier 3 sites
+- Create website lists.
+- Edit website lists:
+  - Name the website list.
+  - Select a tier.
+  - Attach it to a schedule.
+  - Add a domain, exact URL, URL prefix, path prefix, or URL-contains pattern.
+    - Select whether the pattern also applies to subdomains.
+  - Add a new pattern while the list is active.
+  - Delete rows while the list is not active.
 
-Settings contains Health (including Enforcement), Rules and logging, Protected
-Changes and Uninstall, and Notifications. Import uses **Append**: existing
-rules remain and rules are augmented by the new ones.
-Protected Changes and Uninstall provides the five-minute Tier 1 edit unlock,
-time-format preference, recovery-credential hiding, the welcome-modal action
-and package uninstall. You can choose whether Tier 1 editing and uninstall are
-available on Sunday from 20:00 through 23:59, only while no schedule or Detox
-is active, or at any time. The same choice controls when the automatic Tier 1
-blocked-browser list is active; it fails closed if clock tampering is detected.
+## Applications
 
-The package-generated recovery uninstall phrase and Tier 1 edit key are shown  
-in the welcome modal until they are hidden. Hiding them removes both files from  
-`/etc/blockuntu` and persists that decision across upgrades.
+- Create application lists.
+- Edit application lists:
+  - Name the application list.
+  - Select a tier.
+  - Attach it to a schedule.
+  - Add a command, binary, path, desktop ID, title-contains, or exact-title matcher.
+    - Select matchers by searching active applications.
+  - Add a new matcher while the list is active.
+  - Delete rows while the list is not active.
 
-## Notifications and logs
+## Detox
 
-Notification preferences cover website/application blocks, allowance warnings,  
-schedule boundaries, and Detox lifecycle events. Notifications are delivered  
-while the GUI or tray process is running. Repeated block events are deduplicated.
+- Start and name a Detox session.
+- Choose a duration in minutes, hours, days, or weeks, up to 12 weeks.
+- Select the website lists or application lists to attach to the Detox session.
+- List active Detox sessions.
+- List recent Detox sessions.
 
-The daemon writes its event log to `/etc/blockuntu/blockuntu.log`. Statistics  
-shows aggregate event counts and schedule active-time totals. Detailed log  
-inspection remains terminal-based.
+## Schedule
+
+- Create and name a schedule.
+- Select individual weekdays, weekdays, every day, or weekends, and choose when the schedule is active.
+  - One schedule can have multiple windows.
+- Select the attached website lists and application lists.
+
+## Statistics
+
+- Display total recorded events.
+- Display grouped events.
+- Display total active time for schedules.
+
+## Settings pages
+
+- Health
+  - Overview of the enforcement checks.
+- Rules and logging
+  - Import and export rules. Import appends to your existing rules.
+  - Export logs.
+- Protected changes and uninstall
+  - Set when uninstallation and Tier 1 editing are available.
+  - Choose how Chromium private browsing is handled.
+  - Display the welcome modal.
+  - Remove the uninstall phrase from the welcome modal.
+  - Enter the Tier 1 edit key to edit Tier 1 rules for five minutes.
+  - Enter the uninstall phrase.
+- Notifications
+  - Configure desktop notifications.
+  - Choose a time format: 24-hour or AM/PM.
+  - Display the build, installation serial, and update link.
 
 ## Boundaries and limitations
 
 - BlocKuntu cannot protect against a user with unrestricted root or sudo access.
-- Hosts-file fallback supports domain patterns only; exact-URL and path patterns  
-require the browser extension.
-- Firefox, LibreWolf, Waterfox, Google Chrome, Chromium, Brave, Opera, Microsoft Edge, and Vivaldi are the
-supported browser-enforcement paths. Other browsers may be handled as blocked
-applications in strict mode.
-- Opera and Vivaldi strict Snaps are not supported for **managed-policy**
-  enforcement. Their Native Messaging integration can work, but policy-backed
-  extension locking, Incognito disabling, and private URL blocking cannot work
-  until their Snap packages expose a policy directory to the sandbox.
+- Hosts-file fallback supports domain patterns only. Exact-URL and path patterns require the browser extension.
+- Only some browsers are supported. See [Supported browsers](supportedBrowsers.md).

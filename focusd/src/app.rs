@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::time::Instant;
 
 use chrono::{
     DateTime, Datelike, Days, Duration as ChronoDuration, FixedOffset, Local, TimeZone, Utc,
@@ -10,8 +11,9 @@ use chrono::{
 use focus_core::{
     allowance_statuses, schedule_ids_are_active_at, AppMatcherConfig, AppMatcherKind,
     AppRuleConfig, BlockReason, Database, Decision, DetoxSession, EvaluationContext, FocusCore,
-    ProcessIdentity, RuleTier, StrictModeConfig, Weekday,
+    ProcessIdentity, RuleTier, StrictModeConfig, Weekday, EVENT_DETAIL_RETENTION_DAYS,
 };
+use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
@@ -28,7 +30,7 @@ use crate::process_scan::{
 };
 use crate::rpc::{
     current_chromium_incognito_policy_settings,
-    ensure_chromium_incognito_url_blocklist_within_limit, handle_payload,
+    ensure_chromium_incognito_url_blocklist_within_limit, handle_payload, record_daemon_diagnostic,
     unsupported_browser_block_is_active, ChromiumIncognitoPolicySettings, ChromiumPolicyBinding,
     GeckoPolicyBinding, RpcContext,
 };
@@ -69,6 +71,8 @@ const MIN_BROWSER_STARTUP_HEARTBEAT_GRACE_SECONDS: i64 = 60;
 const NOTIFICATION_STATE_INTERVAL_SECONDS: u64 = 5;
 const ALLOWANCE_NOTIFICATION_TTL_MINUTES: i64 = 5;
 const LIFECYCLE_NOTIFICATION_TTL_MINUTES: i64 = 10;
+const SLOW_RPC_THRESHOLD_MS: u128 = 500;
+const EVENT_RETENTION_MAINTENANCE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 
 #[derive(Clone)]
 pub struct DaemonApp {
@@ -92,6 +96,13 @@ impl DaemonApp {
         let database_preexisting = args.database.exists();
         let mut database = Database::open(&args.database)?;
         database.set_event_log_path(&args.event_log)?;
+        let retention_clock = clock_guard::guarded_now(&database, None, false)?;
+        if retention_clock.integrity.state != "tampered" {
+            database.enforce_event_retention(
+                retention_clock.now.with_timezone(&Utc),
+                ChronoDuration::days(EVENT_DETAIL_RETENTION_DAYS),
+            )?;
+        }
         let policy_recovery = PolicyRecoveryManager::new(
             &args.policy_recovery,
             policy_recovery_immutable_enabled(args),
@@ -382,6 +393,7 @@ impl DaemonApp {
         self.spawn_repair_loop();
         self.spawn_process_scan_loop();
         self.spawn_notification_loop();
+        self.spawn_event_retention_loop();
 
         if args.snap_native_bridge {
             let bridge_token = read_snap_native_bridge_token(&args.snap_native_bridge_token_file)?;
@@ -405,15 +417,75 @@ impl DaemonApp {
         tokio::spawn(async move {
             loop {
                 if let Err(err) = app.repair_gecko_policies() {
-                    eprintln!("Firefox-family policy repair failed: {err}");
+                    let message = format!("Firefox-family policy repair failed: {err}");
+                    eprintln!("{message}");
+                    record_daemon_diagnostic(
+                        &app.rpc_context,
+                        "error",
+                        "policy_repair_failed",
+                        &message,
+                    );
                 }
                 if let Err(err) = app.repair_chromium_policies() {
-                    eprintln!("Chromium-family policy repair failed: {err}");
+                    let message = format!("Chromium-family policy repair failed: {err}");
+                    eprintln!("{message}");
+                    record_daemon_diagnostic(
+                        &app.rpc_context,
+                        "error",
+                        "policy_repair_failed",
+                        &message,
+                    );
                 }
                 if let Err(err) = app.repair_hosts() {
-                    eprintln!("hosts repair failed: {err}");
+                    let message = format!("hosts repair failed: {err}");
+                    eprintln!("{message}");
+                    record_daemon_diagnostic(
+                        &app.rpc_context,
+                        "error",
+                        "hosts_repair_failed",
+                        &message,
+                    );
                 }
                 tokio::time::sleep(app.next_policy_repair_delay()).await;
+            }
+        });
+    }
+
+    fn spawn_event_retention_loop(&self) {
+        let app = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(
+                    EVENT_RETENTION_MAINTENANCE_INTERVAL_SECONDS,
+                ))
+                .await;
+                let result = app
+                    .core
+                    .lock()
+                    .map_err(|_| DaemonError::LockPoisoned)
+                    .and_then(|core| {
+                        let guarded = clock_guard::guarded_now(core.database(), None, false)?;
+                        if guarded.integrity.state == "tampered" {
+                            return Ok(());
+                        }
+                        core.database()
+                            .enforce_event_retention(
+                                guarded.now.with_timezone(&Utc),
+                                ChronoDuration::days(EVENT_DETAIL_RETENTION_DAYS),
+                            )
+                            .map(|_| ())
+                            .map_err(DaemonError::from)
+                    });
+                if let Err(error) = result {
+                    let message = format!("event retention maintenance failed: {error}");
+                    eprintln!("{message}");
+                    record_daemon_diagnostic(
+                        &app.rpc_context,
+                        "error",
+                        "event_retention_failed",
+                        &message,
+                    );
+                }
             }
         });
     }
@@ -463,7 +535,14 @@ impl DaemonApp {
             loop {
                 interval.tick().await;
                 if let Err(err) = app.scan_processes_once() {
-                    eprintln!("process scan failed: {err}");
+                    let message = format!("process scan failed: {err}");
+                    eprintln!("{message}");
+                    record_daemon_diagnostic(
+                        &app.rpc_context,
+                        "error",
+                        "process_scan_failed",
+                        &message,
+                    );
                 }
             }
         });
@@ -477,7 +556,14 @@ impl DaemonApp {
             loop {
                 interval.tick().await;
                 if let Err(err) = app.sync_notification_state_once() {
-                    eprintln!("notification state sync failed: {err}");
+                    let message = format!("notification state sync failed: {err}");
+                    eprintln!("{message}");
+                    record_daemon_diagnostic(
+                        &app.rpc_context,
+                        "error",
+                        "notification_sync_failed",
+                        &message,
+                    );
                 }
             }
         });
@@ -720,8 +806,16 @@ impl DaemonApp {
                     let (stream, _) = accepted?;
                     let context = self.rpc_context.clone();
                     tokio::spawn(async move {
+                        let diagnostic_context = context.clone();
                         if let Err(err) = handle_client(stream, context).await {
-                            eprintln!("client error: {err}");
+                            let message = format!("client error: {err}");
+                            eprintln!("{message}");
+                            record_daemon_diagnostic(
+                                &diagnostic_context,
+                                "error",
+                                "rpc_client_error",
+                                &message,
+                            );
                         }
                     });
                 }
@@ -740,15 +834,30 @@ impl DaemonApp {
                     let context = self.rpc_context.clone();
                     let token = token.clone();
                     tokio::spawn(async move {
+                        let diagnostic_context = context.clone();
                         if let Err(err) =
                             handle_snap_native_bridge_client(stream, context, &token).await
                         {
-                            eprintln!("Snap native bridge client error: {err}");
+                            let message = format!("Snap native bridge client error: {err}");
+                            eprintln!("{message}");
+                            record_daemon_diagnostic(
+                                &diagnostic_context,
+                                "error",
+                                "snap_bridge_client_error",
+                                &message,
+                            );
                         }
                     });
                 }
                 Err(err) => {
-                    eprintln!("Snap native bridge accept error: {err}");
+                    let message = format!("Snap native bridge accept error: {err}");
+                    eprintln!("{message}");
+                    record_daemon_diagnostic(
+                        &self.rpc_context,
+                        "error",
+                        "snap_bridge_accept_error",
+                        &message,
+                    );
                 }
             }
         }
@@ -815,10 +924,48 @@ fn next_tier2_site_schedule_boundary(
 }
 
 async fn handle_client(mut stream: UnixStream, context: RpcContext) -> Result<()> {
+    let connection_started_at = Instant::now();
+    let peer = unix_peer_label(&stream);
+    let read_started_at = Instant::now();
     let request = read_limited(&mut stream).await?;
+    let read_ms = read_started_at.elapsed().as_millis();
+    let (method, request_id) = rpc_request_metadata(&request);
+    let handler_started_at = Instant::now();
     let response = handle_payload(&context, &request);
-    stream.write_all(&response).await?;
-    stream.shutdown().await?;
+    let handler_ms = handler_started_at.elapsed().as_millis();
+    let write_started_at = Instant::now();
+    if let Err(err) = stream.write_all(&response).await {
+        let message = format!(
+            "RPC response write failed transport=unix {peer} id={request_id} method={method} read_ms={read_ms} handler_ms={handler_ms} write_ms={} request_bytes={} response_bytes={} error={err}",
+            write_started_at.elapsed().as_millis(),
+            request.len(),
+            response.len()
+        );
+        eprintln!("{message}");
+        record_daemon_diagnostic(&context, "error", "rpc_response_write_failed", &message);
+        return Err(err.into());
+    }
+    let write_ms = write_started_at.elapsed().as_millis();
+    if let Err(err) = stream.shutdown().await {
+        let message = format!(
+            "RPC shutdown failed transport=unix {peer} id={request_id} method={method} read_ms={read_ms} handler_ms={handler_ms} write_ms={write_ms} error={err}"
+        );
+        eprintln!("{message}");
+        record_daemon_diagnostic(&context, "error", "rpc_shutdown_failed", &message);
+        return Err(err.into());
+    }
+    let total_ms = connection_started_at.elapsed().as_millis();
+    if total_ms >= SLOW_RPC_THRESHOLD_MS {
+        let message = format!(
+            "RPC slow transport=unix {peer} id={request_id} method={method} total_ms={total_ms} read_ms={read_ms} handler_ms={handler_ms} write_ms={write_ms} request_bytes={} response_bytes={}",
+            request.len(),
+            response.len()
+        );
+        eprintln!("{message}");
+        if method != "record_diagnostics" {
+            record_daemon_diagnostic(&context, "warn", "rpc_slow", &message);
+        }
+    }
     Ok(())
 }
 
@@ -827,12 +974,82 @@ async fn handle_snap_native_bridge_client(
     context: RpcContext,
     token: &str,
 ) -> Result<()> {
+    let connection_started_at = Instant::now();
+    let read_started_at = Instant::now();
     let request = read_limited(&mut stream).await?;
+    let read_ms = read_started_at.elapsed().as_millis();
     let payload = snap_native_bridge_payload(&request, token)?;
+    let (method, request_id) = rpc_request_metadata(payload);
+    let handler_started_at = Instant::now();
     let response = handle_payload(&context, payload);
-    stream.write_all(&response).await?;
-    stream.shutdown().await?;
+    let handler_ms = handler_started_at.elapsed().as_millis();
+    let write_started_at = Instant::now();
+    if let Err(err) = stream.write_all(&response).await {
+        let message = format!(
+            "RPC response write failed transport=snap_bridge id={request_id} method={method} read_ms={read_ms} handler_ms={handler_ms} write_ms={} request_bytes={} response_bytes={} error={err}",
+            write_started_at.elapsed().as_millis(),
+            payload.len(),
+            response.len()
+        );
+        eprintln!("{message}");
+        record_daemon_diagnostic(&context, "error", "rpc_response_write_failed", &message);
+        return Err(err.into());
+    }
+    let write_ms = write_started_at.elapsed().as_millis();
+    if let Err(err) = stream.shutdown().await {
+        let message = format!(
+            "RPC shutdown failed transport=snap_bridge id={request_id} method={method} read_ms={read_ms} handler_ms={handler_ms} write_ms={write_ms} error={err}"
+        );
+        eprintln!("{message}");
+        record_daemon_diagnostic(&context, "error", "rpc_shutdown_failed", &message);
+        return Err(err.into());
+    }
+    let total_ms = connection_started_at.elapsed().as_millis();
+    if total_ms >= SLOW_RPC_THRESHOLD_MS {
+        let message = format!(
+            "RPC slow transport=snap_bridge id={request_id} method={method} total_ms={total_ms} read_ms={read_ms} handler_ms={handler_ms} write_ms={write_ms} request_bytes={} response_bytes={}",
+            payload.len(),
+            response.len()
+        );
+        eprintln!("{message}");
+        if method != "record_diagnostics" {
+            record_daemon_diagnostic(&context, "warn", "rpc_slow", &message);
+        }
+    }
     Ok(())
+}
+
+fn unix_peer_label(stream: &UnixStream) -> String {
+    match stream.peer_cred() {
+        Ok(credentials) => format!(
+            "peer_pid={} peer_uid={} peer_gid={}",
+            credentials
+                .pid()
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            credentials.uid(),
+            credentials.gid()
+        ),
+        Err(_) => "peer_pid=unknown peer_uid=unknown peer_gid=unknown".to_string(),
+    }
+}
+
+fn rpc_request_metadata(payload: &[u8]) -> (String, String) {
+    let Ok(value) = serde_json::from_slice::<Value>(payload) else {
+        return ("invalid_json".to_string(), "null".to_string());
+    };
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("type").and_then(Value::as_str))
+        .or_else(|| value.get("url").map(|_| "legacy_evaluate_url"))
+        .unwrap_or("unknown")
+        .to_string();
+    let request_id = value
+        .get("id")
+        .map(Value::to_string)
+        .unwrap_or_else(|| "null".to_string());
+    (method, request_id)
 }
 
 async fn read_limited<R>(stream: &mut R) -> Result<Vec<u8>>
@@ -1531,9 +1748,9 @@ mod tests {
 
     use super::{
         constant_time_equals, ensure_mandatory_app_rules, is_blockuntu_process,
-        load_startup_policy, next_tier2_site_schedule_boundary, snap_native_bridge_payload,
-        strict_browser_kill_details, sync_allowance_notifications, sync_metered_app_usage_sessions,
-        sync_schedule_notifications, UNSUPPORTED_BROWSER_RULE_ID,
+        load_startup_policy, next_tier2_site_schedule_boundary, rpc_request_metadata,
+        snap_native_bridge_payload, strict_browser_kill_details, sync_allowance_notifications,
+        sync_metered_app_usage_sessions, sync_schedule_notifications, UNSUPPORTED_BROWSER_RULE_ID,
     };
     use crate::error::DaemonError;
     use crate::policy_recovery::PolicyRecoveryManager;
@@ -1557,6 +1774,15 @@ mod tests {
         assert!(constant_time_equals(b"same", b"same"));
         assert!(!constant_time_equals(b"same", b"different"));
         assert!(!constant_time_equals(b"same", b"sane"));
+    }
+
+    #[test]
+    fn rpc_diagnostics_extract_method_and_id_without_params() {
+        let (method, id) = rpc_request_metadata(
+            br#"{"jsonrpc":"2.0","id":23,"method":"evaluate_url","params":{"url":"https://private.example/"}}"#,
+        );
+        assert_eq!(method, "evaluate_url");
+        assert_eq!(id, "23");
     }
 
     #[test]

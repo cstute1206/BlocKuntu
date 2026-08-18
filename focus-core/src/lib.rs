@@ -20,8 +20,8 @@ pub use config::{
 };
 pub use core::FocusCore;
 pub use db::{
-    migrate_database, Database, HeartbeatState, NotificationEvent, NotificationPreferences,
-    ScheduleActivityTotal,
+    migrate_database, Database, EventSummary, HeartbeatState, NotificationEvent,
+    NotificationPreferences, ScheduleActivityTotal, EVENT_DETAIL_RETENTION_DAYS,
 };
 pub use emergency_uninstall::{emergency_uninstall_code_is_valid, installation_serial_is_valid};
 pub use error::{ConfigError, Error, UnlockError};

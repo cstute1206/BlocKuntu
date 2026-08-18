@@ -33,6 +33,7 @@
     detoxSessions,
     enforcementStatus,
     evaluateUrl,
+    exportEventLog,
     exportPolicyToml,
     importPolicyToml,
     logSummary,
@@ -218,6 +219,9 @@
   let policyImportRunning = $state(false);
   let policyTransferMessage: string | null = $state(null);
   let policyTransferError: string | null = $state(null);
+  let logExportRunning = $state(false);
+  let logExportMessage: string | null = $state(null);
+  let logExportError: string | null = $state(null);
 
 
   let daemonOnline = $derived(status?.status === "ok");
@@ -301,7 +305,10 @@
   });
 
   function isViewId(value: unknown): value is ViewId {
-    return typeof value === "string" && navItems.some((item) => item.id === value);
+    return (
+      typeof value === "string" &&
+      (value === "admin" || navItems.some((item) => item.id === value))
+    );
   }
 
   function socketArg(): string | undefined {
@@ -1010,6 +1017,21 @@
     }
   }
 
+  async function runExportEventLog(): Promise<void> {
+    logExportRunning = true;
+    logExportMessage = null;
+    logExportError = null;
+    lastError = null;
+    try {
+      const result = await exportEventLog(socketArg());
+      logExportMessage = result.detail;
+    } catch (error) {
+      logExportError = formatError(error);
+    } finally {
+      logExportRunning = false;
+    }
+  }
+
   function setRuleDraft(rule: Rule | null, snapshot: ConfigSnapshot | null = config): void {
     ruleDraft = rule ? cloneRule(rule) : null;
     ruleAllowanceDraft = rule ? cloneAllowanceForRule(rule, snapshot) : null;
@@ -1560,6 +1582,9 @@
         {policyImportRunning}
         {policyTransferMessage}
         {policyTransferError}
+        {logExportRunning}
+        {logExportMessage}
+        {logExportError}
         onRefreshHealth={refreshHealth}
         onRunUninstallBlockuntu={runUninstallBlockuntu}
         onUnlockTier1Edit={runUnlockTier1Edit}
@@ -1567,6 +1592,7 @@
         onUpdateChromiumIncognitoMode={updateChromiumIncognitoMode}
         onUpdateChromiumIncognitoDisableScope={updateChromiumIncognitoDisableScope}
         onExportPolicyToml={runExportPolicyToml}
+        onExportEventLog={runExportEventLog}
         onImportPolicyToml={runImportPolicyToml}
         onUpdateNotificationPreferences={updateNotificationPreferences}
         onShowFirstRunOverview={showFirstRunOverviewAgain}

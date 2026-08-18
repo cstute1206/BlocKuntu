@@ -19,6 +19,9 @@ const targetKind = stringValue("target_kind");
 const freeAt = stringValue("free_at") || params.get("free_at");
 const allowanceResetAt = stringValue("allowance_reset_at") || params.get("allowance_reset_at");
 const lastHeartbeatOkAt = stringValue("last_heartbeat_ok_at") || params.get("last_heartbeat_ok_at");
+const failureStartedAt = stringValue("failure_started_at");
+const lastTransportError = stringValue("last_transport_error");
+const consecutiveFailures = numberValue("consecutive_failures");
 const activeSchedules = arrayValue("active_schedules");
 
 setText("blocked-url", url);
@@ -59,6 +62,15 @@ if (allowanceResetAt) {
 if (lastHeartbeatOkAt) {
   addDetail("Last heartbeat", formatDateWithDistance(lastHeartbeatOkAt));
 }
+if (failureStartedAt) {
+  addDetail("Failure window began", formatDateWithDistance(failureStartedAt));
+}
+if (consecutiveFailures !== null) {
+  addDetail("Consecutive failures", String(consecutiveFailures));
+}
+if (lastTransportError) {
+  addDetail("Last transport error", lastTransportError);
+}
 addDetail("Technical reason", technicalReason());
 
 function readReason(): ReasonData {
@@ -91,6 +103,11 @@ function stringValue(key: string): string | null {
 function arrayValue(key: string): unknown[] {
   const value = reasonData[key];
   return Array.isArray(value) ? value : [];
+}
+
+function numberValue(key: string): number | null {
+  const value = reasonData[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function reasonTitle(): string {
