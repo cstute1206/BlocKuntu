@@ -200,9 +200,9 @@ impl Database {
     }
 
     pub fn event_summary(&self) -> Result<EventSummary, Error> {
-        let mut statement = self.conn.prepare(
-            "SELECT kind, total_count FROM event_totals ORDER BY kind",
-        )?;
+        let mut statement = self
+            .conn
+            .prepare("SELECT kind, total_count FROM event_totals ORDER BY kind")?;
         let rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
         })?;
@@ -253,10 +253,9 @@ impl Database {
         retention: Duration,
     ) -> Result<usize, Error> {
         let cutoff = format_time(now - retention);
-        let deleted = self.conn.execute(
-            "DELETE FROM events WHERE created_at < ?1",
-            params![cutoff],
-        )?;
+        let deleted = self
+            .conn
+            .execute("DELETE FROM events WHERE created_at < ?1", params![cutoff])?;
 
         if let Some(path) = &self.event_log_path {
             let snapshot = self.event_log_snapshot()?;
@@ -2086,10 +2085,8 @@ fn rewrite_event_log(path: &Path, contents: &str) -> std::io::Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("blockuntu.log");
-    let temporary_path = path.with_file_name(format!(
-        ".{file_name}.{}.retention.tmp",
-        std::process::id()
-    ));
+    let temporary_path =
+        path.with_file_name(format!(".{file_name}.{}.retention.tmp", std::process::id()));
     let result = (|| {
         let mut file = OpenOptions::new()
             .create(true)
@@ -3085,9 +3082,7 @@ mod tests {
         assert_eq!(summary.total_events, 2);
         assert_eq!(summary.event_counts["website_blocked"], 2);
 
-        let snapshot = database
-            .event_log_snapshot()
-            .expect("snapshot should load");
+        let snapshot = database.event_log_snapshot().expect("snapshot should load");
         assert!(!snapshot.contains("old.example"));
         assert!(snapshot.contains("recent.example"));
         assert_eq!(
