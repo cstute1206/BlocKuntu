@@ -1,3 +1,5 @@
+type TimeInterval = (DateTime<Utc>, DateTime<Utc>);
+
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -11,8 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AllowanceConfig, AppMatcherConfig, AppMatcherKind, AppRuleConfig, Config, ConfigError,
-    DetoxSession, Error, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier, ScheduleConfig,
-    ScheduleDay, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockState, VisitState, Weekday,
+    DetoxSession, Error, ListMode, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
+    ScheduleConfig, ScheduleDay, ScheduleWindow, StrictModeConfig, TimeOfDay, UnlockState,
+    VisitState, Weekday,
 };
 
 pub const EVENT_DETAIL_RETENTION_DAYS: i64 = 30;
@@ -1021,18 +1024,20 @@ impl Database {
                     name,
                     tier,
                     enabled,
+                    mode,
                     allowance_id,
                     max_session_minutes,
                     cooldown_minutes,
                     max_unlocks_per_hour
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 "#,
                 params![
                     &rule.id,
                     &rule.name,
                     rule_tier_to_str(rule.tier),
                     if rule.enabled { 1_i64 } else { 0_i64 },
+                    list_mode_to_str(rule.mode),
                     rule.allowance_id.as_deref(),
                     Option::<i64>::None,
                     Option::<i64>::None,
@@ -1085,18 +1090,20 @@ impl Database {
                     name,
                     tier,
                     enabled,
+                    mode,
                     allowance_id,
                     max_session_minutes,
                     cooldown_minutes,
                     max_unlocks_per_hour
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 "#,
                 params![
                     &rule.id,
                     &rule.name,
                     rule_tier_to_str(rule.tier),
                     if rule.enabled { 1_i64 } else { 0_i64 },
+                    list_mode_to_str(rule.mode),
                     rule.allowance_id.as_deref(),
                     Option::<i64>::None,
                     Option::<i64>::None,
@@ -1264,8 +1271,8 @@ impl Database {
             let (weekday, start, end) = row?;
             windows.push(ScheduleWindow {
                 weekday: schedule_day_from_str(&weekday)?,
-                start: TimeOfDay::from_str(&start).map_err(|err| ConfigError::Validation(err))?,
-                end: TimeOfDay::from_str(&end).map_err(|err| ConfigError::Validation(err))?,
+                start: TimeOfDay::from_str(&start).map_err(ConfigError::Validation)?,
+                end: TimeOfDay::from_str(&end).map_err(ConfigError::Validation)?,
             });
         }
         Ok(windows)
@@ -1279,6 +1286,7 @@ impl Database {
                 name,
                 tier,
                 enabled,
+                mode,
                 allowance_id
             FROM policy_site_lists
             ORDER BY id
@@ -1290,13 +1298,14 @@ impl Database {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
-                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })?;
 
         let mut rules = Vec::new();
         for row in rows {
-            let (id, name, tier, enabled, allowance_id) = row?;
+            let (id, name, tier, enabled, mode, allowance_id) = row?;
             rules.push(RuleConfig {
                 patterns: self.load_policy_site_list_patterns(&id)?,
                 schedule_ids: self.load_policy_site_list_schedule_ids(&id)?,
@@ -1304,6 +1313,7 @@ impl Database {
                 name,
                 tier: rule_tier_from_str(&tier)?,
                 enabled: enabled != 0,
+                mode: list_mode_from_str(&mode)?,
                 allowance_id,
             });
         }
@@ -1368,6 +1378,7 @@ impl Database {
                 name,
                 tier,
                 enabled,
+                mode,
                 allowance_id
             FROM policy_app_rules
             ORDER BY id
@@ -1379,13 +1390,14 @@ impl Database {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
-                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })?;
 
         let mut app_rules = Vec::new();
         for row in rows {
-            let (id, name, tier, enabled, allowance_id) = row?;
+            let (id, name, tier, enabled, mode, allowance_id) = row?;
             app_rules.push(AppRuleConfig {
                 matchers: self.load_policy_app_rule_matchers(&id)?,
                 schedule_ids: self.load_policy_app_rule_schedule_ids(&id)?,
@@ -1393,6 +1405,7 @@ impl Database {
                 name,
                 tier: rule_tier_from_str(&tier)?,
                 enabled: enabled != 0,
+                mode: list_mode_from_str(&mode)?,
                 allowance_id,
             });
         }
@@ -1568,7 +1581,7 @@ impl Database {
         rule_id: &str,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-    ) -> Result<Vec<(DateTime<Utc>, DateTime<Utc>)>, Error> {
+    ) -> Result<Vec<TimeInterval>, Error> {
         let mut statement = self.conn.prepare(
             r#"
             SELECT sessions.starts_at, sessions.ends_at, sessions.cancelled_at
@@ -2353,6 +2366,7 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
             name TEXT NOT NULL,
             tier TEXT NOT NULL CHECK (tier IN ('hard', 'scheduled_block', 'controlled_access')),
             enabled INTEGER NOT NULL DEFAULT 1,
+            mode TEXT NOT NULL DEFAULT 'blocklist' CHECK (mode IN ('blocklist', 'allowlist')),
             allowance_id TEXT,
             max_session_minutes INTEGER,
             cooldown_minutes INTEGER,
@@ -2387,6 +2401,7 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
             name TEXT NOT NULL,
             tier TEXT NOT NULL CHECK (tier IN ('hard', 'scheduled_block', 'controlled_access')),
             enabled INTEGER NOT NULL DEFAULT 1,
+            mode TEXT NOT NULL DEFAULT 'blocklist' CHECK (mode IN ('blocklist', 'allowlist')),
             allowance_id TEXT,
             max_session_minutes INTEGER,
             cooldown_minutes INTEGER,
@@ -2427,6 +2442,8 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
     migrate_policy_schedule_windows_day_groups(conn)?;
     migrate_policy_site_list_patterns_url_contains(conn)?;
     migrate_policy_rule_tiers(conn)?;
+    migrate_policy_list_modes(conn)?;
+    normalize_policy_website_allowlists(conn)?;
     initialize_event_totals(conn)?;
     Ok(())
 }
@@ -2550,6 +2567,64 @@ fn migrate_policy_rule_tiers(conn: &Connection) -> Result<(), Error> {
     )?;
 
     Ok(())
+}
+
+fn migrate_policy_list_modes(conn: &Connection) -> Result<(), Error> {
+    if !table_has_column(conn, "policy_site_lists", "mode")? {
+        conn.execute_batch(
+            r#"
+            ALTER TABLE policy_site_lists
+            ADD COLUMN mode TEXT NOT NULL DEFAULT 'blocklist'
+                CHECK (mode IN ('blocklist', 'allowlist'));
+            "#,
+        )?;
+    }
+
+    if !table_has_column(conn, "policy_app_rules", "mode")? {
+        conn.execute_batch(
+            r#"
+            ALTER TABLE policy_app_rules
+            ADD COLUMN mode TEXT NOT NULL DEFAULT 'blocklist'
+                CHECK (mode IN ('blocklist', 'allowlist'));
+            "#,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn normalize_policy_website_allowlists(conn: &Connection) -> Result<(), Error> {
+    conn.execute_batch(
+        r#"
+        UPDATE policy_site_lists
+        SET enabled = 1
+        WHERE mode = 'allowlist'
+          AND enabled <> 1;
+
+        UPDATE policy_site_lists
+        SET tier = 'scheduled_block', allowance_id = NULL
+        WHERE mode = 'allowlist'
+          AND tier = 'hard';
+
+        UPDATE policy_site_lists
+        SET allowance_id = NULL
+        WHERE mode = 'allowlist'
+          AND tier = 'scheduled_block'
+          AND allowance_id IS NOT NULL;
+        "#,
+    )?;
+    Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, Error> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn migrate_policy_allowances_zero_minutes(conn: &Connection) -> Result<(), Error> {
@@ -2859,6 +2934,21 @@ fn rule_tier_from_str(value: &str) -> Result<RuleTier, Error> {
         "scheduled_block" => Ok(RuleTier::ScheduledBlock),
         "controlled_access" => Ok(RuleTier::ControlledAccess),
         _ => Err(ConfigError::Validation(format!("unknown rule tier '{value}'")).into()),
+    }
+}
+
+fn list_mode_to_str(value: ListMode) -> &'static str {
+    match value {
+        ListMode::Blocklist => "blocklist",
+        ListMode::Allowlist => "allowlist",
+    }
+}
+
+fn list_mode_from_str(value: &str) -> Result<ListMode, Error> {
+    match value {
+        "blocklist" => Ok(ListMode::Blocklist),
+        "allowlist" => Ok(ListMode::Allowlist),
+        _ => Err(ConfigError::Validation(format!("unknown list mode '{value}'")).into()),
     }
 }
 
@@ -3353,7 +3443,7 @@ mod tests {
 
         database
             .sync_schedule_activity_totals(
-                &[schedule.clone()],
+                std::slice::from_ref(&schedule),
                 timestamp("2026-07-13T08:00:00+02:00"),
             )
             .expect("initial schedule activity sync");
@@ -3381,7 +3471,7 @@ mod tests {
 
         database
             .sync_schedule_activity_totals(
-                &[schedule.clone()],
+                std::slice::from_ref(&schedule),
                 timestamp("2026-07-17T21:00:00+02:00"),
             )
             .expect("initial schedule activity sync");

@@ -10,8 +10,9 @@ use chrono::{
 };
 use focus_core::{
     allowance_statuses, schedule_ids_are_active_at, AppMatcherConfig, AppMatcherKind,
-    AppRuleConfig, BlockReason, Database, Decision, DetoxSession, EvaluationContext, FocusCore,
-    ProcessIdentity, RuleTier, StrictModeConfig, Weekday, EVENT_DETAIL_RETENTION_DAYS,
+    AppRuleConfig, BlockReason, Config, Database, Decision, DetoxSession, EvaluationContext,
+    FocusCore, ListMode, ProcessIdentity, RuleTier, StrictModeConfig, Weekday,
+    EVENT_DETAIL_RETENTION_DAYS,
 };
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -25,8 +26,9 @@ use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
 use crate::policy_recovery::PolicyRecoveryManager;
 use crate::process_scan::{
-    attach_detected_window_titles, kill_processes, scan_procfs, supported_browser_for_process,
-    unsupported_browser_installation_for_process, LinuxSignalKiller, ProcessInfo, SupportedBrowser,
+    application_allowlist_exempt_process_ids, attach_detected_window_titles, kill_processes,
+    scan_procfs, supported_browser_for_process, unsupported_browser_installation_for_process,
+    LinuxSignalKiller, ProcessInfo, SupportedBrowser,
 };
 use crate::rpc::{
     current_chromium_incognito_policy_settings,
@@ -605,15 +607,13 @@ impl DaemonApp {
         let mut kill_details_by_pid = HashMap::new();
         let mut kill_event_kind_by_pid = HashMap::new();
         let mut blocked_rule_id_by_pid = HashMap::new();
+        let mut notification_name_by_pid = HashMap::new();
 
         {
             let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
             let guarded = clock_guard::guarded_now(core.database(), None, false)?;
             let now = guarded.now;
             let clock_tampered = guarded.integrity.state == "tampered";
-            if !clock_tampered {
-                sync_metered_app_usage_sessions(&core, &processes, now)?;
-            }
             let unsupported_browser_block_active =
                 unsupported_browser_block_is_active(&core, now, clock_tampered)?;
             let config_without_inactive_browser_block =
@@ -627,7 +627,14 @@ impl DaemonApp {
             let evaluation_config = config_without_inactive_browser_block
                 .as_ref()
                 .unwrap_or_else(|| core.config());
-            let context = EvaluationContext::new(evaluation_config, core.database(), now)
+            if !clock_tampered {
+                sync_metered_app_usage_sessions(&core, evaluation_config, &processes, now)?;
+            }
+            let mut blocklist_config = evaluation_config.clone();
+            blocklist_config
+                .app_rules
+                .retain(|rule| rule.mode == ListMode::Blocklist);
+            let blocklist_context = EvaluationContext::new(&blocklist_config, core.database(), now)
                 .with_clock_tampered(clock_tampered);
             for process in &processes {
                 if process.pid <= 1
@@ -636,7 +643,7 @@ impl DaemonApp {
                 {
                     continue;
                 }
-                let decision = focus_core::evaluate_app(&process.identity(), &context);
+                let decision = focus_core::evaluate_app(&process.identity(), &blocklist_context);
                 if let Decision::Block(reason) = decision {
                     blocked_pids.push(process.pid);
                     if let Some(rule_id) = blocked_rule_id(&reason) {
@@ -644,6 +651,36 @@ impl DaemonApp {
                         kill_event_kind_by_pid.insert(process.pid, "app_killed");
                         blocked_rule_id_by_pid.insert(process.pid, rule_id.to_string());
                     }
+                }
+            }
+
+            let mut notification_rule_ids = HashSet::new();
+            for blocked_process in blocked_allowlist_processes(
+                evaluation_config,
+                core.database(),
+                &processes,
+                now,
+                clock_tampered,
+            ) {
+                let pid = blocked_process.process.pid;
+                let rule_id = &blocked_process.rule_id;
+                if blocked_pids.contains(&pid) {
+                    continue;
+                }
+                blocked_pids.push(pid);
+                kill_details_by_pid.insert(pid, format!("rule_id={rule_id}"));
+                kill_event_kind_by_pid.insert(pid, "app_killed_allowlist");
+                if notification_rule_ids.insert(rule_id.clone()) {
+                    blocked_rule_id_by_pid.insert(pid, rule_id.clone());
+                    let identity = blocked_process.process.identity();
+                    notification_name_by_pid.insert(
+                        pid,
+                        identity
+                            .command_name
+                            .or(identity.executable_basename)
+                            .or(identity.desktop_id)
+                            .unwrap_or_else(|| "Process".to_string()),
+                    );
                 }
             }
 
@@ -765,10 +802,14 @@ impl DaemonApp {
                 now,
             )?;
             if let Some(rule_id) = blocked_rule_id_by_pid.get(&event.pid) {
+                let notification_name = notification_name_by_pid
+                    .get(&event.pid)
+                    .map(String::as_str)
+                    .unwrap_or(application_name);
                 if let Err(error) = crate::rpc::enqueue_application_block_notification(
                     &core,
                     rule_id,
-                    application_name,
+                    notification_name,
                     now,
                 ) {
                     eprintln!("could not queue application block notification: {error}");
@@ -1361,21 +1402,65 @@ fn is_blockuntu_name(value: &str) -> bool {
 
 fn sync_metered_app_usage_sessions(
     core: &FocusCore,
+    evaluation_config: &Config,
     processes: &[ProcessInfo],
     now: DateTime<FixedOffset>,
 ) -> Result<Vec<String>> {
-    let context = EvaluationContext::new(core.config(), core.database(), now);
     let mut rule_ids = HashSet::new();
+    let mut blocklist_config = evaluation_config.clone();
+    blocklist_config
+        .app_rules
+        .retain(|rule| rule.mode == ListMode::Blocklist);
+    let blocklist_context = EvaluationContext::new(&blocklist_config, core.database(), now);
+    let blocklist_blocked_pids = processes
+        .iter()
+        .filter(|process| {
+            focus_core::evaluate_app(&process.identity(), &blocklist_context).is_block()
+        })
+        .map(|process| process.pid)
+        .collect::<HashSet<_>>();
+
+    let mut allowlist_config = evaluation_config.clone();
+    allowlist_config
+        .app_rules
+        .retain(|rule| rule.mode == ListMode::Allowlist);
+    let allowlist_context = EvaluationContext::new(&allowlist_config, core.database(), now);
+    let allowlist_exempt_pids = application_allowlist_exempt_process_ids(processes);
+    let allowlist_blocked_pids = processes
+        .iter()
+        .filter(|process| {
+            !allowlist_exempt_pids.contains(&process.pid)
+                && focus_core::evaluate_app(&process.identity(), &allowlist_context).is_block()
+        })
+        .map(|process| process.pid)
+        .collect::<HashSet<_>>();
 
     for process in processes {
         if process.pid <= 1
             || process.pid == std::process::id()
             || is_blockuntu_process(&process.identity())
+            || allowlist_blocked_pids.contains(&process.pid)
         {
             continue;
         }
 
-        for rule_id in focus_core::metered_app_rule_ids_for_process(&process.identity(), &context)?
+        for rule_id in
+            focus_core::metered_app_rule_ids_for_process(&process.identity(), &blocklist_context)?
+        {
+            rule_ids.insert(rule_id);
+        }
+    }
+
+    for process in processes {
+        if process.pid <= 1
+            || process.pid == std::process::id()
+            || allowlist_exempt_pids.contains(&process.pid)
+            || blocklist_blocked_pids.contains(&process.pid)
+        {
+            continue;
+        }
+        for rule_id in
+            focus_core::metered_app_rule_ids_for_process(&process.identity(), &allowlist_context)?
         {
             rule_ids.insert(rule_id);
         }
@@ -1386,6 +1471,46 @@ fn sync_metered_app_usage_sessions(
     core.database()
         .sync_app_usage_sessions(&rule_ids, now.with_timezone(&Utc))?;
     Ok(rule_ids)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BlockedAllowlistProcess {
+    process: ProcessInfo,
+    rule_id: String,
+}
+
+fn blocked_allowlist_processes(
+    config: &Config,
+    database: &Database,
+    processes: &[ProcessInfo],
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> Vec<BlockedAllowlistProcess> {
+    let mut allowlist_config = config.clone();
+    allowlist_config
+        .app_rules
+        .retain(|rule| rule.mode == ListMode::Allowlist);
+    if allowlist_config.app_rules.is_empty() {
+        return Vec::new();
+    }
+
+    let context = EvaluationContext::new(&allowlist_config, database, now)
+        .with_clock_tampered(clock_tampered);
+    let exempt_pids = application_allowlist_exempt_process_ids(processes);
+    processes
+        .iter()
+        .filter(|process| process.pid > 1 && !exempt_pids.contains(&process.pid))
+        .filter_map(|process| {
+            let Decision::Block(reason) = focus_core::evaluate_app(&process.identity(), &context)
+            else {
+                return None;
+            };
+            Some(BlockedAllowlistProcess {
+                process: process.clone(),
+                rule_id: blocked_rule_id(&reason)?.to_string(),
+            })
+        })
+        .collect()
 }
 
 fn hosts_immutable_enabled(args: &Args) -> bool {
@@ -1471,6 +1596,7 @@ fn unsupported_browser_rule() -> AppRuleConfig {
         name: "Unsupported browsers hard block".to_string(),
         tier: RuleTier::Hard,
         enabled: true,
+        mode: ListMode::Blocklist,
         matchers: unsupported_browser_matchers()
             .into_iter()
             .map(|(kind, value)| AppMatcherConfig {
@@ -1747,10 +1873,11 @@ mod tests {
     };
 
     use super::{
-        constant_time_equals, ensure_mandatory_app_rules, is_blockuntu_process,
-        load_startup_policy, next_tier2_site_schedule_boundary, rpc_request_metadata,
-        snap_native_bridge_payload, strict_browser_kill_details, sync_allowance_notifications,
-        sync_metered_app_usage_sessions, sync_schedule_notifications, UNSUPPORTED_BROWSER_RULE_ID,
+        blocked_allowlist_processes, constant_time_equals, ensure_mandatory_app_rules,
+        is_blockuntu_process, load_startup_policy, next_tier2_site_schedule_boundary,
+        rpc_request_metadata, snap_native_bridge_payload, strict_browser_kill_details,
+        sync_allowance_notifications, sync_metered_app_usage_sessions, sync_schedule_notifications,
+        UNSUPPORTED_BROWSER_RULE_ID,
     };
     use crate::error::DaemonError;
     use crate::policy_recovery::PolicyRecoveryManager;
@@ -2169,13 +2296,22 @@ mod tests {
             .fixed_offset();
         let exhausted_at = started_at + Duration::minutes(2);
 
-        let started_rules =
-            sync_metered_app_usage_sessions(&core, std::slice::from_ref(&process), started_at)
-                .expect("usage sync should start a session");
+        let started_rules = sync_metered_app_usage_sessions(
+            &core,
+            core.config(),
+            std::slice::from_ref(&process),
+            started_at,
+        )
+        .expect("usage sync should start a session");
         assert_eq!(started_rules, vec!["kmines-controlled".to_string()]);
 
-        sync_metered_app_usage_sessions(&core, std::slice::from_ref(&process), exhausted_at)
-            .expect("usage sync should update the session");
+        sync_metered_app_usage_sessions(
+            &core,
+            core.config(),
+            std::slice::from_ref(&process),
+            exhausted_at,
+        )
+        .expect("usage sync should update the session");
         let context =
             focus_core::EvaluationContext::new(core.config(), core.database(), exhausted_at);
         assert_eq!(
@@ -2187,8 +2323,13 @@ mod tests {
             })
         );
 
-        sync_metered_app_usage_sessions(&core, &[], exhausted_at + Duration::minutes(1))
-            .expect("usage sync should end the session");
+        sync_metered_app_usage_sessions(
+            &core,
+            core.config(),
+            &[],
+            exhausted_at + Duration::minutes(1),
+        )
+        .expect("usage sync should end the session");
     }
 
     #[test]
@@ -2224,6 +2365,7 @@ mod tests {
 
         let rule_ids = sync_metered_app_usage_sessions(
             &core,
+            core.config(),
             &[process_info(1234, "blockuntu-gui")],
             Utc.with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
                 .single()
@@ -2231,6 +2373,270 @@ mod tests {
                 .fixed_offset(),
         )
         .expect("usage sync should pass");
+
+        assert!(rule_ids.is_empty());
+    }
+
+    #[test]
+    fn process_allowlist_enforcement_evaluates_each_regular_user_process() {
+        let config = Config::from_toml_str(
+            r#"
+            [[schedules]]
+            id = "always"
+            windows = [{ weekday = "everyday", start = "00:00", end = "23:59" }]
+
+            [[app_rules]]
+            id = "work-apps"
+            name = "Work applications"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            schedule_ids = ["always"]
+            matchers = [
+              { kind = "desktop_id", value = "org.example.Editor.desktop" }
+            ]
+            "#,
+        )
+        .expect("application allowlist should parse");
+        let database = Database::in_memory().expect("database should initialize");
+        let allowed = process_info_with_desktop_id(100, "editor", "org.example.Editor.desktop");
+        let mut related_child = process_info(101, "editor-language-server");
+        related_child.parent_pid = Some(100);
+        let outside = process_info_with_desktop_id(200, "game", "org.example.Game.desktop");
+        let session_service = process_info(300, "dbus-broker");
+        let blockuntu = process_info(400, "blockuntu-gui");
+
+        let blocked = blocked_allowlist_processes(
+            &config,
+            &database,
+            &[
+                allowed,
+                related_child.clone(),
+                outside.clone(),
+                session_service.clone(),
+                blockuntu,
+            ],
+            Utc.with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+                .single()
+                .expect("timestamp should be valid")
+                .fixed_offset(),
+            false,
+        );
+
+        assert_eq!(blocked.len(), 3);
+        assert_eq!(blocked[0].rule_id, "work-apps");
+        assert_eq!(blocked[0].process, related_child);
+        assert_eq!(blocked[1].process, outside);
+        assert_eq!(blocked[2].process, session_service);
+    }
+
+    #[test]
+    fn pr_aal_004_006_008_exemptions_and_independent_helpers_reach_recording_killer() {
+        use crate::process_scan::{kill_processes, ProcessKiller};
+        struct Recorder(std::cell::RefCell<Vec<u32>>);
+        impl ProcessKiller for Recorder {
+            fn kill(&self, pid: u32) -> crate::error::Result<()> {
+                self.0.borrow_mut().push(pid);
+                Ok(())
+            }
+        }
+        let config = Config::from_toml_str(
+            r#"
+            [[schedules]]
+            id = "work"
+            windows = [{ weekday = "everyday", start = "00:00", end = "23:59" }]
+            [[app_rules]]
+            id = "focus"
+            name = "Focus"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            schedule_ids = ["work"]
+            matchers = [{ kind = "command_name", value = "editor" }]
+        "#,
+        )
+        .unwrap();
+        let db = Database::in_memory().unwrap();
+        let mut processes = vec![
+            process_info(1, "init"),
+            process_info(10, "root"),
+            process_info(11, "system"),
+            process_info(12, "unknown"),
+            process_info(20, "blockuntu-gui"),
+            process_info(21, "WebKitWebProcess"),
+            process_info(30, "editor"),
+        ];
+        processes[1].user_id = Some(0);
+        processes[2].user_id = Some(999);
+        processes[3].user_id = None;
+        processes[5].parent_pid = Some(20);
+        for (index, name) in ["child", "sibling", "helper", "renderer", "crash-handler"]
+            .iter()
+            .enumerate()
+        {
+            let mut process = process_info(40 + index as u32, name);
+            process.parent_pid = Some(30);
+            processes.push(process);
+        }
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 18, 10, 0, 0)
+            .unwrap()
+            .fixed_offset();
+        let blocked = blocked_allowlist_processes(&config, &db, &processes, now, false);
+        let pids = blocked
+            .iter()
+            .map(|entry| entry.process.pid)
+            .collect::<Vec<_>>();
+        assert_eq!(pids, vec![40, 41, 42, 43, 44]);
+        let recorder = Recorder(std::cell::RefCell::new(vec![]));
+        kill_processes(&processes, &pids, &recorder).unwrap();
+        assert_eq!(*recorder.0.borrow(), pids);
+    }
+
+    #[test]
+    fn process_scan_sync_meters_tier3_application_allowlists_once_per_rule() {
+        let config = Config::from_toml_str(
+            r#"
+            [[allowances]]
+            id = "outside-daily"
+            daily_minutes = 1
+
+            [[schedules]]
+            id = "always"
+            windows = [{ weekday = "everyday", start = "00:00", end = "23:59" }]
+
+            [[app_rules]]
+            id = "work-apps"
+            name = "Work applications"
+            tier = "controlled_access"
+            mode = "allowlist"
+            allowance_id = "outside-daily"
+            schedule_ids = ["always"]
+            matchers = [
+              { kind = "desktop_id", value = "org.example.Editor.desktop" }
+            ]
+            "#,
+        )
+        .expect("application allowlist should parse");
+        let database = Database::in_memory().expect("database should initialize");
+        let core = focus_core::FocusCore::new(config, database).expect("core should initialize");
+        let allowed = process_info_with_desktop_id(100, "editor", "org.example.Editor.desktop");
+        let outside_one = process_info_with_desktop_id(200, "game", "org.example.Game.desktop");
+        let outside_two = process_info_with_desktop_id(300, "video", "org.example.Video.desktop");
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+            .single()
+            .expect("timestamp should be valid")
+            .fixed_offset();
+
+        let rule_ids = sync_metered_app_usage_sessions(
+            &core,
+            core.config(),
+            &[allowed, outside_one.clone(), outside_two],
+            started_at,
+        )
+        .expect("allowlist usage should start");
+        assert_eq!(rule_ids, vec!["work-apps".to_string()]);
+        sync_metered_app_usage_sessions(
+            &core,
+            core.config(),
+            std::slice::from_ref(&outside_one),
+            started_at + Duration::minutes(1),
+        )
+        .expect("allowlist usage should update");
+
+        let context = focus_core::EvaluationContext::new(
+            core.config(),
+            core.database(),
+            started_at + Duration::minutes(1),
+        );
+        assert!(focus_core::evaluate_app(&outside_one.identity(), &context).is_block());
+        // PR-AAL-011/018: successive scans select the process again exactly when
+        // its temporary unlock expires; exhausted usage is not reset.
+        let scan = |at| {
+            blocked_allowlist_processes(
+                core.config(),
+                core.database(),
+                std::slice::from_ref(&outside_one),
+                at,
+                false,
+            )
+        };
+        assert_eq!(scan(started_at + Duration::minutes(1)).len(), 1);
+        core.request_unlock_at(
+            "work-apps",
+            "I need this application to complete a specific work assignment".into(),
+            started_at + Duration::minutes(1),
+        )
+        .unwrap();
+        assert!(scan(started_at + Duration::seconds(179)).is_empty());
+        let expired = scan(started_at + Duration::minutes(3));
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].process.pid, outside_one.pid);
+    }
+
+    #[test]
+    fn strict_application_rules_prevent_cross_mode_allowance_charges() {
+        let config = Config::from_toml_str(
+            r#"
+            [[allowances]]
+            id = "blocklist-daily"
+            daily_minutes = 10
+
+            [[allowances]]
+            id = "allowlist-daily"
+            daily_minutes = 10
+
+            [[schedules]]
+            id = "always"
+            windows = [{ weekday = "everyday", start = "00:00", end = "23:59" }]
+
+            [[app_rules]]
+            id = "strict-game"
+            name = "Strict game block"
+            tier = "scheduled_block"
+            schedule_ids = ["always"]
+            matchers = [{ kind = "command_name", value = "game" }]
+
+            [[app_rules]]
+            id = "meter-game"
+            name = "Meter game"
+            tier = "controlled_access"
+            allowance_id = "blocklist-daily"
+            schedule_ids = ["always"]
+            matchers = [{ kind = "command_name", value = "game" }]
+
+            [[app_rules]]
+            id = "strict-work-apps"
+            name = "Strict work applications"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            schedule_ids = ["always"]
+            matchers = [{ kind = "desktop_id", value = "org.example.Editor.desktop" }]
+
+            [[app_rules]]
+            id = "meter-work-apps"
+            name = "Meter work applications"
+            tier = "controlled_access"
+            mode = "allowlist"
+            allowance_id = "allowlist-daily"
+            schedule_ids = ["always"]
+            matchers = [{ kind = "desktop_id", value = "org.example.Editor.desktop" }]
+            "#,
+        )
+        .expect("mixed application policy should parse");
+        let database = Database::in_memory().expect("database should initialize");
+        let core = focus_core::FocusCore::new(config, database).expect("core should initialize");
+        let process = process_info_with_desktop_id(200, "game", "org.example.Game.desktop");
+
+        let rule_ids = sync_metered_app_usage_sessions(
+            &core,
+            core.config(),
+            &[process],
+            Utc.with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+                .single()
+                .expect("timestamp should be valid")
+                .fixed_offset(),
+        )
+        .expect("mixed mode usage should evaluate");
 
         assert!(rule_ids.is_empty());
     }
@@ -2415,11 +2821,23 @@ mod tests {
     fn process_info(pid: u32, name: &str) -> ProcessInfo {
         ProcessInfo {
             pid,
+            parent_pid: Some(1),
+            user_id: Some(1000),
+            process_group_id: Some(pid),
+            session_id: Some(1000),
+            start_time_ticks: Some(u64::from(pid)),
             executable_path: None,
             executable_basename: Some(name.to_string()),
             command_name: Some(name.to_string()),
             desktop_id: None,
             window_titles: Vec::new(),
         }
+    }
+
+    fn process_info_with_desktop_id(pid: u32, name: &str, desktop_id: &str) -> ProcessInfo {
+        let mut process = process_info(pid, name);
+        process.executable_path = Some(format!("/usr/bin/{name}").into());
+        process.desktop_id = Some(desktop_id.to_string());
+        process
     }
 }

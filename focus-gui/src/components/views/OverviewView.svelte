@@ -157,7 +157,7 @@
           {#if uninstallPhrase && tier1EditKey}
             <p><strong>Uninstall phrase</strong> — store this somewhere secure.</p>
             <code class="phrase-code">{uninstallPhrase}</code>
-            <p><strong>Tier 1 edit key</strong> — required to unlock Tier 1 edits; store it somewhere secure.</p>
+            <p><strong>Tier 1 edit key</strong> — required to unlock Tier 1 edits. Store it somewhere secure.</p>
             <code class="phrase-code">{tier1EditKey}</code>
           {:else}
             <p>The displayed credentials have been hidden and removed from this device.</p>
@@ -272,7 +272,7 @@
     <div class="unlock-grid">
       <label>
         <span>Target</span>
-        <input bind:value={unlockTarget} />
+        <input bind:value={unlockTarget} placeholder="Website, application, or Tier 3 list ID" />
       </label>
       <label class="reason-field">
         <span>Reason ({unlockReasonLetterCount}/20 letters)</span>

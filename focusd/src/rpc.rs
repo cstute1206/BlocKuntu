@@ -11,7 +11,7 @@ use focus_core::{
     record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
     schedule_ids_are_active_at as schedule_ids_are_active_at_with_clock, site_usage_is_metered,
     AllowanceConfig, AppRuleConfig, BlockReason, Config, ControlledBlockReason, Decision,
-    DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState,
+    DetoxSession, DetoxTargetKind, EvaluationContext, FocusCore, HeartbeatState, ListMode,
     NotificationPreferences, RuleConfig, RulePatternKind, RuleTier, ScheduleConfig, UnlockState,
     VisitState, Weekday, EVENT_DETAIL_RETENTION_DAYS,
 };
@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::app::{
-    browser_startup_grace_seconds, hosts_detox_sessions_for_clock, is_blockuntu_process,
+    browser_startup_grace_seconds, hosts_detox_sessions_for_clock,
     strict_browser_session_started_at,
 };
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus, ChromiumIncognitoMode};
@@ -31,8 +31,8 @@ use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
 use crate::hosts::{HostsManager, HostsRepairStatus};
 use crate::policy_recovery::PolicyRecoveryManager;
 use crate::process_scan::{
-    attach_detected_window_titles, scan_procfs, supported_browser_for_process, ProcessInfo,
-    SupportedBrowser, WindowTitleSupport,
+    application_allowlist_exempt_process_ids, attach_detected_window_titles, scan_procfs,
+    supported_browser_for_process, ProcessInfo, SupportedBrowser, WindowTitleSupport,
 };
 
 const FIREFOX_EXTENSION_HEARTBEAT_COMPONENT: &str = "firefox_extension";
@@ -1524,8 +1524,12 @@ fn notification_rule(reason: &BlockReason) -> Option<(&str, &str)> {
         BlockReason::Detox {
             rule_id, rule_name, ..
         }
-        | BlockReason::HardBlock { rule_id, rule_name }
-        | BlockReason::ScheduledBlock { rule_id, rule_name }
+        | BlockReason::HardBlock {
+            rule_id, rule_name, ..
+        }
+        | BlockReason::ScheduledBlock {
+            rule_id, rule_name, ..
+        }
         | BlockReason::ControlledAccess {
             rule_id, rule_name, ..
         } => Some((rule_id, rule_name)),
@@ -1647,29 +1651,29 @@ fn rebaseline_schedule_notification_states(
 }
 
 fn append_policy_config(current: &mut Config, imported: &Config) -> Result<PolicyAppendSummary> {
-    let mut summary = PolicyAppendSummary::default();
-    summary.allowances = append_unique_by_id(
-        &mut current.allowances,
-        &imported.allowances,
-        "allowance",
-        |allowance| allowance.id.as_str(),
-    )?;
-    summary.schedules = append_unique_by_id(
-        &mut current.schedules,
-        &imported.schedules,
-        "schedule",
-        |schedule| schedule.id.as_str(),
-    )?;
-    summary.rules =
-        append_unique_by_id(&mut current.rules, &imported.rules, "site list", |rule| {
+    let summary = PolicyAppendSummary {
+        allowances: append_unique_by_id(
+            &mut current.allowances,
+            &imported.allowances,
+            "allowance",
+            |allowance| allowance.id.as_str(),
+        )?,
+        schedules: append_unique_by_id(
+            &mut current.schedules,
+            &imported.schedules,
+            "schedule",
+            |schedule| schedule.id.as_str(),
+        )?,
+        rules: append_unique_by_id(&mut current.rules, &imported.rules, "site list", |rule| {
             rule.id.as_str()
-        })?;
-    summary.app_rules = append_unique_by_id(
-        &mut current.app_rules,
-        &imported.app_rules,
-        "app rule",
-        |rule| rule.id.as_str(),
-    )?;
+        })?,
+        app_rules: append_unique_by_id(
+            &mut current.app_rules,
+            &imported.app_rules,
+            "app rule",
+            |rule| rule.id.as_str(),
+        )?,
+    };
     Ok(summary)
 }
 
@@ -2501,17 +2505,31 @@ fn running_app_snapshots_from_processes(
     let evaluation_config = config_without_inactive_browser_block
         .as_ref()
         .unwrap_or_else(|| core.config());
-    let eval_context = EvaluationContext::new(evaluation_config, core.database(), now)
+    let mut blocklist_config = evaluation_config.clone();
+    blocklist_config
+        .app_rules
+        .retain(|rule| rule.mode == ListMode::Blocklist);
+    let blocklist_context = EvaluationContext::new(&blocklist_config, core.database(), now)
         .with_clock_tampered(clock_tampered);
+    let mut allowlist_config = evaluation_config.clone();
+    allowlist_config
+        .app_rules
+        .retain(|rule| rule.mode == ListMode::Allowlist);
+    let allowlist_context = EvaluationContext::new(&allowlist_config, core.database(), now)
+        .with_clock_tampered(clock_tampered);
+    let exempt_pids = application_allowlist_exempt_process_ids(processes);
     let mut apps = processes
         .iter()
-        .filter(|process| process.pid > 1 && process.pid != std::process::id())
+        .filter(|process| process.pid > 1 && !exempt_pids.contains(&process.pid))
         .filter_map(|process| {
             let identity = process.identity();
-            if is_blockuntu_process(&identity) {
-                return None;
-            }
-            running_app_snapshot_from_identity(process.pid, identity, &eval_context)
+            let blocklist_decision = evaluate_app(&identity, &blocklist_context);
+            let decision = if blocklist_decision.is_block() {
+                blocklist_decision
+            } else {
+                evaluate_app(&identity, &allowlist_context)
+            };
+            running_app_snapshot_from_identity(process.pid, identity, &decision)
         })
         .collect::<Vec<_>>();
 
@@ -2528,12 +2546,11 @@ fn running_app_snapshots_from_processes(
 fn running_app_snapshot_from_identity(
     pid: u32,
     identity: focus_core::ProcessIdentity,
-    context: &EvaluationContext<'_>,
+    decision: &Decision,
 ) -> Option<RunningAppSnapshot> {
     let display_name = running_app_display_name(&identity)?;
-    let decision = evaluate_app(&identity, context);
     let (decision_label, blocking_rule_id, blocking_rule_name) =
-        running_app_decision_details(&decision);
+        running_app_decision_details(decision);
 
     Some(RunningAppSnapshot {
         pid,
@@ -2563,12 +2580,12 @@ fn running_app_decision_details(
 ) -> (&'static str, Option<String>, Option<String>) {
     match decision {
         Decision::Allow => ("allow", None, None),
-        Decision::Block(BlockReason::HardBlock { rule_id, rule_name }) => {
-            ("block", Some(rule_id.clone()), Some(rule_name.clone()))
-        }
-        Decision::Block(BlockReason::ScheduledBlock { rule_id, rule_name }) => {
-            ("block", Some(rule_id.clone()), Some(rule_name.clone()))
-        }
+        Decision::Block(BlockReason::HardBlock {
+            rule_id, rule_name, ..
+        }) => ("block", Some(rule_id.clone()), Some(rule_name.clone())),
+        Decision::Block(BlockReason::ScheduledBlock {
+            rule_id, rule_name, ..
+        }) => ("block", Some(rule_id.clone()), Some(rule_name.clone())),
         Decision::Block(BlockReason::ControlledAccess {
             rule_id, rule_name, ..
         }) => ("block", Some(rule_id.clone()), Some(rule_name.clone())),
@@ -3441,6 +3458,7 @@ fn block_reason_to_json(
             ends_at,
         } => {
             let free_at = ends_at.with_timezone(now.offset());
+            let list_mode = rule_list_mode(config, rule_id);
             json!({
                 "kind": "detox",
                 "blocked_by": "detox",
@@ -3449,39 +3467,79 @@ fn block_reason_to_json(
                 "rule_id": rule_id,
                 "rule_name": rule_name,
                 "target_kind": detox_target_kind_to_str(*target_kind),
-                "summary": "Detox is active for this target.",
-                "detail": "This temporary block stays active until the detox session ends or is cancelled from the privileged admin path.",
+                "list_mode": list_mode_to_str(list_mode),
+                "summary": if list_mode == ListMode::Allowlist {
+                    "This site is not on the allowlist selected for this Detox session."
+                } else {
+                    "Detox is active for this target."
+                },
+                "detail": if list_mode == ListMode::Allowlist {
+                    "Only websites on this allowlist are available until the Detox session ends or is cancelled from the privileged admin path."
+                } else {
+                    "This temporary block stays active until the detox session ends or is cancelled from the privileged admin path."
+                },
                 "detox_ends_at": ends_at.to_rfc3339(),
                 "free_at": free_at.to_rfc3339()
             })
         }
-        BlockReason::HardBlock { rule_id, rule_name } => json!({
-            "kind": "hard_block",
-            "tier": "tier_1",
-            "rule_id": rule_id,
-            "rule_name": rule_name,
-            "summary": "This site is on a Tier 1 hard-block list.",
-            "detail": "Tier 1 sites are always blocked and are also eligible for the hosts-file fallback.",
-            "free_at": Value::Null
-        }),
-        BlockReason::ScheduledBlock { rule_id, rule_name } => json!({
-            "kind": "scheduled_block",
-            "tier": "tier_2",
-            "rule_id": rule_id,
-            "rule_name": rule_name,
-            "blocked_by": "schedule",
-            "summary": "This target is on an active Tier 2 scheduled-block list.",
-            "detail": "Tier 2 cannot be bypassed with an allowance or manual unlock and domain rules also use the hosts-file fallback while active.",
-            "free_at": config.rules.iter()
-                .find(|rule| rule.id == *rule_id)
-                .and_then(|rule| rule_schedule_inactive_at(rule, config, now))
-                .map(|free_at| free_at.to_rfc3339())
-        }),
+        BlockReason::HardBlock { rule_id, rule_name } => {
+            let list_mode = rule_list_mode(config, rule_id);
+            json!({
+                "kind": "hard_block",
+                "tier": "tier_1",
+                "rule_id": rule_id,
+                "rule_name": rule_name,
+                "list_mode": list_mode_to_str(list_mode),
+                "summary": if list_mode == ListMode::Allowlist {
+                    "This site is not on the active Tier 1 allowlist."
+                } else {
+                    "This site is on a Tier 1 hard-block list."
+                },
+                "detail": if list_mode == ListMode::Allowlist {
+                    "Only websites on this allowlist are available. Allowlist enforcement requires the browser extension."
+                } else {
+                    "Tier 1 sites are always blocked and domain patterns are also eligible for the hosts-file fallback."
+                },
+                "free_at": Value::Null
+            })
+        }
+        BlockReason::ScheduledBlock { rule_id, rule_name } => {
+            let list_mode = rule_list_mode(config, rule_id);
+            json!({
+                "kind": "scheduled_block",
+                "tier": "tier_2",
+                "rule_id": rule_id,
+                "rule_name": rule_name,
+                "list_mode": list_mode_to_str(list_mode),
+                "blocked_by": "schedule",
+                "summary": if list_mode == ListMode::Allowlist {
+                    "This site is not on the active Tier 2 allowlist."
+                } else {
+                    "This target is on an active Tier 2 scheduled-block list."
+                },
+                "detail": if list_mode == ListMode::Allowlist {
+                    "Only websites on this allowlist are available while its schedule is active. Allowlist enforcement requires the browser extension."
+                } else {
+                    "Tier 2 cannot be bypassed with an allowance or manual unlock and domain rules also use the hosts-file fallback while active."
+                },
+                "free_at": config.rules.iter()
+                    .find(|rule| rule.id == *rule_id)
+                    .and_then(|rule| rule_schedule_inactive_at(rule, config, now))
+                    .map(|free_at| free_at.to_rfc3339())
+            })
+        }
         BlockReason::ControlledAccess {
             rule_id,
             rule_name,
             reason,
-        } => controlled_block_reason_to_json(rule_id, rule_name, reason, config, now),
+        } => controlled_block_reason_to_json(
+            rule_id,
+            rule_name,
+            rule_list_mode(config, rule_id),
+            reason,
+            config,
+            now,
+        ),
         BlockReason::RuntimeError { message } => json!({
             "kind": "runtime_error",
             "message": message,
@@ -3493,6 +3551,7 @@ fn block_reason_to_json(
 fn controlled_block_reason_to_json(
     rule_id: &str,
     rule_name: &str,
+    list_mode: ListMode,
     reason: &ControlledBlockReason,
     config: &Config,
     now: DateTime<FixedOffset>,
@@ -3502,9 +3561,10 @@ fn controlled_block_reason_to_json(
         "tier": "tier_3",
         "rule_id": rule_id,
         "rule_name": rule_name,
+        "list_mode": list_mode_to_str(list_mode),
         "controlled_reason": controlled_reason_to_str(reason),
-        "summary": controlled_reason_summary(reason),
-        "detail": controlled_reason_detail(reason)
+        "summary": controlled_reason_summary(reason, list_mode),
+        "detail": controlled_reason_detail(reason, list_mode)
     });
 
     let Some(rule) = config.rules.iter().find(|rule| rule.id == rule_id) else {
@@ -3542,6 +3602,29 @@ fn controlled_block_reason_to_json(
     value
 }
 
+fn list_mode_to_str(mode: ListMode) -> &'static str {
+    match mode {
+        ListMode::Blocklist => "blocklist",
+        ListMode::Allowlist => "allowlist",
+    }
+}
+
+fn rule_list_mode(config: &Config, rule_id: &str) -> ListMode {
+    config
+        .rules
+        .iter()
+        .find(|rule| rule.id == rule_id)
+        .map(|rule| rule.mode)
+        .or_else(|| {
+            config
+                .app_rules
+                .iter()
+                .find(|rule| rule.id == rule_id)
+                .map(|rule| rule.mode)
+        })
+        .unwrap_or(ListMode::Blocklist)
+}
+
 fn rule_schedule_inactive_at(
     rule: &RuleConfig,
     config: &Config,
@@ -3567,7 +3650,21 @@ fn controlled_reason_to_str(reason: &ControlledBlockReason) -> &'static str {
     }
 }
 
-fn controlled_reason_summary(reason: &ControlledBlockReason) -> &'static str {
+fn controlled_reason_summary(reason: &ControlledBlockReason, list_mode: ListMode) -> &'static str {
+    if list_mode == ListMode::Allowlist {
+        return match reason {
+            ControlledBlockReason::NoAllowance => {
+                "This site is outside the active Tier 3 allowlist."
+            }
+            ControlledBlockReason::AllowanceExhausted => {
+                "This site is outside the active Tier 3 allowlist and its daily allowance is exhausted."
+            }
+            ControlledBlockReason::UnlockRequired => {
+                "This site is outside the active Tier 3 allowlist and requires an unlock."
+            }
+        };
+    }
+
     match reason {
         ControlledBlockReason::NoAllowance => "This Tier 3 target needs an explicit unlock.",
         ControlledBlockReason::AllowanceExhausted => {
@@ -3577,7 +3674,21 @@ fn controlled_reason_summary(reason: &ControlledBlockReason) -> &'static str {
     }
 }
 
-fn controlled_reason_detail(reason: &ControlledBlockReason) -> &'static str {
+fn controlled_reason_detail(reason: &ControlledBlockReason, list_mode: ListMode) -> &'static str {
+    if list_mode == ListMode::Allowlist {
+        return match reason {
+            ControlledBlockReason::NoAllowance => {
+                "No allowance is configured, so websites outside this allowlist are blocked unless a manual unlock is active."
+            }
+            ControlledBlockReason::AllowanceExhausted => {
+                "The allowance for websites outside this allowlist has been consumed for the current accounting day."
+            }
+            ControlledBlockReason::UnlockRequired => {
+                "Use the BlocKuntu GUI to request a temporary unlock for this non-allowlisted website."
+            }
+        };
+    }
+
     match reason {
         ControlledBlockReason::NoAllowance => {
             "No allowance is configured for this list, so access is blocked unless an unlock is active."
@@ -3902,6 +4013,8 @@ fn tier1_edit_status_json(core: &FocusCore, now: DateTime<FixedOffset>) -> Resul
     let browser_block_active = unsupported_browser_block_is_active(core, now, clock_tampered)?;
     let chromium_incognito = current_chromium_incognito_policy_settings(core, now, clock_tampered)?;
     let chromium_incognito_change_access_mode = chromium_incognito_change_access_mode(core)?;
+    let chromium_incognito_locked_by_active_allowlist =
+        website_allowlist_is_active(core, now, clock_tampered)?;
     let chromium_incognito_settings_change_allowed =
         chromium_incognito_settings_change_allowed(core, now, clock_tampered)?;
     Ok(json!({
@@ -3919,6 +4032,7 @@ fn tier1_edit_status_json(core: &FocusCore, now: DateTime<FixedOffset>) -> Resul
         "chromium_incognito_disable_scope": chromium_incognito.disable_scope,
         "chromium_incognito_private_browsing_disabled": chromium_incognito.private_browsing_disabled,
         "chromium_incognito_change_access_mode": chromium_incognito_change_access_mode,
+        "chromium_incognito_locked_by_active_allowlist": chromium_incognito_locked_by_active_allowlist,
         "chromium_incognito_settings_change_allowed": chromium_incognito_settings_change_allowed,
         "chromium_incognito_url_block_count": chromium_incognito.url_blocklist.len(),
         "chromium_incognito_unsupported_pattern_count": chromium_incognito.unsupported_pattern_count,
@@ -4045,7 +4159,11 @@ fn chromium_incognito_url_blocklist(
     let mut entries = BTreeSet::new();
     let mut unsupported_pattern_count = 0;
 
-    for rule in config.rules.iter().filter(|rule| rule.enabled) {
+    for rule in config
+        .rules
+        .iter()
+        .filter(|rule| rule.enabled && rule.mode == ListMode::Blocklist)
+    {
         let selected_by_detox = detox_rule_ids.contains(&rule.id);
         let active = match rule.tier {
             RuleTier::Hard => true,
@@ -4149,7 +4267,7 @@ fn chromium_incognito_settings_change_allowed(
     now: DateTime<FixedOffset>,
     clock_tampered: bool,
 ) -> Result<bool> {
-    if clock_tampered {
+    if clock_tampered || website_allowlist_is_active(core, now, clock_tampered)? {
         return Ok(false);
     }
 
@@ -4165,6 +4283,12 @@ fn ensure_chromium_incognito_settings_change_allowed(
     now: DateTime<FixedOffset>,
     clock_tampered: bool,
 ) -> Result<()> {
+    if website_allowlist_is_active(core, now, clock_tampered)? {
+        return Err(DaemonError::InvalidRequest(
+            "Chromium private browsing settings cannot be changed while a website allowlist is active"
+                .to_string(),
+        ));
+    }
     let access_mode = chromium_incognito_change_access_mode(core)?;
     if chromium_incognito_settings_change_allowed(core, now, clock_tampered)? {
         return Ok(());
@@ -4173,6 +4297,35 @@ fn ensure_chromium_incognito_settings_change_allowed(
         "Chromium private browsing settings",
         access_mode,
     ))
+}
+
+fn website_allowlist_is_active(
+    core: &FocusCore,
+    now: DateTime<FixedOffset>,
+    clock_tampered: bool,
+) -> Result<bool> {
+    let active_detox_rule_ids = if clock_tampered {
+        core.database().uncancelled_detox_sessions()?
+    } else {
+        core.database()
+            .active_detox_sessions(now.with_timezone(&Utc))?
+    }
+    .into_iter()
+    .flat_map(|session| session.site_rule_ids)
+    .collect::<BTreeSet<_>>();
+
+    Ok(core.config().rules.iter().any(|rule| {
+        rule.enabled
+            && rule.mode == ListMode::Allowlist
+            && (rule.tier == RuleTier::Hard
+                || schedule_ids_are_active_at_with_clock(
+                    &rule.schedule_ids,
+                    core.config(),
+                    now,
+                    clock_tampered,
+                )
+                || active_detox_rule_ids.contains(&rule.id))
+    }))
 }
 
 pub(crate) fn ensure_chromium_incognito_url_blocklist_within_limit(
@@ -4444,33 +4597,65 @@ fn allowance_is_active_at(
 }
 
 fn site_list_edit_is_additive(current: &RuleConfig, proposed: &RuleConfig) -> bool {
-    current.id == proposed.id
+    let unchanged_fields = current.id == proposed.id
         && current.name == proposed.name
         && current.tier == proposed.tier
         && current.enabled == proposed.enabled
+        && current.mode == proposed.mode
         && current.schedule_ids == proposed.schedule_ids
-        && current.allowance_id == proposed.allowance_id
-        && proposed.patterns.len() >= current.patterns.len()
-        && current
-            .patterns
-            .iter()
-            .zip(proposed.patterns.iter())
-            .all(|(current, proposed)| current == proposed)
+        && current.allowance_id == proposed.allowance_id;
+    if !unchanged_fields {
+        return false;
+    }
+
+    match current.mode {
+        ListMode::Blocklist => {
+            proposed.patterns.len() >= current.patterns.len()
+                && current
+                    .patterns
+                    .iter()
+                    .zip(proposed.patterns.iter())
+                    .all(|(current, proposed)| current == proposed)
+        }
+        ListMode::Allowlist => {
+            proposed.patterns.len() <= current.patterns.len()
+                && proposed
+                    .patterns
+                    .iter()
+                    .all(|pattern| current.patterns.contains(pattern))
+        }
+    }
 }
 
 fn app_rule_edit_is_additive(current: &AppRuleConfig, proposed: &AppRuleConfig) -> bool {
-    current.id == proposed.id
+    let unchanged_fields = current.id == proposed.id
         && current.name == proposed.name
         && current.tier == proposed.tier
         && current.enabled == proposed.enabled
+        && current.mode == proposed.mode
         && current.schedule_ids == proposed.schedule_ids
-        && current.allowance_id == proposed.allowance_id
-        && proposed.matchers.len() >= current.matchers.len()
-        && current
-            .matchers
-            .iter()
-            .zip(proposed.matchers.iter())
-            .all(|(current, proposed)| current == proposed)
+        && current.allowance_id == proposed.allowance_id;
+    if !unchanged_fields {
+        return false;
+    }
+
+    match current.mode {
+        ListMode::Blocklist => {
+            proposed.matchers.len() >= current.matchers.len()
+                && current
+                    .matchers
+                    .iter()
+                    .zip(proposed.matchers.iter())
+                    .all(|(current, proposed)| current == proposed)
+        }
+        ListMode::Allowlist => {
+            proposed.matchers.len() <= current.matchers.len()
+                && proposed
+                    .matchers
+                    .iter()
+                    .all(|matcher| current.matchers.contains(matcher))
+        }
+    }
 }
 
 fn schedule_edit_is_additive(current: &ScheduleConfig, proposed: &ScheduleConfig) -> bool {
@@ -4640,6 +4825,9 @@ fn app_rule_in_active_detox(
 }
 
 fn rule_is_active_at(rule: &RuleConfig, config: &Config, now: DateTime<FixedOffset>) -> bool {
+    if !rule.enabled {
+        return false;
+    }
     match rule.tier {
         RuleTier::Hard => true,
         RuleTier::ScheduledBlock | RuleTier::ControlledAccess => {
@@ -4653,6 +4841,9 @@ fn app_rule_is_active_at(
     config: &Config,
     now: DateTime<FixedOffset>,
 ) -> bool {
+    if !rule.enabled {
+        return false;
+    }
     match rule.tier {
         RuleTier::Hard => true,
         RuleTier::ScheduledBlock | RuleTier::ControlledAccess => {
@@ -4703,7 +4894,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use chrono::{Duration, Local, TimeZone, Utc};
-    use focus_core::{Config, Database, FocusCore, HeartbeatState};
+    use focus_core::{Config, Database, DetoxSession, FocusCore, HeartbeatState};
     use serde_json::{json, Value};
 
     use crate::chrome_policy::ChromePolicyManager;
@@ -4715,9 +4906,10 @@ mod tests {
     use super::{
         browser_extension_status_json, chromium_incognito_policy_settings,
         chromium_incognito_settings_change_allowed, chromium_incognito_url_blocklist,
-        handle_payload, infer_browser_from_running_browsers, parse_optional_now,
-        running_app_snapshots_from_processes, ChromiumPolicyBinding, GeckoPolicyBinding,
-        RpcContext, CHROMIUM_INCOGNITO_DISABLE_SCOPE_KEY,
+        ensure_chromium_incognito_settings_change_allowed, handle_payload,
+        infer_browser_from_running_browsers, parse_optional_now,
+        running_app_snapshots_from_processes, website_allowlist_is_active, ChromiumPolicyBinding,
+        GeckoPolicyBinding, RpcContext, CHROMIUM_INCOGNITO_DISABLE_SCOPE_KEY,
     };
     use crate::process_scan::{ProcessInfo, SupportedBrowser};
 
@@ -4823,6 +5015,48 @@ mod tests {
     }
 
     #[test]
+    fn private_url_policy_does_not_treat_allowlist_entries_as_blocked_urls() {
+        let config = Config::from_toml_str(
+            r#"
+            [[schedules]]
+            id = "monday"
+            windows = [{ weekday = "mon", start = "08:00", end = "09:00" }]
+
+            [[rules]]
+            id = "blocked"
+            name = "Blocked"
+            tier = "hard"
+            mode = "blocklist"
+            patterns = [{ kind = "domain", value = "blocked.example", match_subdomains = true }]
+
+            [[rules]]
+            id = "allowed"
+            name = "Allowed"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            schedule_ids = ["monday"]
+            patterns = [{ kind = "domain", value = "allowed.example", match_subdomains = true }]
+            "#,
+        )
+        .expect("test policy should parse");
+        let now = parse_optional_now(Some("2026-08-03T08:30:00+00:00".to_string()))
+            .expect("test timestamp should parse");
+        let temp = tempfile::tempdir().expect("temporary database directory should exist");
+        let core = FocusCore::new(
+            config,
+            Database::open(temp.path().join("blockuntu.sqlite3"))
+                .expect("temporary database should open"),
+        )
+        .expect("test core should initialize");
+
+        let (entries, unsupported) = chromium_incognito_url_blocklist(&core, now, false)
+            .expect("private URL policy should build");
+
+        assert_eq!(entries, vec!["blocked.example".to_string()]);
+        assert_eq!(unsupported, 0);
+    }
+
+    #[test]
     fn private_browsing_disable_scope_and_settings_access_follow_schedule_activity() {
         let config = Config::from_toml_str(
             r#"
@@ -4900,6 +5134,65 @@ mod tests {
         );
     }
 
+    #[test]
+    fn chromium_private_browsing_settings_lock_only_while_an_allowlist_is_active() {
+        let config = Config::from_toml_str(
+            r#"
+            [[schedules]]
+            id = "monday"
+            windows = [{ weekday = "mon", start = "10:00", end = "11:00" }]
+
+            [[rules]]
+            id = "focus-only"
+            name = "Focus only"
+            tier = "controlled_access"
+            mode = "allowlist"
+            schedule_ids = ["monday"]
+            patterns = [{ kind = "domain", value = "allowed.example", match_subdomains = true }]
+            "#,
+        )
+        .expect("Tier 3 allowlist should parse");
+        let temp = tempfile::tempdir().expect("temporary database directory should exist");
+        let core = FocusCore::new(
+            config,
+            Database::open(temp.path().join("blockuntu.sqlite3"))
+                .expect("temporary database should open"),
+        )
+        .expect("test core should initialize");
+        let before = parse_optional_now(Some("2026-08-03T09:30:00+02:00".to_string()))
+            .expect("inactive timestamp should parse");
+        let scheduled = parse_optional_now(Some("2026-08-03T10:30:00+02:00".to_string()))
+            .expect("active timestamp should parse");
+        let after = parse_optional_now(Some("2026-08-03T12:30:00+02:00".to_string()))
+            .expect("post-schedule timestamp should parse");
+
+        assert!(!website_allowlist_is_active(&core, before, false).unwrap());
+        assert!(chromium_incognito_settings_change_allowed(&core, before, false).unwrap());
+        assert!(website_allowlist_is_active(&core, scheduled, false).unwrap());
+        assert!(!chromium_incognito_settings_change_allowed(&core, scheduled, false).unwrap());
+        assert!(
+            ensure_chromium_incognito_settings_change_allowed(&core, scheduled, false)
+                .expect_err("active allowlist should lock Chromium settings")
+                .to_string()
+                .contains("while a website allowlist is active")
+        );
+        assert!(chromium_incognito_settings_change_allowed(&core, after, false).unwrap());
+
+        core.database()
+            .insert_detox_session(&DetoxSession {
+                id: "allowlist-detox".to_string(),
+                name: Some("Allowlist Detox".to_string()),
+                starts_at: after.with_timezone(&Utc),
+                ends_at: (after + Duration::hours(1)).with_timezone(&Utc),
+                cancelled_at: None,
+                site_rule_ids: vec!["focus-only".to_string()],
+                app_rule_ids: Vec::new(),
+            })
+            .expect("Detox should insert");
+        assert!(website_allowlist_is_active(&core, after, false).unwrap());
+        assert!(!chromium_incognito_settings_change_allowed(&core, after, false).unwrap());
+    }
+
     fn editable_rpc_context() -> RpcContext {
         rpc_context_with_config_toml(
             r#"
@@ -4943,6 +5236,54 @@ mod tests {
             schedule_ids = ["work-hours"]
             patterns = [
               { kind = "domain", value = "controlled.example", match_subdomains = true }
+            ]
+            "#,
+        )
+    }
+
+    fn active_scheduled_allowlist_rpc_context() -> RpcContext {
+        rpc_context_with_config_toml(
+            r#"
+            [[schedules]]
+            id = "work-hours"
+            name = "Work hours"
+
+            [[schedules.windows]]
+            weekday = "fri"
+            start = "09:00"
+            end = "17:00"
+
+            [[rules]]
+            id = "work-only"
+            name = "Work only"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            schedule_ids = ["work-hours"]
+            patterns = [
+              { kind = "domain", value = "docs.example", match_subdomains = true },
+              { kind = "domain", value = "mail.example", match_subdomains = true }
+            ]
+            "#,
+        )
+    }
+
+    fn active_scheduled_application_allowlist_rpc_context() -> RpcContext {
+        rpc_context_with_config_toml(
+            r#"
+            [[schedules]]
+            id = "work-hours"
+            name = "Work hours"
+            windows = [{ weekday = "fri", start = "09:00", end = "17:00" }]
+
+            [[app_rules]]
+            id = "work-apps"
+            name = "Work applications"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            schedule_ids = ["work-hours"]
+            matchers = [
+              { kind = "desktop_id", value = "org.example.Editor.desktop" },
+              { kind = "desktop_id", value = "org.example.Mail.desktop" }
             ]
             "#,
         )
@@ -6396,6 +6737,11 @@ mod tests {
         let processes = vec![
             ProcessInfo {
                 pid: 7,
+                parent_pid: Some(1),
+                user_id: Some(1000),
+                process_group_id: Some(7),
+                session_id: Some(1000),
+                start_time_ticks: Some(7),
                 executable_path: Some("/usr/bin/blockuntu-gui".into()),
                 executable_basename: Some("blockuntu-gui".into()),
                 command_name: Some("blockuntu-gui".into()),
@@ -6404,6 +6750,11 @@ mod tests {
             },
             ProcessInfo {
                 pid: 4242,
+                parent_pid: Some(1),
+                user_id: Some(1000),
+                process_group_id: Some(4242),
+                session_id: Some(1000),
+                start_time_ticks: Some(4242),
                 executable_path: Some("/usr/bin/vlc".into()),
                 executable_basename: Some("vlc".into()),
                 command_name: Some("vlc".into()),
@@ -6586,6 +6937,429 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn pr_edit_004_005_active_allowlist_fields_and_identity_modifications_are_rejected() {
+        for apps in [false, true] {
+            for field in [
+                "name",
+                "mode",
+                "tier",
+                "schedule_ids",
+                "allowance_id",
+                "enabled",
+                "entries",
+            ] {
+                let context = if apps {
+                    active_scheduled_application_allowlist_rpc_context()
+                } else {
+                    active_scheduled_allowlist_rpc_context()
+                };
+                let core = context.core.lock().unwrap();
+                let mut rule = if apps {
+                    serde_json::to_value(&core.config().app_rules[0]).unwrap()
+                } else {
+                    serde_json::to_value(&core.config().rules[0]).unwrap()
+                };
+                drop(core);
+                match field {
+                    "name" => rule["name"] = json!("Renamed"),
+                    "mode" => rule["mode"] = json!("blocklist"),
+                    "tier" => rule["tier"] = json!("controlled_access"),
+                    "schedule_ids" => rule["schedule_ids"] = json!([]),
+                    "allowance_id" => rule["allowance_id"] = json!("new-allowance"),
+                    "enabled" => rule["enabled"] = json!(false),
+                    _ => {
+                        rule[if apps { "matchers" } else { "patterns" }][0]["value"] =
+                            json!("replacement.example")
+                    }
+                }
+                let request = json!({ "jsonrpc": "2.0", "id": 1,
+                    "method": if apps { "upsert_app_rule" } else { "upsert_site_list" },
+                    "params": { "now": "2026-05-22T10:00:00Z", "rule": rule } });
+                let response: Value = serde_json::from_slice(&handle_payload(
+                    &context,
+                    &serde_json::to_vec(&request).unwrap(),
+                ))
+                .unwrap();
+                assert!(
+                    response.get("error").is_some(),
+                    "apps={apps} field={field}: {response}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn active_allowlist_can_only_be_made_more_restrictive() {
+        let context = active_scheduled_allowlist_rpc_context();
+        let remove_allowed_site = json!({
+            "jsonrpc": "2.0",
+            "id": 118,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "work-only",
+                    "name": "Work only",
+                    "tier": "scheduled_block",
+                    "enabled": true,
+                    "mode": "allowlist",
+                    "patterns": [
+                        { "kind": "domain", "value": "docs.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let remove_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&remove_allowed_site).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(remove_response.get("error").is_none(), "{remove_response}");
+
+        let add_allowed_site = json!({
+            "jsonrpc": "2.0",
+            "id": 119,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "work-only",
+                    "name": "Work only",
+                    "tier": "scheduled_block",
+                    "enabled": true,
+                    "mode": "allowlist",
+                    "patterns": [
+                        { "kind": "domain", "value": "docs.example", "match_subdomains": true },
+                        { "kind": "domain", "value": "newly-allowed.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let add_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&add_allowed_site).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(add_response["error"]["code"], -32602);
+        assert!(add_response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("site list 'work-only' is currently active"));
+    }
+
+    #[test]
+    fn active_application_allowlist_can_only_remove_allowed_identities() {
+        let context = active_scheduled_application_allowlist_rpc_context();
+        let remove_allowed_application = json!({
+            "jsonrpc": "2.0",
+            "id": 127,
+            "method": "upsert_app_rule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "work-apps",
+                    "name": "Work applications",
+                    "tier": "scheduled_block",
+                    "enabled": true,
+                    "mode": "allowlist",
+                    "matchers": [
+                        { "kind": "desktop_id", "value": "org.example.Editor.desktop" }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let remove_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&remove_allowed_application).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(remove_response.get("error").is_none(), "{remove_response}");
+
+        let add_allowed_application = json!({
+            "jsonrpc": "2.0",
+            "id": 128,
+            "method": "upsert_app_rule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "rule": {
+                    "id": "work-apps",
+                    "name": "Work applications",
+                    "tier": "scheduled_block",
+                    "enabled": true,
+                    "mode": "allowlist",
+                    "matchers": [
+                        { "kind": "desktop_id", "value": "org.example.Editor.desktop" },
+                        { "kind": "desktop_id", "value": "org.example.New.desktop" }
+                    ],
+                    "schedule_ids": ["work-hours"]
+                }
+            }
+        });
+        let add_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&add_allowed_application).unwrap(),
+        ))
+        .expect("response should parse");
+
+        assert_eq!(add_response["error"]["code"], -32602);
+        assert!(add_response["error"]["data"]
+            .as_str()
+            .expect("error data should be a string")
+            .contains("app rule 'work-apps' is currently active"));
+    }
+
+    #[test]
+    fn attaching_tier2_allowlist_works_with_policy_url_blocking_and_reports_mode() {
+        let context = rpc_context_with_config_toml(
+            r#"
+            [[rules]]
+            id = "work-only"
+            name = "Work only"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            patterns = [{ kind = "domain", value = "allowed.example", match_subdomains = true }]
+            "#,
+        );
+        let save_unattached_request = json!({
+            "jsonrpc": "2.0",
+            "id": 119,
+            "method": "upsert_site_list",
+            "params": {
+                "now": "2026-05-22T08:00:00Z",
+                "rule": {
+                    "id": "work-only",
+                    "name": "Work only",
+                    "tier": "scheduled_block",
+                    "enabled": true,
+                    "mode": "allowlist",
+                    "patterns": [
+                        { "kind": "domain", "value": "allowed.example", "match_subdomains": true }
+                    ],
+                    "schedule_ids": []
+                }
+            }
+        });
+        let save_unattached_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&save_unattached_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(
+            save_unattached_response.get("error").is_none(),
+            "{save_unattached_response}"
+        );
+
+        {
+            let core = context.core.lock().expect("core should lock");
+            core.database()
+                .set_service_state(
+                    super::CHROMIUM_INCOGNITO_MODE_KEY,
+                    "policy_url_blocking",
+                    Utc::now(),
+                )
+                .expect("private browsing mode should persist");
+        }
+
+        let attach_request = json!({
+            "jsonrpc": "2.0",
+            "id": 120,
+            "method": "upsert_schedule",
+            "params": {
+                "now": "2026-05-22T10:00:00Z",
+                "schedule": {
+                    "id": "work-hours",
+                    "name": "Work hours",
+                    "windows": [
+                        { "weekday": "fri", "start": "09:00", "end": "17:00" }
+                    ]
+                },
+                "site_rule_ids": ["work-only"],
+                "app_rule_ids": []
+            }
+        });
+        let attach_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&attach_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(attach_response.get("error").is_none(), "{attach_response}");
+
+        let blocked_request = json!({
+            "jsonrpc": "2.0",
+            "id": 121,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://outside.example/",
+                "now": "2026-05-22T10:00:00Z",
+                "probe": true
+            }
+        });
+        let blocked_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&blocked_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(blocked_response["result"]["decision"], "block");
+        assert_eq!(
+            blocked_response["result"]["reason"]["kind"],
+            "scheduled_block"
+        );
+        assert_eq!(
+            blocked_response["result"]["reason"]["list_mode"],
+            "allowlist"
+        );
+
+        let allowed_request = json!({
+            "jsonrpc": "2.0",
+            "id": 122,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://allowed.example/",
+                "now": "2026-05-22T10:00:00Z",
+                "probe": true
+            }
+        });
+        let allowed_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&allowed_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(allowed_response["result"]["decision"], "allow");
+    }
+
+    #[test]
+    fn detox_activation_of_allowlist_works_with_default_manual_consent() {
+        let context = rpc_context_with_config_toml(
+            r#"
+            [[rules]]
+            id = "detox-only"
+            name = "Detox only"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            patterns = [{ kind = "domain", value = "allowed.example", match_subdomains = true }]
+            "#,
+        );
+        let start_request = json!({
+            "jsonrpc": "2.0",
+            "id": 123,
+            "method": "start_detox",
+            "params": {
+                "name": "Allowlist Detox",
+                "duration_minutes": 30,
+                "site_rule_ids": ["detox-only"],
+                "app_rule_ids": [],
+                "now": "2026-05-22T10:00:00Z"
+            }
+        });
+        let start_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&start_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(start_response.get("error").is_none(), "{start_response}");
+
+        let blocked_request = json!({
+            "jsonrpc": "2.0",
+            "id": 124,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://outside.example/",
+                "now": "2026-05-22T10:01:00Z",
+                "probe": true
+            }
+        });
+        let blocked_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&blocked_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(blocked_response["result"]["decision"], "block");
+        assert_eq!(blocked_response["result"]["reason"]["kind"], "detox");
+        assert_eq!(
+            blocked_response["result"]["reason"]["list_mode"],
+            "allowlist"
+        );
+    }
+
+    #[test]
+    fn tier3_allowlist_rpc_reports_mode_and_supports_manual_unlock() {
+        let context = rpc_context_with_config_toml(
+            r#"
+            [[allowances]]
+            id = "outside-daily"
+            daily_minutes = 0
+
+            [[schedules]]
+            id = "work-hours"
+            windows = [{ weekday = "fri", start = "09:00", end = "17:00" }]
+
+            [[rules]]
+            id = "focus-only"
+            name = "Focus only"
+            tier = "controlled_access"
+            mode = "allowlist"
+            allowance_id = "outside-daily"
+            schedule_ids = ["work-hours"]
+            patterns = [{ kind = "domain", value = "allowed.example", match_subdomains = true }]
+            "#,
+        );
+        let blocked_request = json!({
+            "jsonrpc": "2.0",
+            "id": 125,
+            "method": "evaluate_url",
+            "params": {
+                "url": "https://outside.example/",
+                "now": "2026-05-22T10:00:00Z",
+                "probe": true
+            }
+        });
+        let blocked_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&blocked_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(blocked_response["result"]["decision"], "block");
+        assert_eq!(blocked_response["result"]["reason"]["tier"], "tier_3");
+        assert_eq!(
+            blocked_response["result"]["reason"]["list_mode"],
+            "allowlist"
+        );
+        assert!(blocked_response["result"]["reason"]["summary"]
+            .as_str()
+            .expect("summary should be a string")
+            .contains("outside the active Tier 3 allowlist"));
+
+        let unlock_request = json!({
+            "jsonrpc": "2.0",
+            "id": 126,
+            "method": "request_unlock",
+            "params": {
+                "target": "https://outside.example/",
+                "reason": "I need temporary access to complete this specific assigned work task",
+                "now": "2026-05-22T10:00:00Z"
+            }
+        });
+        let unlock_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&unlock_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert!(unlock_response.get("error").is_none(), "{unlock_response}");
+        assert_eq!(unlock_response["result"]["rule_id"], "focus-only");
+
+        let allowed_response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&blocked_request).unwrap(),
+        ))
+        .expect("response should parse");
+        assert_eq!(allowed_response["result"]["decision"], "allow");
     }
 
     #[test]

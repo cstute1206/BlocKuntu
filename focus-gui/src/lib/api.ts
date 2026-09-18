@@ -301,6 +301,10 @@ export function uninstallBlockuntu(phrase: string): Promise<UninstallResult> {
   return invoke("uninstall_blockuntu", { phrase });
 }
 
+export function quitBlockuntuGui(): Promise<void> {
+  return invoke("quit_blockuntu_gui");
+}
+
 export function daemonRpc(method: string, params: unknown, socketPath?: string): Promise<unknown> {
   return invoke("daemon_rpc", { method, params, socketPath });
 }

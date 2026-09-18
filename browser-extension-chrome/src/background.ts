@@ -69,6 +69,7 @@ interface BlockNavigationReason extends JsonObject {
   tier?: string;
   rule_id?: string;
   rule_name?: string;
+  list_mode?: string;
   controlled_reason?: string;
   blocked_by?: string;
   summary?: string;
@@ -1072,6 +1073,7 @@ function blockReasonFromResult(result: unknown): BlockNavigationReason {
     tier: stringField(reason, "tier") ?? undefined,
     rule_id: stringField(reason, "rule_id") ?? undefined,
     rule_name: stringField(reason, "rule_name") ?? undefined,
+    list_mode: stringField(reason, "list_mode") ?? undefined,
     controlled_reason: stringField(reason, "controlled_reason") ?? undefined,
     blocked_by: stringField(reason, "blocked_by") ?? undefined,
     summary: stringField(reason, "summary") ?? undefined,

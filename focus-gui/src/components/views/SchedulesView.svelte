@@ -59,6 +59,12 @@
     )
   );
 
+  function ruleAttachmentLabel(rule: Rule | AppRule): string {
+    const tier = rule.tier === "scheduled_block" ? "Tier 2" : "Tier 3";
+    const mode = rule.mode === "allowlist" ? " · Allowlist" : "";
+    return `${rule.name || rule.id} (${tier}${mode})`;
+  }
+
   function isTwentyFourHourTime(value: string): boolean {
     return /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(value);
   }
@@ -250,7 +256,7 @@
               disabled={scheduleDraftLocked}
               onchange={() => toggleScheduleSiteRule(rule)}
             />
-            <span>{rule.name || rule.id}</span>
+            <span>{ruleAttachmentLabel(rule)}</span>
           </label>
         {:else}
           <p class="empty-state">No Tier 2 or Tier 3 websites available.</p>
@@ -267,7 +273,7 @@
               disabled={scheduleDraftLocked}
               onchange={() => toggleScheduleAppRule(rule)}
             />
-            <span>{rule.name || rule.id}</span>
+            <span>{ruleAttachmentLabel(rule)}</span>
           </label>
         {:else}
           <p class="empty-state">No Tier 2 or Tier 3 applications available.</p>

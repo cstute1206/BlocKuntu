@@ -1,8 +1,9 @@
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use focus_core::{
-    evaluate_app, evaluate_url, migrate_database, record_visit_end, record_visit_heartbeat,
-    record_visit_start, request_unlock, BlockReason, Config, ControlledBlockReason, Database,
-    Decision, DetoxSession, Error, EvaluationContext, ProcessIdentity, UnlockError,
+    evaluate_app, evaluate_url, metered_app_rule_ids_for_process, migrate_database,
+    record_visit_end, record_visit_heartbeat, record_visit_start, request_unlock,
+    site_usage_is_metered, BlockReason, Config, ControlledBlockReason, Database, Decision,
+    DetoxSession, Error, EvaluationContext, ListMode, ProcessIdentity, UnlockError,
 };
 use rusqlite::Connection;
 
@@ -117,6 +118,374 @@ fn url_matching_supports_subdomains_exact_urls_path_prefixes_and_fallback_allow(
         evaluate_url("https://video.example/watch#v=shorts", &ctx),
         Decision::Allow
     );
+}
+
+#[test]
+fn active_tier2_website_allowlists_are_intersected_and_blocklists_still_win() {
+    let config = Config::from_toml_str(
+        r#"
+        [[schedules]]
+        id = "work-hours"
+        windows = [{ weekday = "mon", start = "09:00", end = "17:00" }]
+
+        [[rules]]
+        id = "work-sites"
+        name = "Work sites"
+        tier = "scheduled_block"
+        mode = "allowlist"
+        schedule_ids = ["work-hours"]
+        patterns = [
+          { kind = "domain", value = "example.com", match_subdomains = true }
+        ]
+
+        [[rules]]
+        id = "documentation-only"
+        name = "Documentation only"
+        tier = "scheduled_block"
+        mode = "allowlist"
+        schedule_ids = ["work-hours"]
+        patterns = [
+          { kind = "url_prefix", value = "https://docs.example.com/" }
+        ]
+
+        [[rules]]
+        id = "private-docs"
+        name = "Private docs"
+        tier = "hard"
+        patterns = [
+          { kind = "path_prefix", value = "docs.example.com/private" }
+        ]
+        "#,
+    )
+    .expect("allowlist config should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let ctx = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+
+    assert_eq!(
+        evaluate_url("https://docs.example.com/public", &ctx),
+        Decision::Allow
+    );
+    assert!(matches!(
+        evaluate_url("https://git.example.com/", &ctx),
+        Decision::Block(BlockReason::ScheduledBlock { rule_id, .. })
+            if rule_id == "documentation-only"
+    ));
+    assert!(matches!(
+        evaluate_url("https://outside.example.org/", &ctx),
+        Decision::Block(BlockReason::ScheduledBlock { rule_id, .. })
+            if rule_id == "work-sites"
+    ));
+    assert!(matches!(
+        evaluate_url("https://docs.example.com/private/report", &ctx),
+        Decision::Block(BlockReason::HardBlock { rule_id, .. })
+            if rule_id == "private-docs"
+    ));
+}
+
+#[test]
+fn disabled_website_allowlists_are_rejected() {
+    let error = Config::from_toml_str(
+        r#"
+        [[rules]]
+        id = "disabled-allowlist"
+        name = "Disabled allowlist"
+        tier = "scheduled_block"
+        enabled = false
+        mode = "allowlist"
+        patterns = [
+          { kind = "domain", value = "allowed.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect_err("disabled allowlist should be rejected");
+    assert!(error.to_string().contains("cannot be disabled"));
+}
+
+#[test]
+fn tier2_website_allowlists_follow_schedules_and_detox() {
+    let config = Config::from_toml_str(
+        r#"
+        [[schedules]]
+        id = "work-hours"
+
+        [[schedules.windows]]
+        weekday = "mon"
+        start = "09:00"
+        end = "17:00"
+
+        [[rules]]
+        id = "scheduled-work-sites"
+        name = "Scheduled work sites"
+        tier = "scheduled_block"
+        mode = "allowlist"
+        schedule_ids = ["work-hours"]
+        patterns = [
+          { kind = "domain", value = "work.example", match_subdomains = true }
+        ]
+
+        [[rules]]
+        id = "detox-work-sites"
+        name = "Detox work sites"
+        tier = "scheduled_block"
+        mode = "allowlist"
+        patterns = [
+          { kind = "domain", value = "detox.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("scheduled allowlists should parse");
+    let database = Database::in_memory().expect("database should initialize");
+
+    let during_schedule = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    assert_eq!(
+        evaluate_url("https://work.example/", &during_schedule),
+        Decision::Allow
+    );
+    assert!(matches!(
+        evaluate_url("https://outside.example/", &during_schedule),
+        Decision::Block(BlockReason::ScheduledBlock { rule_id, .. })
+            if rule_id == "scheduled-work-sites"
+    ));
+
+    let after_schedule = context(&config, &database, at_utc(2026, 5, 18, 18, 0));
+    assert_eq!(
+        evaluate_url("https://outside.example/", &after_schedule),
+        Decision::Allow
+    );
+
+    let starts_at = at_utc(2026, 5, 18, 18, 0).with_timezone(&Utc);
+    database
+        .insert_detox_session(&DetoxSession {
+            id: "allowlist-detox".to_string(),
+            name: Some("Allowlist Detox".to_string()),
+            starts_at,
+            ends_at: starts_at + chrono::Duration::minutes(30),
+            cancelled_at: None,
+            site_rule_ids: vec!["detox-work-sites".to_string()],
+            app_rule_ids: Vec::new(),
+        })
+        .expect("detox should insert");
+    let during_detox = context(&config, &database, at_utc(2026, 5, 18, 18, 10));
+    assert_eq!(
+        evaluate_url("https://detox.example/", &during_detox),
+        Decision::Allow
+    );
+    assert!(matches!(
+        evaluate_url("https://outside.example/", &during_detox),
+        Decision::Block(BlockReason::Detox { rule_id, .. })
+            if rule_id == "detox-work-sites"
+    ));
+}
+
+#[test]
+fn tier3_website_allowlists_meter_outside_sites_and_support_unlocks() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "outside-daily"
+        daily_minutes = 1
+
+        [[schedules]]
+        id = "always"
+
+        [[schedules.windows]]
+        weekday = "everyday"
+        start = "00:00"
+        end = "23:59"
+
+        [[rules]]
+        id = "focus-only"
+        name = "Focus only"
+        tier = "controlled_access"
+        mode = "allowlist"
+        allowance_id = "outside-daily"
+        schedule_ids = ["always"]
+        patterns = [
+          { kind = "domain", value = "allowed.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("Tier 3 allowlist should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let start = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+
+    assert_eq!(
+        evaluate_url("https://allowed.example/", &start),
+        Decision::Allow
+    );
+    assert!(!site_usage_is_metered("https://allowed.example/", &start));
+    assert_eq!(
+        evaluate_url("https://outside.example/", &start),
+        Decision::Allow
+    );
+    assert!(site_usage_is_metered("https://outside.example/", &start));
+
+    let visit = record_visit_start("https://outside.example/", "tab-tier3", &start)
+        .expect("outside visit should start");
+    assert_eq!(visit.rule_id.as_deref(), Some("focus-only"));
+    let exhausted = context(&config, &database, at_utc(2026, 5, 18, 10, 2));
+    record_visit_heartbeat(visit.id, &exhausted).expect("outside visit should be metered");
+
+    assert_eq!(
+        evaluate_url("https://outside.example/", &exhausted),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id: "focus-only".to_string(),
+            rule_name: "Focus only".to_string(),
+            reason: ControlledBlockReason::AllowanceExhausted,
+        })
+    );
+    assert_eq!(
+        evaluate_url("https://allowed.example/", &exhausted),
+        Decision::Allow
+    );
+
+    let unlock = request_unlock(
+        "https://outside.example/",
+        "I need temporary access to finish this specific assigned work task".to_string(),
+        &exhausted,
+    )
+    .expect("non-allowlisted site should support a Tier 3 unlock");
+    assert_eq!(unlock.rule_id, "focus-only");
+    assert_eq!(
+        evaluate_url("https://outside.example/", &exhausted),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn tier3_website_allowlists_keep_allowance_and_unlocks_during_detox() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "detox-outside-daily"
+        daily_minutes = 1
+
+        [[rules]]
+        id = "detox-focus-only"
+        name = "Detox focus only"
+        tier = "controlled_access"
+        mode = "allowlist"
+        allowance_id = "detox-outside-daily"
+        patterns = [
+          { kind = "domain", value = "allowed.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("Tier 3 Detox allowlist should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let starts_at = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
+    database
+        .insert_detox_session(&DetoxSession {
+            id: "tier3-allowlist-detox".to_string(),
+            name: Some("Tier 3 allowlist".to_string()),
+            starts_at,
+            ends_at: starts_at + chrono::Duration::hours(2),
+            cancelled_at: None,
+            site_rule_ids: vec!["detox-focus-only".to_string()],
+            app_rule_ids: Vec::new(),
+        })
+        .expect("Detox should start");
+
+    let start = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    assert_eq!(
+        evaluate_url("https://outside.example/", &start),
+        Decision::Allow
+    );
+    assert!(site_usage_is_metered("https://outside.example/", &start));
+    let visit = record_visit_start("https://outside.example/", "tab-detox-tier3", &start)
+        .expect("outside Detox visit should start");
+    let exhausted = context(&config, &database, at_utc(2026, 5, 18, 10, 2));
+    record_visit_heartbeat(visit.id, &exhausted).expect("Detox visit should be metered");
+    assert!(matches!(
+        evaluate_url("https://outside.example/", &exhausted),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id,
+            reason: ControlledBlockReason::AllowanceExhausted,
+            ..
+        }) if rule_id == "detox-focus-only"
+    ));
+
+    request_unlock(
+        "https://outside.example/",
+        "I need temporary access to finish this specific Detox work task".to_string(),
+        &exhausted,
+    )
+    .expect("Tier 3 allowlist should retain manual unlock during Detox");
+    assert_eq!(
+        evaluate_url("https://outside.example/", &exhausted),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn unsupported_allowlist_combinations_are_rejected() {
+    let tier1 = Config::from_toml_str(
+        r#"
+        [[rules]]
+        id = "tier1-allowlist"
+        name = "Tier 1 allowlist"
+        tier = "hard"
+        mode = "allowlist"
+        patterns = [
+          { kind = "domain", value = "allowed.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect_err("Tier 1 website allowlists should be rejected");
+    assert!(tier1.to_string().contains("must use Tier 2 or Tier 3"));
+
+    let app = Config::from_toml_str(
+        r#"
+        [[app_rules]]
+        id = "app-allowlist"
+        name = "Application allowlist"
+        tier = "hard"
+        mode = "allowlist"
+        matchers = [
+          { kind = "desktop_id", value = "org.example.Editor.desktop" }
+        ]
+        "#,
+    )
+    .expect_err("Tier 1 application allowlists should be rejected");
+    assert!(app.to_string().contains("must use Tier 2 or Tier 3"));
+
+    for tier in ["scheduled_block", "controlled_access"] {
+        Config::from_toml_str(&format!(
+            r#"
+            [[app_rules]]
+            id = "app-allowlist"
+            name = "Application allowlist"
+            tier = "{tier}"
+            mode = "allowlist"
+            matchers = [
+              {{ kind = "desktop_id", value = "org.example.Editor.desktop" }}
+            ]
+            "#
+        ))
+        .expect("Tier 2 and Tier 3 application allowlists should parse");
+    }
+}
+
+#[test]
+fn legacy_recovery_normalizes_website_allowlists_to_enabled_tier2() {
+    let config = Config::from_legacy_recovery_toml_str(
+        r#"
+        [[rules]]
+        id = "legacy-allowlist"
+        name = "Legacy allowlist"
+        tier = "hard"
+        enabled = false
+        mode = "allowlist"
+        patterns = [
+          { kind = "domain", value = "allowed.example", match_subdomains = true }
+        ]
+        "#,
+    )
+    .expect("legacy recovery allowlist should normalize");
+
+    assert_eq!(config.rules[0].tier, focus_core::RuleTier::ScheduledBlock);
+    assert!(config.rules[0].enabled);
+    assert_eq!(config.rules[0].mode, ListMode::Allowlist);
 }
 
 #[test]
@@ -314,6 +683,191 @@ fn controlled_app_allowances_use_recorded_runtime() {
             reason: ControlledBlockReason::AllowanceExhausted,
         })
     );
+}
+
+#[test]
+fn tier2_application_allowlists_invert_matching_only_while_active() {
+    let config = Config::from_toml_str(
+        r#"
+        [[schedules]]
+        id = "work-hours"
+        windows = [{ weekday = "mon", start = "09:00", end = "17:00" }]
+
+        [[app_rules]]
+        id = "work-apps"
+        name = "Work applications"
+        tier = "scheduled_block"
+        mode = "allowlist"
+        schedule_ids = ["work-hours"]
+        matchers = [
+          { kind = "desktop_id", value = "org.example.Editor.desktop" }
+        ]
+        "#,
+    )
+    .expect("Tier 2 application allowlist should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let editor = ProcessIdentity {
+        pid: Some(100),
+        executable_path: Some("/usr/bin/editor".to_string()),
+        executable_basename: Some("editor".to_string()),
+        command_name: Some("editor".to_string()),
+        desktop_id: Some("org.example.Editor.desktop".to_string()),
+        window_titles: vec!["Editor".to_string()],
+    };
+    let game = ProcessIdentity {
+        pid: Some(200),
+        executable_path: Some("/usr/bin/game".to_string()),
+        executable_basename: Some("game".to_string()),
+        command_name: Some("game".to_string()),
+        desktop_id: Some("org.example.Game.desktop".to_string()),
+        window_titles: vec!["Game".to_string()],
+    };
+
+    let active = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+    assert_eq!(evaluate_app(&editor, &active), Decision::Allow);
+    assert!(matches!(
+        evaluate_app(&game, &active),
+        Decision::Block(BlockReason::ScheduledBlock { rule_id, .. }) if rule_id == "work-apps"
+    ));
+
+    let inactive = context(&config, &database, at_utc(2026, 5, 18, 18, 0));
+    assert_eq!(evaluate_app(&game, &inactive), Decision::Allow);
+}
+
+#[test]
+fn tier2_application_allowlists_activate_through_detox() {
+    let config = Config::from_toml_str(
+        r#"
+        [[app_rules]]
+        id = "detox-apps"
+        name = "Detox applications"
+        tier = "scheduled_block"
+        mode = "allowlist"
+        matchers = [
+          { kind = "command_name", value = "editor" }
+        ]
+        "#,
+    )
+    .expect("Tier 2 application allowlist should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let starts_at = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
+    database
+        .insert_detox_session(&DetoxSession {
+            id: "app-allowlist-detox".to_string(),
+            name: Some("Work apps only".to_string()),
+            starts_at,
+            ends_at: starts_at + chrono::Duration::hours(1),
+            cancelled_at: None,
+            site_rule_ids: Vec::new(),
+            app_rule_ids: vec!["detox-apps".to_string()],
+        })
+        .expect("Detox should insert");
+    let editor = ProcessIdentity {
+        pid: Some(100),
+        executable_path: None,
+        executable_basename: None,
+        command_name: Some("editor".to_string()),
+        desktop_id: None,
+        window_titles: Vec::new(),
+    };
+    let game = ProcessIdentity {
+        pid: Some(200),
+        executable_path: None,
+        executable_basename: None,
+        command_name: Some("game".to_string()),
+        desktop_id: None,
+        window_titles: Vec::new(),
+    };
+    let during = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
+
+    assert_eq!(evaluate_app(&editor, &during), Decision::Allow);
+    assert!(matches!(
+        evaluate_app(&game, &during),
+        Decision::Block(BlockReason::Detox { rule_id, .. }) if rule_id == "detox-apps"
+    ));
+}
+
+#[test]
+fn tier3_application_allowlists_meter_outside_apps_and_support_manual_unlock() {
+    let config = Config::from_toml_str(
+        r#"
+        [[allowances]]
+        id = "outside-daily"
+        daily_minutes = 1
+
+        [[schedules]]
+        id = "always"
+        windows = [{ weekday = "everyday", start = "00:00", end = "23:59" }]
+
+        [[app_rules]]
+        id = "focus-apps"
+        name = "Focus applications"
+        tier = "controlled_access"
+        mode = "allowlist"
+        allowance_id = "outside-daily"
+        schedule_ids = ["always"]
+        matchers = [
+          { kind = "desktop_id", value = "org.example.Editor.desktop" }
+        ]
+        "#,
+    )
+    .expect("Tier 3 application allowlist should parse");
+    let database = Database::in_memory().expect("database should initialize");
+    let editor = ProcessIdentity {
+        pid: Some(100),
+        executable_path: None,
+        executable_basename: None,
+        command_name: Some("editor".to_string()),
+        desktop_id: Some("org.example.Editor.desktop".to_string()),
+        window_titles: Vec::new(),
+    };
+    let game = ProcessIdentity {
+        pid: Some(200),
+        executable_path: None,
+        executable_basename: None,
+        command_name: Some("game-bin".to_string()),
+        desktop_id: Some("org.example.Game.desktop".to_string()),
+        window_titles: Vec::new(),
+    };
+    let before_usage = context(&config, &database, at_utc(2026, 5, 18, 10, 0));
+
+    assert_eq!(evaluate_app(&editor, &before_usage), Decision::Allow);
+    assert_eq!(evaluate_app(&game, &before_usage), Decision::Allow);
+    assert!(metered_app_rule_ids_for_process(&editor, &before_usage)
+        .expect("allowed app metering should evaluate")
+        .is_empty());
+    assert_eq!(
+        metered_app_rule_ids_for_process(&game, &before_usage)
+            .expect("outside app metering should evaluate"),
+        vec!["focus-apps".to_string()]
+    );
+
+    database
+        .insert_app_usage_interval(
+            "focus-apps",
+            at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc),
+            at_utc(2026, 5, 18, 10, 1).with_timezone(&Utc),
+        )
+        .expect("outside app usage should insert");
+    let exhausted = context(&config, &database, at_utc(2026, 5, 18, 10, 1));
+    assert!(matches!(
+        evaluate_app(&game, &exhausted),
+        Decision::Block(BlockReason::ControlledAccess {
+            rule_id,
+            reason: ControlledBlockReason::AllowanceExhausted,
+            ..
+        }) if rule_id == "focus-apps"
+    ));
+
+    let unlock = request_unlock(
+        "game-bin",
+        "I need this application to complete a specific scheduled work task".to_string(),
+        &exhausted,
+    )
+    .expect("outside application should be unlockable");
+    assert_eq!(unlock.rule_id, "focus-apps");
+    let during_unlock = context(&config, &database, at_utc(2026, 5, 18, 10, 2));
+    assert_eq!(evaluate_app(&game, &during_unlock), Decision::Allow);
 }
 
 #[test]
@@ -1460,6 +2014,16 @@ fn database_migration_creates_required_tables_and_runtime_tables_work() {
         .expect("policy_site_list_patterns schema should query");
     assert!(policy_patterns_sql.contains("'url_contains'"));
 
+    let policy_site_lists_sql: String = database
+        .connection()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'policy_site_lists'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("policy_site_lists schema should query");
+    assert!(policy_site_lists_sql.contains("'allowlist'"));
+
     let now = at_utc(2026, 5, 18, 10, 0).with_timezone(&Utc);
     database
         .upsert_heartbeat("extension", Some("ok"), now)
@@ -1608,6 +2172,60 @@ fn database_migration_adds_scheduled_block_tier_without_relabeling_existing_rule
         )
         .expect("existing site tier should remain");
     assert_eq!(existing_tier, "controlled_access");
+
+    let existing_site_mode: String = conn
+        .query_row(
+            "SELECT mode FROM policy_site_lists WHERE id = 'existing-flexible'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("existing site mode should default");
+    let existing_app_mode: String = conn
+        .query_row(
+            "SELECT mode FROM policy_app_rules WHERE id = 'existing-app'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("existing app mode should default");
+    assert_eq!(existing_site_mode, "blocklist");
+    assert_eq!(existing_app_mode, "blocklist");
+
+    conn.execute(
+        "UPDATE policy_site_lists SET tier = 'hard', enabled = 0, mode = 'allowlist' WHERE id = 'new-strict'",
+        [],
+    )
+    .expect("legacy allowlist state should insert");
+    migrate_database(&conn).expect("allowlist state should normalize");
+    let (normalized_tier, normalized_enabled): (String, i64) = conn
+        .query_row(
+            "SELECT tier, enabled FROM policy_site_lists WHERE id = 'new-strict'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("normalized allowlist should query");
+    assert_eq!(normalized_tier, "scheduled_block");
+    assert_eq!(normalized_enabled, 1);
+
+    conn.execute(
+        "INSERT INTO policy_allowances (id, name, daily_minutes) VALUES ('tier3-daily', 'Tier 3 daily', 15)",
+        [],
+    )
+    .expect("Tier 3 allowance should insert");
+    conn.execute(
+        "UPDATE policy_site_lists SET tier = 'controlled_access', mode = 'allowlist', allowance_id = 'tier3-daily' WHERE id = 'new-strict'",
+        [],
+    )
+    .expect("Tier 3 allowlist should insert");
+    migrate_database(&conn).expect("Tier 3 allowlist should survive database normalization");
+    let (preserved_tier, preserved_allowance): (String, Option<String>) = conn
+        .query_row(
+            "SELECT tier, allowance_id FROM policy_site_lists WHERE id = 'new-strict'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("Tier 3 allowlist should query");
+    assert_eq!(preserved_tier, "controlled_access");
+    assert_eq!(preserved_allowance.as_deref(), Some("tier3-daily"));
 }
 
 #[test]
@@ -1680,9 +2298,10 @@ fn policy_config_roundtrips_through_sqlite() {
         end = "17:00"
 
         [[rules]]
-        id = "hard-list"
-        name = "Hard List"
-        tier = "hard"
+        id = "allowed-list"
+        name = "Allowed List"
+        tier = "scheduled_block"
+        mode = "allowlist"
         schedule_ids = ["work"]
         patterns = [
           { kind = "domain", value = "hard.example", match_subdomains = true }
@@ -1702,6 +2321,7 @@ fn policy_config_roundtrips_through_sqlite() {
         id = "game-controlled"
         name = "Game controlled"
         tier = "controlled_access"
+        mode = "allowlist"
         matchers = [
           { kind = "command_name", value = "game-bin" },
           { kind = "window_title_contains", value = "Game" }
@@ -1735,6 +2355,8 @@ fn policy_config_roundtrips_through_sqlite() {
         .load_policy_config()
         .expect("policy config should load");
     assert_eq!(loaded, config);
+    assert_eq!(loaded.rules[0].mode, ListMode::Allowlist);
+    assert_eq!(loaded.app_rules[0].mode, ListMode::Allowlist);
 }
 
 #[test]
@@ -1771,9 +2393,10 @@ fn policy_config_roundtrips_through_toml_export() {
         grace_seconds = 30
 
         [[rules]]
-        id = "hard-list"
-        name = "Hard List"
-        tier = "hard"
+        id = "allowed-list"
+        name = "Allowed List"
+        tier = "scheduled_block"
+        mode = "allowlist"
         patterns = [
           { kind = "domain", value = "hard.example", match_subdomains = true }
         ]
@@ -1789,6 +2412,7 @@ fn policy_config_roundtrips_through_toml_export() {
     assert_eq!(imported, config);
     assert!(exported.contains("[[rules]]"));
     assert!(exported.contains("hard.example"));
+    assert!(exported.contains("mode = \"allowlist\""));
     assert!(!exported.contains("unlock_policy"));
     assert!(!exported.contains("[defaults]"));
 }

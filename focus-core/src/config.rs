@@ -16,7 +16,7 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
     config.validate()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
@@ -58,9 +58,24 @@ impl Config {
                 }
             }
         }
-        let config: Self = value.try_into()?;
+        let mut config: Self = value.try_into()?;
+        config.normalize_legacy_website_allowlists();
         config.validate()?;
         Ok(config)
+    }
+
+    fn normalize_legacy_website_allowlists(&mut self) {
+        for rule in &mut self.rules {
+            if rule.mode == ListMode::Allowlist {
+                rule.enabled = true;
+                if rule.tier == RuleTier::Hard {
+                    rule.tier = RuleTier::ScheduledBlock;
+                }
+                if rule.tier == RuleTier::ScheduledBlock {
+                    rule.allowance_id = None;
+                }
+            }
+        }
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -144,6 +159,21 @@ impl Config {
                 }
             }
 
+            if rule.mode == ListMode::Allowlist {
+                if rule.tier == RuleTier::Hard {
+                    return Err(ConfigError::Validation(format!(
+                        "website allowlist '{}' must use Tier 2 or Tier 3",
+                        rule.id
+                    )));
+                }
+                if !rule.enabled {
+                    return Err(ConfigError::Validation(format!(
+                        "website allowlist '{}' cannot be disabled; attach it to a schedule or Detox to activate it",
+                        rule.id
+                    )));
+                }
+            }
+
             if let Some(allowance_id) = &rule.allowance_id {
                 if !allowance_ids.contains(allowance_id.as_str()) {
                     return Err(ConfigError::Validation(format!(
@@ -188,6 +218,20 @@ impl Config {
                     "app rule '{}' must have a non-empty name",
                     app_rule.id
                 )));
+            }
+            if app_rule.mode == ListMode::Allowlist {
+                if app_rule.tier == RuleTier::Hard {
+                    return Err(ConfigError::Validation(format!(
+                        "application allowlist '{}' must use Tier 2 or Tier 3",
+                        app_rule.id
+                    )));
+                }
+                if !app_rule.enabled {
+                    return Err(ConfigError::Validation(format!(
+                        "application allowlist '{}' cannot be disabled; attach it to a schedule or Detox to activate it",
+                        app_rule.id
+                    )));
+                }
             }
             if app_rule.matchers.is_empty() {
                 return Err(ConfigError::Validation(format!(
@@ -244,18 +288,6 @@ impl Config {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            rules: Vec::new(),
-            app_rules: Vec::new(),
-            schedules: Vec::new(),
-            allowances: Vec::new(),
-            strict_mode: StrictModeConfig::default(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StrictModeConfig {
     #[serde(default = "default_enabled")]
@@ -291,6 +323,8 @@ pub struct RuleConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
+    pub mode: ListMode,
+    #[serde(default)]
     pub patterns: Vec<RulePatternConfig>,
     #[serde(default)]
     pub schedule_ids: Vec<String>,
@@ -307,11 +341,30 @@ pub struct AppRuleConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
+    pub mode: ListMode,
+    #[serde(default)]
     pub matchers: Vec<AppMatcherConfig>,
     #[serde(default)]
     pub schedule_ids: Vec<String>,
     #[serde(default)]
     pub allowance_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ListMode {
+    #[default]
+    Blocklist,
+    Allowlist,
+}
+
+impl fmt::Display for ListMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Blocklist => "blocklist",
+            Self::Allowlist => "allowlist",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -48,8 +48,7 @@ const FIREFOX_EXTENSION_STORE_URL: &str =
     "https://addons.mozilla.org/en-US/firefox/addon/blockuntu/";
 const CHROME_EXTENSION_STORE_URL: &str =
     "https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc";
-const LATEST_RELEASE_URL: &str =
-    "https://github.com/cstute1206/BlocKuntu/releases/latest";
+const LATEST_RELEASE_URL: &str = "https://github.com/cstute1206/BlocKuntu/releases/latest";
 const FIREFOX_COMMANDS: [&str; 2] = ["/usr/bin/firefox", "/bin/firefox"];
 const LIBREWOLF_COMMANDS: [&str; 3] = [
     "/usr/bin/librewolf",
@@ -548,10 +547,8 @@ fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
     let emergency_authorized = load_installation_serial()
         .ok()
         .is_some_and(|serial| emergency_uninstall_code_is_valid(candidate, &serial));
-    if !emergency_authorized {
-        if !uninstall_phrase_matches(candidate)? {
-            return Err(GuiError::InvalidUninstallPhrase);
-        }
+    if !emergency_authorized && !uninstall_phrase_matches(candidate)? {
+        return Err(GuiError::InvalidUninstallPhrase);
     }
 
     let package_manager =
@@ -583,10 +580,13 @@ fn uninstall_blockuntu(phrase: String) -> Result<UninstallResult, GuiError> {
 
     Ok(UninstallResult {
         status: "ok".to_string(),
-        detail:
-            "BlocKuntu package removal completed. Close this window after reviewing the result."
-                .to_string(),
+        detail: "BlocKuntu package removal completed. The GUI will now close.".to_string(),
     })
+}
+
+#[tauri::command]
+fn quit_blockuntu_gui(app: AppHandle<Wry>) {
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -1560,7 +1560,7 @@ fn chromium_policy_enforcement_check(
     let active_after_heartbeat = bool_field(policy, "active_after_heartbeat");
     let compliant = bool_field(policy, "compliant");
     let force_install = bool_field(policy, "force_install_configured");
-    let incognito_mode = string_field(policy, "incognito_mode").unwrap_or("policy_url_blocking");
+    let incognito_mode = string_field(policy, "incognito_mode").unwrap_or("manual_consent");
     let incognito_configured = policy
         .get("incognito_mode_configured")
         .and_then(Value::as_bool)
@@ -1891,7 +1891,7 @@ fn firefox_manifest_check(
     candidate: &Path,
     missing_detail: &str,
 ) -> HealthCheck {
-    match fs::read_to_string(&candidate) {
+    match fs::read_to_string(candidate) {
         Ok(contents) => {
             let parsed = serde_json::from_str::<Value>(&contents);
             let valid_json = parsed.is_ok();
@@ -2464,6 +2464,7 @@ pub fn run() {
             open_latest_release,
             recovery_credentials,
             uninstall_blockuntu,
+            quit_blockuntu_gui,
             system_health
         ])
         .run(tauri::generate_context!())

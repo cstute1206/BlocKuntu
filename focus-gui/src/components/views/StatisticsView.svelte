@@ -52,7 +52,7 @@
       <h2>Log file</h2>
     </div>
     <code class="log-path">{logSummary?.path ?? "/etc/blockuntu/blockuntu.log"}</code>
-    <p class="statistics-note">Detailed log entries are retained for {logSummary?.detail_retention_days ?? 30} days; the event totals below are all-time.</p>
+    <p class="statistics-note">Detailed log entries are retained for {logSummary?.detail_retention_days ?? 30} days. The event totals below are all-time.</p>
     <div class="event-mix-list">
       {#each eventCounts as bucket (bucket.kind)}
         <div class="event-mix-row">

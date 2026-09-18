@@ -2,7 +2,8 @@
   "manifest_version": 3,
   "name": "BlocKuntu",
   "version": "0.2.5",
-  "description": "System-enforced focus blocking for Linux through the local BlocKuntu daemon.",
+  "description": "Browser companion for BlocKuntu, the local Linux focus blocker.",
+  "homepage_url": "https://github.com/cstute1206/BlocKuntu",
   "icons": {
     "16": "icons/blockuntu-16.png",
     "32": "icons/blockuntu-32.png",

@@ -235,12 +235,10 @@ impl FirefoxPolicyManager {
             } else {
                 "policy matches expected hardened settings".to_string()
             }
+        } else if self.merge_with_existing {
+            "policy is missing or changes BlocKuntu's hardened settings".to_string()
         } else {
-            if self.merge_with_existing {
-                "policy is missing or changes BlocKuntu's hardened settings".to_string()
-            } else {
-                "policy differs from expected hardened settings".to_string()
-            }
+            "policy differs from expected hardened settings".to_string()
         };
 
         FirefoxPolicyStatus {

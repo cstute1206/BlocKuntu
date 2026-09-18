@@ -60,6 +60,8 @@
     chromiumIncognitoMode: ChromiumIncognitoMode;
     chromiumIncognitoDisableScope: ChromiumIncognitoDisableScope;
     chromiumIncognitoPrivateBrowsingDisabled: boolean;
+    chromiumIncognitoLockedByActiveAllowlist: boolean;
+    chromiumIncognitoSettingsChangeAllowed: boolean;
     chromiumIncognitoUrlBlockCount: number;
     chromiumIncognitoUnsupportedPatternCount: number;
     chromiumIncognitoUrlBlockLimitExceeded: boolean;
@@ -128,6 +130,8 @@
     chromiumIncognitoMode,
     chromiumIncognitoDisableScope,
     chromiumIncognitoPrivateBrowsingDisabled,
+    chromiumIncognitoLockedByActiveAllowlist,
+    chromiumIncognitoSettingsChangeAllowed,
     chromiumIncognitoUrlBlockCount,
     chromiumIncognitoUnsupportedPatternCount,
     chromiumIncognitoUrlBlockLimitExceeded,
@@ -389,7 +393,7 @@
             </div>
             {#if policyTransferMessage}<p class="result-text">{policyTransferMessage}</p>{/if}
             {#if policyTransferError}<p class="result-text danger-text">{policyTransferError}</p>{/if}
-            <p class="settings-note"><strong>Append keeps your current rules.</strong> Imported rules are added; when an imported rule has the same ID as an existing rule, the imported version replaces that rule. No rules are removed simply because they are absent from the imported file.</p>
+            <p class="settings-note"><strong>Append keeps your current rules.</strong> Imported rules are added. When an imported rule has the same ID as an existing rule, the imported version replaces that rule. No rules are removed simply because they are absent from the imported file.</p>
             <section class="settings-subsection">
               <div class="settings-subsection-header"><h4>Logging</h4><p>BlocKuntu keeps one unified diagnostic stream for enforcement and component-runtime events.</p></div>
               <div class="log-file-note">
@@ -411,18 +415,18 @@
                 <div class="status-row"><span>Available</span><small>{protectedAccessLabel}</small></div>
                 <div class="status-row"><span>Edit unlock</span><small>{protectionState}</small></div>
               </div>
-              <label class="preference-row"><span><strong>Protected settings access</strong><small>This one setting controls when Tier 1 edits and uninstall can be authorized, Tier 1 blocked browsers are active and Chromium private-browsing settings can be changed. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={requestProtectedAccessModeChange}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
-              <p class="settings-note">Tier 1 blocked browsers are currently {unsupportedBrowserBlockActive ? "active" : "inactive"}. Chromium private-browsing settings are currently {protectedAccessOpen ? "available to change" : "locked by the protected settings access window"}.</p>
-              <label class="preference-row"><span><strong>Chromium private browsing</strong><small>Choose how Chrome, Chromium, Brave, Opera, Edge and Vivaldi handle private windows. Manual consent is controlled by the browser and a user can revoke it; BlocKuntu cannot policy-force the extension toggle.</small></span><select value={chromiumIncognitoMode} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoMode((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoMode)}><option value="disabled">Disable private browsing</option><option value="manual_consent">Allow with manual extension consent</option><option value="policy_url_blocking">Block URLs by browser policy</option></select></label>
+              <label class="preference-row"><span><strong>Protected settings access</strong><small>This one setting controls when Tier 1 edits and uninstall can be authorized, Tier 1 blocked browsers are active and Chromium private-browsing settings can be changed. Chromium settings are additionally locked while a website allowlist is active. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={requestProtectedAccessModeChange}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
+              <p class="settings-note">Tier 1 blocked browsers are currently {unsupportedBrowserBlockActive ? "active" : "inactive"}. Chromium private-browsing settings are currently {chromiumIncognitoLockedByActiveAllowlist ? "locked because a website allowlist is active" : chromiumIncognitoSettingsChangeAllowed ? "available to change" : "locked by the protected settings access window"}.</p>
+              <label class="preference-row"><span><strong>Chromium private browsing</strong><small>Choose how Chrome, Chromium, Brave, Opera, Edge and Vivaldi handle private windows. Allowlist activation is not restricted by this setting, but private windows need extension access for allowlist enforcement.</small></span><select value={chromiumIncognitoMode} disabled={!chromiumIncognitoSettingsChangeAllowed} onchange={(event) => onUpdateChromiumIncognitoMode((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoMode)}><option value="disabled">Disable private browsing (recommended for full allowlist protection)</option><option value="manual_consent">Allow with manual extension consent</option><option value="policy_url_blocking">Block URLs by browser policy</option></select></label>
               {#if chromiumIncognitoMode === "disabled"}
-                <label class="preference-row"><span><strong>When to disable private browsing</strong><small>All the time is the default. The scoped option makes private browsing available outside every active schedule and Detox session.</small></span><select value={chromiumIncognitoDisableScope} disabled={!protectedAccessOpen} onchange={(event) => onUpdateChromiumIncognitoDisableScope((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoDisableScope)}><option value="all_time">All the time</option><option value="active_schedule_or_detox">Only during an active schedule or Detox</option></select></label>
+                <label class="preference-row"><span><strong>When to disable private browsing</strong><small>All the time is the default. The scoped option makes private browsing available outside every active schedule and Detox session.</small></span><select value={chromiumIncognitoDisableScope} disabled={!chromiumIncognitoSettingsChangeAllowed} onchange={(event) => onUpdateChromiumIncognitoDisableScope((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoDisableScope)}><option value="all_time">All the time</option><option value="active_schedule_or_detox">Only during an active schedule or Detox</option></select></label>
                 <p class="settings-note">{chromiumIncognitoPrivateBrowsingDisabled ? "Private windows are currently disabled through the browser policy." : "Private windows are currently available and will be disabled when a schedule or Detox becomes active."}</p>
               {:else if chromiumIncognitoMode === "manual_consent"}
-                <p class="settings-note">The extension can run in private windows only after the user enables the browser’s private/incognito extension toggle; that consent can be withdrawn by the user.</p>
+                <p class="settings-note">This is the default. Regular windows remain protected. Private windows are protected only after the user enables the browser’s private/incognito extension toggle. The user can withdraw that consent.</p>
               {:else if chromiumIncognitoUrlBlockLimitExceeded}
                 <p class="settings-note danger-text">Private URL blocking needs {chromiumIncognitoUrlBlockCount} active patterns, but Chromium policies support at most 1,000. The new policy was not applied.</p>
               {:else}
-                <p class="settings-note">{chromiumIncognitoUrlBlockCount} active Hard, Scheduled Block, or Controlled Access URL pattern(s) are written to the browser policy. Controlled Access rules are blocked here even while an allowance still has time. Full URL prefixes are included; URL contains and path-only patterns are not represented ({chromiumIncognitoUnsupportedPatternCount} omitted). This requires a browser version that supports the private URL-blocklist policy; verify it in the VM.</p>
+                <p class="settings-note">{chromiumIncognitoUrlBlockCount} active Hard, Scheduled Block, or Controlled Access blocklist pattern(s) are written to the browser policy. Allowlist activation remains available, but this policy cannot enforce allowlists in private windows. Controlled Access rules are blocked here even while an allowance still has time. Full URL prefixes are included. URL contains and path-only patterns are not represented ({chromiumIncognitoUnsupportedPatternCount} omitted). This requires a browser version that supports the private URL-blocklist policy. Verify it in the VM.</p>
               {/if}
               <div class="tier1-edit-form admin-action-form">
                 <label><span>Tier 1 edit key</span><input type="password" bind:value={tier1EditPhraseInput} autocomplete="current-password" placeholder="Enter the Tier 1 edit key" spellcheck="false" /></label>
@@ -436,6 +440,7 @@
                 <label><span>Uninstall phrase</span><input type="password" bind:value={uninstallPhraseInput} autocomplete="current-password" placeholder="Enter the uninstall phrase" spellcheck="false" /></label>
                 <button class="secondary danger-action" onclick={onRunUninstallBlockuntu} disabled={uninstallRunning || !canRunUninstall}><Trash2 size={17} aria-hidden="true" /><span>{uninstallRunning ? "Removing" : "Uninstall BlocKuntu"}</span></button>
               </div>
+              <p class="settings-note">Uninstalling BlocKuntu can take a little while. Please wait for the process to finish.</p>
               {#if uninstallPhraseError}<p class="result-text danger-text">{uninstallPhraseError}</p>{/if}
               {#if uninstallResult}<p class="result-text">{uninstallResult.detail}</p>{/if}
             </div>

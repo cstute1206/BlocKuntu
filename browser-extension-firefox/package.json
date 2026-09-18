@@ -10,7 +10,8 @@
     "verify": "npm run clean && npm run build && npm run check",
     "package:xpi": "node scripts/package-xpi.mjs",
     "package:amo": "npm run verify && node scripts/package-xpi.mjs",
-    "package:source": "node scripts/package-source.mjs"
+    "package:source": "node scripts/package-source.mjs",
+    "test": "npm run build && node --test ../Testing/unit/extensions.test.cjs"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

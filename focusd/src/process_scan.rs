@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,6 +11,11 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub pid: u32,
+    pub parent_pid: Option<u32>,
+    pub user_id: Option<u32>,
+    pub process_group_id: Option<u32>,
+    pub session_id: Option<u32>,
+    pub start_time_ticks: Option<u64>,
     pub executable_path: Option<PathBuf>,
     pub executable_basename: Option<String>,
     pub command_name: Option<String>,
@@ -173,9 +178,22 @@ pub fn scan_procfs(proc_root: &Path) -> Result<Vec<ProcessInfo>> {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         let desktop_id = desktop_id_from_process_dir(&process_dir);
+        let (parent_pid, process_group_id, session_id, start_time_ticks) =
+            fs::read_to_string(process_dir.join("stat"))
+                .ok()
+                .and_then(|value| process_relationships_from_stat(&value))
+                .unwrap_or((None, None, None, None));
+        let user_id = fs::read_to_string(process_dir.join("status"))
+            .ok()
+            .and_then(|value| real_user_id_from_status(&value));
 
         processes.push(ProcessInfo {
             pid,
+            parent_pid,
+            user_id,
+            process_group_id,
+            session_id,
+            start_time_ticks,
             executable_path,
             executable_basename,
             command_name,
@@ -185,6 +203,113 @@ pub fn scan_procfs(proc_root: &Path) -> Result<Vec<ProcessInfo>> {
     }
 
     Ok(processes)
+}
+
+pub fn application_allowlist_process_is_exempt(process: &ProcessInfo) -> bool {
+    if !process
+        .user_id
+        .is_some_and(|user_id| (1000..65534).contains(&user_id))
+    {
+        return true;
+    }
+
+    [
+        process.command_name.as_deref(),
+        process.executable_basename.as_deref(),
+        process.desktop_id.as_deref(),
+    ]
+    .iter()
+    .flatten()
+    .any(|value| {
+        let normalized = value.trim().to_ascii_lowercase();
+        normalized.starts_with("blockuntu")
+    })
+}
+
+pub fn application_allowlist_exempt_process_ids(processes: &[ProcessInfo]) -> HashSet<u32> {
+    let processes_by_pid = processes
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect::<HashMap<_, _>>();
+    let blockuntu_pids = processes
+        .iter()
+        .filter(|process| process_is_blockuntu_component(process))
+        .map(|process| process.pid)
+        .collect::<HashSet<_>>();
+
+    processes
+        .iter()
+        .filter(|process| {
+            application_allowlist_process_is_exempt(process)
+                || process_descends_from_any(process.pid, &blockuntu_pids, &processes_by_pid)
+        })
+        .map(|process| process.pid)
+        .collect()
+}
+
+fn process_is_blockuntu_component(process: &ProcessInfo) -> bool {
+    [
+        process.command_name.as_deref(),
+        process.executable_basename.as_deref(),
+        process.desktop_id.as_deref(),
+    ]
+    .iter()
+    .flatten()
+    .any(|value| value.trim().to_ascii_lowercase().starts_with("blockuntu"))
+}
+
+fn process_descends_from_any(
+    pid: u32,
+    ancestor_pids: &HashSet<u32>,
+    processes_by_pid: &HashMap<u32, &ProcessInfo>,
+) -> bool {
+    let mut current_pid = pid;
+    let mut visited = HashSet::new();
+    while visited.insert(current_pid) {
+        if ancestor_pids.contains(&current_pid) {
+            return true;
+        }
+        let Some(parent_pid) = processes_by_pid
+            .get(&current_pid)
+            .and_then(|process| process.parent_pid)
+        else {
+            return false;
+        };
+        if parent_pid == 0 || parent_pid == current_pid {
+            return false;
+        }
+        current_pid = parent_pid;
+    }
+    false
+}
+
+fn real_user_id_from_status(status: &str) -> Option<u32> {
+    status.lines().find_map(|line| {
+        line.strip_prefix("Uid:")?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    })
+}
+
+type ProcessRelationships = (Option<u32>, Option<u32>, Option<u32>, Option<u64>);
+
+fn process_relationships_from_stat(stat: &str) -> Option<ProcessRelationships> {
+    let end_of_name = stat.rfind(')')?;
+    let fields = stat
+        .get(end_of_name + 1..)?
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    if fields.len() <= 19 {
+        return None;
+    }
+    Some((
+        fields[1].parse().ok(),
+        fields[2].parse().ok(),
+        fields[3].parse().ok(),
+        fields[19].parse().ok(),
+    ))
 }
 
 pub fn attach_detected_window_titles(processes: &mut [ProcessInfo]) -> WindowTitleSnapshot {
@@ -212,13 +337,21 @@ pub fn kill_processes<K: ProcessKiller>(
     killer: &K,
 ) -> Result<Vec<ProcessKillEvent>> {
     let mut events = Vec::new();
-    for process in processes {
-        if !blocked_pids.contains(&process.pid) {
+    let processes_by_pid = processes
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect::<HashMap<_, _>>();
+    let mut handled_pids = HashSet::new();
+    for pid in blocked_pids {
+        if !handled_pids.insert(*pid) {
             continue;
         }
-        killer.kill(process.pid)?;
+        let Some(process) = processes_by_pid.get(pid) else {
+            continue;
+        };
+        killer.kill(*pid)?;
         events.push(ProcessKillEvent {
-            pid: process.pid,
+            pid: *pid,
             executable_path: process.executable_path.clone(),
             executable_basename: process.executable_basename.clone(),
             command_name: process.command_name.clone(),
@@ -560,12 +693,13 @@ fn merge_titles_into_processes(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::os::unix::fs::symlink;
 
     use focus_core::ProcessIdentity;
 
     use super::{
+        application_allowlist_exempt_process_ids, application_allowlist_process_is_exempt,
         attach_window_titles, kill_processes, parse_wmctrl_titles, scan_procfs,
         unsupported_browser_installation_for_process, ProcessInfo, ProcessKiller,
         WindowTitleProvider,
@@ -607,11 +741,20 @@ mod tests {
         symlink(&app_path, proc_dir.join("exe")).expect("exe symlink should create");
         std::fs::write(proc_dir.join("comm"), "blocked-app\n").expect("comm should write");
         std::fs::write(
+            proc_dir.join("stat"),
+            "1234 (blocked-app) S 1 1234 1234 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 99 0\n",
+        )
+        .expect("stat should write");
+        std::fs::write(
+            proc_dir.join("status"),
+            "Name:\tblocked-app\nUid:\t1000\t1000\t1000\t1000\n",
+        )
+        .expect("status should write");
+        std::fs::write(
             proc_dir.join("environ"),
             b"GIO_LAUNCHED_DESKTOP_FILE=/usr/share/applications/org.example.Blocked.desktop\0",
         )
         .expect("environ should write");
-
         let mut processes = scan_procfs(&temp.path().join("proc")).expect("proc scan should pass");
         attach_window_titles(
             &mut processes,
@@ -624,6 +767,11 @@ mod tests {
             processes,
             vec![ProcessInfo {
                 pid: 1234,
+                parent_pid: Some(1),
+                user_id: Some(1000),
+                process_group_id: Some(1234),
+                session_id: Some(1234),
+                start_time_ticks: Some(99),
                 executable_path: Some(app_path.clone()),
                 executable_basename: Some("blocked-app".to_string()),
                 command_name: Some("blocked-app".to_string()),
@@ -648,6 +796,65 @@ mod tests {
         assert_eq!(
             titles.get(&1234),
             Some(&vec!["KMines - 4 mines".to_string()])
+        );
+    }
+
+    #[test]
+    fn application_allowlist_exempts_only_system_accounts_and_blockuntu_processes() {
+        let processes = vec![
+            process_info(
+                10,
+                Some(1),
+                0,
+                "root-window",
+                Some("root-window.desktop"),
+                &["Root"],
+            ),
+            process_info(20, Some(1), 1000, "systemd", None, &[]),
+            process_info(
+                30,
+                Some(1),
+                1000,
+                "blockuntu-gui",
+                Some("io.github.blockuntu.desktop"),
+                &["BlocKuntu"],
+            ),
+            process_info(31, Some(30), 1000, "WebKitWebProcess", None, &[]),
+            process_info(40, Some(1), 1000, "dbus-broker", None, &[]),
+            process_info(50, Some(1), 1000, "xdg-desktop-portal", None, &[]),
+            process_info(60, Some(1), 1000, "pipewire", None, &[]),
+            process_info(70, Some(1), 1000, "chrome", None, &[]),
+            process_info(80, Some(10), 1000, "regular-user-child", None, &[]),
+        ];
+
+        assert_eq!(
+            processes
+                .iter()
+                .map(application_allowlist_process_is_exempt)
+                .collect::<Vec<_>>(),
+            vec![true, false, true, false, false, false, false, false, false]
+        );
+        assert_eq!(
+            application_allowlist_exempt_process_ids(&processes),
+            HashSet::from([10, 30, 31])
+        );
+    }
+
+    #[test]
+    fn kill_processes_honors_group_order_and_ignores_duplicate_pids() {
+        let processes = vec![
+            process_info(100, Some(1), 1000, "root", Some("app.desktop"), &[]),
+            process_info(101, Some(100), 1000, "helper", None, &[]),
+        ];
+        let killer = RecordingKiller::default();
+
+        let events = kill_processes(&processes, &[101, 100, 101], &killer)
+            .expect("group enforcement should pass");
+
+        assert_eq!(killer.killed.borrow().as_slice(), &[101, 100]);
+        assert_eq!(
+            events.iter().map(|event| event.pid).collect::<Vec<_>>(),
+            vec![101, 100]
         );
     }
 
@@ -697,5 +904,31 @@ mod tests {
             )),
             None
         );
+    }
+
+    fn process_info(
+        pid: u32,
+        parent_pid: Option<u32>,
+        user_id: u32,
+        name: &str,
+        desktop_id: Option<&str>,
+        window_titles: &[&str],
+    ) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            parent_pid,
+            user_id: Some(user_id),
+            process_group_id: Some(pid),
+            session_id: Some(user_id),
+            start_time_ticks: Some(u64::from(pid)),
+            executable_path: Some(format!("/usr/bin/{name}").into()),
+            executable_basename: Some(name.to_string()),
+            command_name: Some(name.to_string()),
+            desktop_id: desktop_id.map(ToOwned::to_owned),
+            window_titles: window_titles
+                .iter()
+                .map(|title| (*title).to_string())
+                .collect(),
+        }
     }
 }

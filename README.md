@@ -4,7 +4,7 @@ BlocKuntu is a local focus blocker for Debian and Ubuntu; support for other dist
 
 ## What it does
 
-- Blocks websites and applications through reusable lists.
+- Blocks websites and applications through reusable blocklists and Tier 2 or Tier 3 allowlists activated by schedules or Detox.
 - Supports schedules and time-limited Detox sessions.
 - Offers three policy tiers:
   - **Tier 1:** always blocked while enabled. Editing an active list requires a Tier 1 edit unlock.
