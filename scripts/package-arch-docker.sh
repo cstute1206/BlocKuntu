@@ -5,13 +5,14 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0"
+VERSION="0.2.0"
 RELEASE="1"
 OUTPUT_DIR="${REPO_ROOT}/target/arch"
 IMAGE_NAME="blockuntu-arch-builder:local"
 CONTAINER_NAME=""
 COPY_DIR=""
 BUILD_SUCCEEDED=false
+NETWORK_ARGS=()
 
 usage() {
   cat <<'USAGE'
@@ -27,10 +28,11 @@ passwordless sudo only within its own disposable filesystem so makepkg can
 install the PKGBUILD's declared dependencies.
 
 Options:
-  --version VERSION   Package version, default 0.1.0.
+  --version VERSION   Package version, default 0.2.0.
   --release RELEASE   Package release, default 1.
   --output-dir DIR    Output directory, default target/arch.
   --image IMAGE       Builder image tag, default blockuntu-arch-builder:local.
+  --network NETWORK   Optional Docker network for image and package builds.
   -h, --help          Show this help.
 USAGE
 }
@@ -78,6 +80,11 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
+    --network)
+      [[ $# -ge 2 ]] || die "--network requires a value"
+      NETWORK_ARGS=(--network "$2")
+      shift 2
+      ;;
     --image)
       [[ $# -ge 2 ]] || die "--image requires a value"
       IMAGE_NAME="$2"
@@ -123,9 +130,9 @@ SOURCE_ARCHIVE="${OUTPUT_DIR}/${PACKAGE_NAME}-${VERSION}-${RELEASE}-source.tar.g
 [[ -f "${SOURCE_ARCHIVE}" ]] || die "source archive was not created: ${SOURCE_ARCHIVE}"
 
 log "building the disposable Arch Linux builder image"
-docker build \
+docker build "${NETWORK_ARGS[@]}" \
   --pull \
-  --quiet \
+  --progress plain \
   --file "${REPO_ROOT}/packaging/arch/Dockerfile" \
   --tag "${IMAGE_NAME}" \
   "${REPO_ROOT}/packaging/arch"
@@ -133,12 +140,13 @@ docker build \
 CONTAINER_NAME="${PACKAGE_NAME}-arch-build-$$_${RANDOM}"
 CONTAINER_NAME="${CONTAINER_NAME/_/-}"
 log "creating an isolated Arch package build container"
-docker create \
+docker create "${NETWORK_ARGS[@]}" \
   --name "${CONTAINER_NAME}" \
   --mount "type=bind,source=${SOURCE_ARCHIVE},target=/input/source.tar.gz,readonly" \
   "${IMAGE_NAME}" \
   bash -lc '
     set -euo pipefail
+    cat /etc/os-release
     version="$1"
     release="$2"
     tar -xzf /input/source.tar.gz -C /work
@@ -149,8 +157,8 @@ docker create \
 log "building ${PACKAGE_NAME}-${VERSION}-${RELEASE} inside Arch Linux"
 docker start "${CONTAINER_NAME}" >/dev/null
 container_exit_code="$(docker wait "${CONTAINER_NAME}")"
+docker logs "${CONTAINER_NAME}" 2>&1
 if [[ "${container_exit_code}" != "0" ]]; then
-  docker logs --tail 200 "${CONTAINER_NAME}" >&2 || true
   die "the Arch container build failed with exit code ${container_exit_code}"
 fi
 

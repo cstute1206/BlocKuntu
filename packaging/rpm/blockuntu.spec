@@ -1,4 +1,4 @@
-%{!?blockuntu_version:%global blockuntu_version 0.1.0}
+%{!?blockuntu_version:%global blockuntu_version 0.2.0}
 %{!?blockuntu_release:%global blockuntu_release 1}
 # systemd-rpm-macros provides this on Fedora. Keep the Fedora location as a
 # fallback so a Fedora-targeted candidate can also be built on Ubuntu.
@@ -50,7 +50,7 @@ cargo build --manifest-path native-host/Cargo.toml --release --locked
 (
   cd focus-gui
   npm ci
-  BLOCKUNTU_BUILD_NUMBER="%{version}-%{release}" npm run tauri -- build --no-bundle
+  BLOCKUNTU_BUILD_NUMBER="%{version}-%{release}" npm run tauri -- build --no-bundle -- --locked
 )
 
 %install
@@ -63,12 +63,20 @@ install -Dpm 0755 focus-gui/src-tauri/target/release/blockuntu-gui \
 install -Dpm 0755 scripts/setup-confined-firefox-native-host.sh \
   %{buildroot}%{_libexecdir}/blockuntu/setup-confined-firefox-native-host.sh
 
+install -Dpm 0755 scripts/setup-confined-chromium-native-host.sh \
+  %{buildroot}%{_libexecdir}/blockuntu/setup-confined-chromium-native-host.sh
+
 install -d %{buildroot}%{_bindir}
 cat >%{buildroot}%{_bindir}/blockuntu-setup-confined-firefox <<'EOF'
 #!/bin/sh
 exec /usr/libexec/blockuntu/setup-confined-firefox-native-host.sh "$@"
 EOF
 chmod 0755 %{buildroot}%{_bindir}/blockuntu-setup-confined-firefox
+cat >%{buildroot}%{_bindir}/blockuntu-setup-confined-chromium <<'EOF'
+#!/bin/sh
+exec /usr/libexec/blockuntu/setup-confined-chromium-native-host.sh "$@"
+EOF
+chmod 0755 %{buildroot}%{_bindir}/blockuntu-setup-confined-chromium
 
 install -Dpm 0644 packaging/deb/blockuntu.toml \
   %{buildroot}%{_sysconfdir}/blockuntu/config.toml
@@ -99,7 +107,7 @@ chmod 0644 %{buildroot}%{_datadir}/applications/local.blockuntu.gui.desktop
 install -Dpm 0644 packaging/systemd/blockuntu.socket \
   %{buildroot}%{_unitdir}/blockuntu.socket
 sed \
-  's#ExecStart=/usr/local/bin/blockuntud serve#ExecStart=/usr/bin/blockuntud --defer-browser-policy-repair-until-heartbeat serve#' \
+  's#ExecStart=/usr/local/bin/blockuntud serve#ExecStart=/usr/bin/blockuntud --snap-native-bridge --defer-browser-policy-repair-until-heartbeat serve#' \
   packaging/systemd/blockuntu.service \
   >%{buildroot}%{_unitdir}/blockuntu.service
 install -pm 0644 packaging/systemd/blockuntu-watchdog.service \
@@ -201,6 +209,20 @@ create_recovery_credential() {
   rm -f "${temp_file}"
 }
 
+create_snap_native_bridge_token() {
+  token_file="/etc/blockuntu/snap-native-bridge-token"
+  if [ -s "${token_file}" ] && grep -Eq '^[0-9A-Fa-f]{64}$' "${token_file}"; then
+    return 0
+  fi
+  random_hex="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  temp_file="$(mktemp)"
+  printf '%s\n' "${random_hex}" >"${temp_file}"
+  install -d -o root -g root -m 0755 /etc/blockuntu
+  install -o root -g blockuntu -m 0640 "${temp_file}" "${token_file}"
+  rm -f "${temp_file}"
+}
+
+create_snap_native_bridge_token
 create_installation_serial
 if [ ! -e /var/lib/blockuntu/recovery-credentials-hidden ]; then
   create_recovery_credential /etc/blockuntu/uninstall-recovery.txt BLOCKUNTU-UNINSTALL-RECOVERY
@@ -379,12 +401,14 @@ if [ -d /run/systemd/system ] && /usr/bin/rpm -q blockuntu >/dev/null 2>&1; then
 fi
 
 %files
-%doc README.md Docs/INSTALLATION.md Docs/UNINSTALL.md
+%doc README.md
 %license LICENSE
 %{_bindir}/blockuntud
 %{_bindir}/blockuntu-native
 %{_bindir}/blockuntu-gui
 %{_bindir}/blockuntu-setup-confined-firefox
+%{_bindir}/blockuntu-setup-confined-chromium
+%{_libexecdir}/blockuntu/setup-confined-chromium-native-host.sh
 %{_libexecdir}/blockuntu/setup-confined-firefox-native-host.sh
 %config(noreplace) %{_sysconfdir}/blockuntu/config.toml
 %config(noreplace) %{_sysconfdir}/opt/chrome/native-messaging-hosts/blockuntu_native.json

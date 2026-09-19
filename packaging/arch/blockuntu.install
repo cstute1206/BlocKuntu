@@ -61,8 +61,22 @@ create_recovery_credential() {
   rm -f "${temp_file}"
 }
 
+create_snap_native_bridge_token() {
+  token_file="/etc/blockuntu/snap-native-bridge-token"
+  if [ -s "${token_file}" ] && grep -Eq '^[0-9A-Fa-f]{64}$' "${token_file}"; then
+    return 0
+  fi
+  random_hex="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  temp_file="$(mktemp)"
+  printf '%s\n' "${random_hex}" >"${temp_file}"
+  install -d -o root -g root -m 0755 /etc/blockuntu
+  install -o root -g blockuntu -m 0640 "${temp_file}" "${token_file}"
+  rm -f "${temp_file}"
+}
+
 create_or_preserve_recovery_state() {
   ensure_system_group || return 1
+  create_snap_native_bridge_token || return 1
   create_installation_serial || return 1
 
   if [ ! -e /var/lib/blockuntu/recovery-credentials-hidden ]; then
@@ -204,6 +218,10 @@ post_upgrade() {
 
 pre_remove() {
   authorize_settings_uninstall || return 1
+  policy_recovery='/etc/blockuntu/policy-recovery.toml'
+  if [ -e "${policy_recovery}" ] && command -v chattr >/dev/null 2>&1; then
+    chattr -i "${policy_recovery}" >/dev/null 2>&1 || true
+  fi
   remove_hosts_block
   remove_browser_policies
   allow_systemd_stop

@@ -4,7 +4,7 @@
 # source with an immutable signed/tagged source URL and its recorded checksum.
 
 pkgname=blockuntu
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Local Linux focus blocker with systemd and Native Messaging integration'
 arch=('x86_64')
@@ -61,7 +61,7 @@ build() {
   (
     cd focus-gui
     npm ci
-    BLOCKUNTU_BUILD_NUMBER="${pkgver}-${pkgrel}" npm run tauri -- build --no-bundle
+    BLOCKUNTU_BUILD_NUMBER="${pkgver}-${pkgrel}" npm run tauri -- build --no-bundle -- --locked
   )
 }
 
@@ -79,12 +79,20 @@ package() {
   install -Dm755 scripts/setup-confined-firefox-native-host.sh \
     "${pkgdir}/usr/lib/blockuntu/setup-confined-firefox-native-host.sh"
 
+  install -Dm755 scripts/setup-confined-chromium-native-host.sh \
+    "${pkgdir}/usr/lib/blockuntu/setup-confined-chromium-native-host.sh"
+
   install -d "${pkgdir}/usr/bin"
   cat >"${pkgdir}/usr/bin/blockuntu-setup-confined-firefox" <<'EOF'
 #!/usr/bin/bash
 exec /usr/lib/blockuntu/setup-confined-firefox-native-host.sh "$@"
 EOF
   chmod 0755 "${pkgdir}/usr/bin/blockuntu-setup-confined-firefox"
+  cat >"${pkgdir}/usr/bin/blockuntu-setup-confined-chromium" <<'EOF'
+#!/usr/bin/bash
+exec /usr/lib/blockuntu/setup-confined-chromium-native-host.sh "$@"
+EOF
+  chmod 0755 "${pkgdir}/usr/bin/blockuntu-setup-confined-chromium"
 
   install -Dm644 packaging/deb/blockuntu.toml \
     "${pkgdir}/etc/blockuntu/config.toml"
@@ -115,7 +123,7 @@ EOF
   install -Dm644 packaging/systemd/blockuntu.socket \
     "${pkgdir}/usr/lib/systemd/system/blockuntu.socket"
   sed \
-    's#ExecStart=/usr/local/bin/blockuntud serve#ExecStart=/usr/bin/blockuntud --defer-browser-policy-repair-until-heartbeat serve#' \
+    's#ExecStart=/usr/local/bin/blockuntud serve#ExecStart=/usr/bin/blockuntud --snap-native-bridge --defer-browser-policy-repair-until-heartbeat serve#' \
     packaging/systemd/blockuntu.service \
     >"${pkgdir}/usr/lib/systemd/system/blockuntu.service"
   install -m644 packaging/systemd/blockuntu-watchdog.service \
@@ -176,6 +184,4 @@ EOF
 
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
   install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
-  install -Dm644 Docs/INSTALLATION.md "${pkgdir}/usr/share/doc/${pkgname}/INSTALLATION.md"
-  install -Dm644 Docs/UNINSTALL.md "${pkgdir}/usr/share/doc/${pkgname}/UNINSTALL.md"
 }

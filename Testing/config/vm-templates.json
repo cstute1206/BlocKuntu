@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "templates": {
+    "ubuntu": {
+      "distribution": "Ubuntu",
+      "domain": "Ubuntu",
+      "package_format": "deb",
+      "clone_name_prefix": "blockuntu-test-ubuntu",
+      "immutable_base": true,
+      "libvirt_snapshot": null,
+      "guest_user": "akhi",
+      "transport": {
+        "kind": "ssh",
+        "port": 22,
+        "identity_profile": "default",
+        "address_discovery": {
+          "kind": "libvirt_dhcp_lease",
+          "network": "default"
+        }
+      },
+      "clone_identity": {
+        "requires_powered_off": true,
+        "operations": ["machine-id", "ssh-hostkeys"]
+      }
+    },
+    "fedora": {
+      "distribution": "Fedora",
+      "domain": "Fedora",
+      "package_format": "rpm",
+      "clone_name_prefix": "blockuntu-test-fedora",
+      "immutable_base": true,
+      "libvirt_snapshot": null,
+      "guest_user": "akhi",
+      "transport": {
+        "kind": "ssh",
+        "port": 22,
+        "identity_profile": "default",
+        "address_discovery": {
+          "kind": "libvirt_dhcp_lease",
+          "network": "default"
+        }
+      },
+      "clone_identity": {
+        "requires_powered_off": true,
+        "operations": ["machine-id", "ssh-hostkeys"]
+      }
+    },
+    "cachyos": {
+      "distribution": "CachyOS",
+      "domain": "CachyOS",
+      "package_format": "arch",
+      "clone_name_prefix": "blockuntu-test-cachyos",
+      "immutable_base": true,
+      "libvirt_snapshot": null,
+      "guest_user": "akhi",
+      "transport": {
+        "kind": "ssh",
+        "port": 22,
+        "identity_profile": "default",
+        "address_discovery": {
+          "kind": "libvirt_dhcp_lease",
+          "network": "default"
+        }
+      },
+      "clone_identity": {
+        "requires_powered_off": true,
+        "operations": ["machine-id", "ssh-hostkeys"]
+      }
+    }
+  }
+}

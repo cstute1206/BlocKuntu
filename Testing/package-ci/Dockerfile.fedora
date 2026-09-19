@@ -1,0 +1,7 @@
+FROM fedora:43
+RUN dnf install -y python3 git rpm-build rpmdevtools libarchive bsdtar \
+    cargo rust gcc gcc-c++ make nodejs npm openssl-devel \
+    libappindicator-gtk3-devel libxdo-devel librsvg2-devel gtk3-devel \
+    webkit2gtk4.1-devel systemd-rpm-macros findutils tar gzip which \
+    && dnf clean all
+WORKDIR /src

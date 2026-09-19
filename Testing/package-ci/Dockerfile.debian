@@ -1,0 +1,6 @@
+FROM rust:1.93.0-slim-trixie
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 git nodejs npm build-essential file pkg-config \
+    libayatana-appindicator3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src

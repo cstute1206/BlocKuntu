@@ -1,0 +1,103 @@
+name: Package validation
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inspector:
+    name: Package inspector regression tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: sudo apt-get update && sudo apt-get install --yes rpm libarchive-tools
+      - run: python3 Testing/scripts/test_package_ci.py
+
+  packages:
+    name: Package / ${{ matrix.target }} / x86-64
+    needs: inspector
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ubuntu, debian, fedora, arch]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        if: matrix.target == 'ubuntu'
+        with:
+          node-version: 22
+      - name: Ubuntu build dependencies
+        if: matrix.target == 'ubuntu'
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup default 1.93.0
+          sudo apt-get update
+          sudo apt-get install --yes build-essential file libayatana-appindicator3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev
+      - name: Build and inspect Ubuntu package
+        if: matrix.target == 'ubuntu'
+        run: python3 Testing/scripts/package-ci.py deb --output-dir Testing/results/package-ci/ubuntu
+      - name: Build Debian environment
+        if: matrix.target == 'debian'
+        run: docker build -f Testing/package-ci/Dockerfile.debian -t blockuntu-debian-ci Testing/package-ci
+      - name: Build and inspect Debian package
+        if: matrix.target == 'debian'
+        run: |
+          docker run --rm -e GITHUB_REF -v "$PWD:/src" blockuntu-debian-ci \
+            sh -c 'git config --global --add safe.directory /src && python3 Testing/scripts/package-ci.py deb --output-dir Testing/results/package-ci/debian'
+      - name: Build Fedora environment
+        if: matrix.target == 'fedora'
+        run: docker build -f Testing/package-ci/Dockerfile.fedora -t blockuntu-fedora-ci Testing/package-ci
+      - name: Build and inspect Fedora package
+        if: matrix.target == 'fedora'
+        run: |
+          docker run --rm -e GITHUB_REF -v "$PWD:/src" blockuntu-fedora-ci \
+            sh -c 'git config --global --add safe.directory /src && python3 Testing/scripts/package-ci.py rpm --output-dir Testing/results/package-ci/fedora'
+      - name: Arch inspection dependencies
+        if: matrix.target == 'arch'
+        run: sudo apt-get update && sudo apt-get install --yes libarchive-tools
+      - name: Build and inspect Arch package
+        if: matrix.target == 'arch'
+        run: python3 Testing/scripts/package-ci.py arch --output-dir Testing/results/package-ci/arch
+      - name: Preserve packages, checksums, and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.target }}-x86_64-${{ github.sha }}
+          path: Testing/results/package-ci/
+          if-no-files-found: warn
+          retention-days: 14
+
+  extensions:
+    name: Package / ${{ matrix.browser }} extension
+    needs: inspector
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, chrome]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: python3 Testing/scripts/package-ci.py ${{ matrix.browser }}
+      - name: Preserve extension archives and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-${{ matrix.browser }}-${{ github.sha }}
+          path: Testing/results/package-ci/
+          if-no-files-found: warn
+          retention-days: 14

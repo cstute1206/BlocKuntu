@@ -20,7 +20,7 @@ For detailed behavior, see [Features](Docs/FEATURES.md).
 Download the latest `.deb` package from the [latest BlocKuntu release](https://github.com/cstute1206/BlocKuntu/releases/latest), then run:
 
 ```bash
-sudo apt install ./blockuntu_0.1.1_amd64.deb
+sudo apt install ./blockuntu_0.2.0-1_amd64.deb
 sudo usermod -aG blockuntu "$USER"
 ```
 
