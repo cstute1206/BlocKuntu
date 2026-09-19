@@ -15,18 +15,13 @@ pub const CHROME_WEB_STORE_UPDATE_URL: &str = "https://clients2.google.com/servi
 /// Chromium deliberately keeps extension access to Incognito behind a user-consent
 /// toggle. The first two variants preserve that boundary; the third uses a browser
 /// URL policy rather than trying to override the toggle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChromiumIncognitoMode {
     Disabled,
+    #[default]
     ManualConsent,
     PolicyUrlBlocking,
-}
-
-impl Default for ChromiumIncognitoMode {
-    fn default() -> Self {
-        Self::PolicyUrlBlocking
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -484,6 +479,32 @@ mod tests {
     use serde_json::Value;
 
     use super::{ChromePolicyManager, ChromePolicyRepairStatus, ChromiumIncognitoMode};
+
+    #[test]
+    fn manual_consent_is_the_default_private_browsing_mode() {
+        assert_eq!(
+            ChromiumIncognitoMode::default(),
+            ChromiumIncognitoMode::ManualConsent
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let policy_path = temp.path().join("chrome/policies/managed/blockuntu.json");
+        let manager = ChromePolicyManager::new(&policy_path, "extension");
+        manager
+            .verify_and_repair_with(
+                ChromiumIncognitoMode::PolicyUrlBlocking,
+                &["blocked.example".to_string()],
+            )
+            .expect("old default policy should be written");
+        manager
+            .verify_and_repair()
+            .expect("manual consent default should replace the old policy");
+
+        let policy = std::fs::read_to_string(policy_path).expect("policy should exist");
+        let parsed: Value = serde_json::from_str(&policy).expect("policy should parse");
+        assert!(parsed.get("IncognitoModeAvailability").is_none());
+        assert!(parsed.get("IncognitoModeUrlBlocklist").is_none());
+    }
 
     #[test]
     fn repairs_missing_policy_for_the_chrome_web_store() {

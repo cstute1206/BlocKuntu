@@ -131,6 +131,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pr_data_004_recovery_manager_preserves_website_and_application_allowlist_modes() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = PolicyRecoveryManager::new(temp.path().join("policy.toml"), false);
+        let policy = Config::from_toml_str(
+            r#"
+            [[rules]]
+            id = "sites"
+            name = "Sites"
+            tier = "controlled_access"
+            mode = "allowlist"
+            patterns = [{ kind = "domain", value = "work.test", match_subdomains = true }]
+            [[app_rules]]
+            id = "apps"
+            name = "Apps"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            matchers = [{ kind = "command_name", value = "editor" }]
+        "#,
+        )
+        .unwrap();
+        manager.write(&policy).unwrap();
+        assert_eq!(manager.load().unwrap().unwrap(), policy);
+    }
+
+    #[test]
     fn recovery_snapshot_roundtrips_and_replaces_atomically() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let path = temp.path().join("policy-recovery.toml");

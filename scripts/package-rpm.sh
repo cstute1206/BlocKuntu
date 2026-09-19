@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0"
-RELEASE="18"
+VERSION="0.2.0"
+RELEASE="1"
 OUTPUT_DIR="${REPO_ROOT}/target/rpm"
 WORK_DIR=""
 IGNORE_BUILDREQUIRES=false
@@ -26,8 +26,8 @@ repository submission workflow: such a submission needs vendored/offline Rust
 and npm dependencies.
 
 Options:
-  --version VERSION   RPM version, default 0.1.0.
-  --release RELEASE   RPM release, default 18.
+  --version VERSION   RPM version, default 0.2.0.
+  --release RELEASE   RPM release, default 1.
   --output-dir DIR    Output directory, default target/rpm.
   --ignore-buildrequires
                       Build on a non-RPM host such as Ubuntu. This skips only

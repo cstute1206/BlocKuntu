@@ -7,7 +7,8 @@ use std::process::{Command, Output};
 
 use chrono::{DateTime, FixedOffset, Local};
 use focus_core::{
-    schedule_ids_are_active_at, Config, DetoxSession, RuleConfig, RulePatternKind, RuleTier,
+    schedule_ids_are_active_at, Config, DetoxSession, ListMode, RuleConfig, RulePatternKind,
+    RuleTier,
 };
 use serde::Serialize;
 
@@ -288,9 +289,11 @@ fn managed_domains(
 ) -> BTreeSet<String> {
     let mut domains = BTreeSet::new();
     for rule in config.rules.iter().filter(|rule| {
-        rule.tier == RuleTier::Hard
-            || (rule.tier == RuleTier::ScheduledBlock
-                && schedule_ids_are_active_at(&rule.schedule_ids, config, now, clock_tampered))
+        rule.enabled
+            && rule.mode == ListMode::Blocklist
+            && (rule.tier == RuleTier::Hard
+                || (rule.tier == RuleTier::ScheduledBlock
+                    && schedule_ids_are_active_at(&rule.schedule_ids, config, now, clock_tampered)))
     }) {
         add_rule_domains(&mut domains, rule);
     }
@@ -308,11 +311,12 @@ fn managed_domains_with_active_detox(
 
     for session in active_detox_sessions {
         for rule_id in &session.site_rule_ids {
-            if let Some(rule) = config
-                .rules
-                .iter()
-                .find(|rule| rule.id == *rule_id && rule.tier == RuleTier::ScheduledBlock)
-            {
+            if let Some(rule) = config.rules.iter().find(|rule| {
+                rule.id == *rule_id
+                    && rule.enabled
+                    && rule.mode == ListMode::Blocklist
+                    && rule.tier == RuleTier::ScheduledBlock
+            }) {
                 add_rule_domains(&mut domains, rule);
             }
         }
@@ -478,12 +482,12 @@ fn command_error(command: &str, args: &[&str], path: &Path, output: Output) -> s
         )
     };
 
-    std::io::Error::new(std::io::ErrorKind::Other, message)
+    std::io::Error::other(message)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{HostsImmutableState, HostsManager, HostsRepairStatus};
+    use super::{managed_domains, HostsImmutableState, HostsManager, HostsRepairStatus};
     use chrono::{TimeZone, Utc};
     use focus_core::{Config, DetoxSession};
 
@@ -498,6 +502,7 @@ mod tests {
             patterns = [
               { kind = "domain", value = "instagram.com", match_subdomains = true }
             ]
+
             "#,
         )
         .expect("config should parse");
@@ -522,6 +527,35 @@ mod tests {
                 .expect("second check should pass"),
             HostsRepairStatus::AlreadyCompliant
         );
+    }
+
+    #[test]
+    fn active_allowlists_never_add_their_entries_to_hosts() {
+        let config = Config::from_toml_str(
+            r#"
+            [[schedules]]
+            id = "work"
+            windows = [{ weekday = "mon", start = "09:00", end = "17:00" }]
+
+            [[rules]]
+            id = "allowed"
+            name = "Allowed"
+            tier = "scheduled_block"
+            mode = "allowlist"
+            schedule_ids = ["work"]
+            patterns = [
+              { kind = "domain", value = "allowed.example", match_subdomains = true }
+            ]
+            "#,
+        )
+        .expect("config should parse");
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 18, 10, 0, 0)
+            .single()
+            .expect("timestamp should be valid")
+            .fixed_offset();
+
+        assert!(managed_domains(&config, now, false).is_empty());
     }
 
     #[test]

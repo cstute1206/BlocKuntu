@@ -10,6 +10,7 @@ const reason = stringValue("kind") || params.get("reason") || "blocked";
 const message = stringValue("message") || params.get("message");
 const ruleName = stringValue("rule_name") || params.get("rule_name");
 const ruleId = stringValue("rule_id") || params.get("rule_id");
+const listMode = stringValue("list_mode");
 const tier = stringValue("tier") || params.get("tier");
 const blockedBy = stringValue("blocked_by") || params.get("blocked_by");
 const controlledReason = stringValue("controlled_reason") || params.get("controlled_reason");
@@ -34,6 +35,9 @@ if (tier) {
 }
 if (ruleName || ruleId) {
   addDetail("List", ruleName ? `${ruleName}${ruleId ? ` (${ruleId})` : ""}` : ruleId);
+}
+if (listMode) {
+  addDetail("List behavior", listMode === "allowlist" ? "Allow only listed websites" : "Block listed websites");
 }
 if (activeSchedules.length > 0) {
   addDetail("Schedule", scheduleText(activeSchedules));
@@ -111,6 +115,9 @@ function numberValue(key: string): number | null {
 }
 
 function reasonTitle(): string {
+  if (listMode === "allowlist") {
+    return "Allowlist restriction";
+  }
   if (reason === "detox") {
     return "Detox block";
   }
@@ -147,6 +154,9 @@ function summaryText(): string {
     return message;
   }
   if (ruleName) {
+    if (listMode === "allowlist") {
+      return `This navigation is not included in the allowlist "${ruleName}".`;
+    }
     return `This navigation matched the list "${ruleName}".`;
   }
   if (reason === "detox") {
@@ -196,6 +206,9 @@ function scheduleText(schedules: unknown[]): string {
 
 function technicalReason(): string {
   const parts = [reason];
+  if (listMode) {
+    parts.push(`list_mode=${listMode}`);
+  }
   if (controlledReason) {
     parts.push(controlledReason);
   }

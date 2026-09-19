@@ -1,65 +1,69 @@
-name: CI
+name: PR source validation
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  verify:
+  rust:
+    name: Source / Rust / ${{ matrix.component }}
     runs-on: ubuntu-24.04
-    env:
-      TZ: Europe/Berlin
-
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [core, daemon, native, tauri]
     steps:
       - uses: actions/checkout@v6
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.93.0
+      - name: Install Tauri Linux compile dependencies
+        if: matrix.component == 'tauri'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential file libayatana-appindicator3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev
+      - name: Validate source
+        run: python3 Testing/scripts/pr-ci.py ${{ matrix.component }}
+      - name: Preserve source-validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-${{ matrix.component }}
+          path: Testing/results/pr-ci/${{ matrix.component }}/
+          if-no-files-found: warn
+          retention-days: 14
 
+  frontend:
+    name: Source / Frontend / ${{ matrix.component }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [gui, firefox, chrome]
+    steps:
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-
-      - name: Set up Rust
-        run: rustup update stable && rustup default stable
-
-      - name: Install Tauri Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            build-essential \
-            file \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev
-
-      - name: Rust checks
-        run: |
-          cargo fmt --manifest-path focus-core/Cargo.toml --check
-          cargo test --manifest-path focus-core/Cargo.toml --all-targets
-          cargo fmt --manifest-path focusd/Cargo.toml --check
-          cargo test --manifest-path focusd/Cargo.toml --all-targets
-          cargo fmt --manifest-path native-host/Cargo.toml --check
-          cargo test --manifest-path native-host/Cargo.toml --all-targets
-
-      - name: GUI checks
-        working-directory: focus-gui
-        run: |
-          npm ci
-          npm run check
-          npm run build
-          cargo check --manifest-path src-tauri/Cargo.toml
-
-      - name: Firefox extension checks
-        working-directory: browser-extension-firefox
-        run: |
-          npm ci
-          npm run build
-          npm run check
-
-      - name: Chrome extension checks
-        working-directory: browser-extension-chrome
-        run: |
-          npm ci
-          npm run build
-          npm run check
+      - name: Validate source
+        run: python3 Testing/scripts/pr-ci.py ${{ matrix.component }} --install
+      - name: Preserve source-validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-${{ matrix.component }}
+          path: Testing/results/pr-ci/${{ matrix.component }}/
+          if-no-files-found: warn
+          retention-days: 14

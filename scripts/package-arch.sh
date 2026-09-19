@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PACKAGE_NAME="blockuntu"
-VERSION="0.1.0"
+VERSION="0.2.0"
 RELEASE="1"
 OUTPUT_DIR="${REPO_ROOT}/target/arch"
 SYNC_DEPS=true
@@ -26,7 +26,7 @@ Run this on Arch Linux as a normal user. makepkg may request authorization to
 install declared build dependencies; never run this script as root.
 
 Options:
-  --version VERSION   Package version, default 0.1.0.
+  --version VERSION   Package version, default 0.2.0.
   --release RELEASE   Package release, default 1.
   --output-dir DIR    Output directory, default target/arch.
   --source-only       Create a compact source archive instead of a package.

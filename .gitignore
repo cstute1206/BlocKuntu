@@ -64,3 +64,7 @@ Docs/Old
 
 # Local emergency-uninstall operator material
 /emergency-uninstall-tools/
+
+# Package CI retains large artifacts and reports locally; CI uploads them.
+/Testing/results/package-ci/
+**/__pycache__/

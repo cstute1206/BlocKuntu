@@ -1,0 +1,390 @@
+{
+  "PR-POL-001": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_pol_001_002_each_url_matcher_has_positive_and_near_miss_inputs"
+    ]
+  },
+  "PR-POL-002": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_pol_001_002_each_url_matcher_has_positive_and_near_miss_inputs"
+    ]
+  },
+  "PR-POL-003": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_pol_003_disabled_or_unattached_lists_are_inactive"
+    ]
+  },
+  "PR-POL-004": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "overnight_schedule_windows_remain_active_after_midnight",
+      "grouped_schedule_days_apply_as_single_windows",
+      "schedules_and_allowances_transition_between_allow_and_block"
+    ]
+  },
+  "PR-POL-005": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_pol_005_aal_005_detox_has_exact_absolute_start_and_end"
+    ]
+  },
+  "PR-POL-006": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_pol_006_all_three_tiers_obey_precedence_for_sites_and_apps"
+    ]
+  },
+  "PR-POL-007": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "overlapping_allowances_report_the_strictest_matching_rule",
+      "overlapping_allowance_visits_are_metered_against_the_strictest_rule"
+    ]
+  },
+  "PR-POL-008": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "site_allowances_charge_only_confirmed_time_inside_schedule_windows",
+      "stale_site_visits_stop_charging_at_the_last_heartbeat",
+      "site_allowances_reset_at_local_midnight",
+      "visit_lifecycle_records_start_heartbeat_and_end"
+    ]
+  },
+  "PR-POL-009": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_pol_009_aal_007_matchers_use_only_the_evaluated_process_fields"
+    ]
+  },
+  "PR-POL-010": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "clock_tamper_evaluation_fails_closed_for_time_sensitive_rules"
+    ]
+  },
+  "PR-WAL-001": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "unsupported_allowlist_combinations_are_rejected"
+    ]
+  },
+  "PR-WAL-002": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_wal_002_aal_002_empty_allowlists_are_rejected"
+    ]
+  },
+  "PR-WAL-003": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "tier2_website_allowlists_follow_schedules_and_detox"
+    ]
+  },
+  "PR-WAL-004": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "tier2_website_allowlists_follow_schedules_and_detox"
+    ]
+  },
+  "PR-WAL-005": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "tier2_website_allowlists_follow_schedules_and_detox"
+    ]
+  },
+  "PR-WAL-006": {
+    "file": "Testing/unit/extensions.test.cjs",
+    "tests": [
+      "PR-WAL-006 top-level HTTP(S) navigation boundary"
+    ]
+  },
+  "PR-WAL-007": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "active_tier2_website_allowlists_are_intersected_and_blocklists_still_win"
+    ]
+  },
+  "PR-WAL-008": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "active_tier2_website_allowlists_are_intersected_and_blocklists_still_win"
+    ]
+  },
+  "PR-WAL-009": {
+    "file": "focusd/src/hosts.rs",
+    "tests": [
+      "active_allowlists_never_add_their_entries_to_hosts"
+    ]
+  },
+  "PR-WAL-010": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "tier3_website_allowlists_meter_outside_sites_and_support_unlocks"
+    ]
+  },
+  "PR-WAL-011": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "tier3_website_allowlists_meter_outside_sites_and_support_unlocks"
+    ]
+  },
+  "PR-WAL-012": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_aal_009_010_017_wal_012_unlock_does_not_override_another_restriction"
+    ]
+  },
+  "PR-AAL-001": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "unsupported_allowlist_combinations_are_rejected"
+    ]
+  },
+  "PR-AAL-002": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_wal_002_aal_002_empty_allowlists_are_rejected"
+    ]
+  },
+  "PR-AAL-003": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "tier2_application_allowlists_invert_matching_only_while_active"
+    ]
+  },
+  "PR-AAL-004": {
+    "file": "focusd/src/app.rs",
+    "tests": [
+      "pr_aal_004_006_008_exemptions_and_independent_helpers_reach_recording_killer"
+    ]
+  },
+  "PR-AAL-006": {
+    "file": "focusd/src/app.rs",
+    "tests": [
+      "pr_aal_004_006_008_exemptions_and_independent_helpers_reach_recording_killer"
+    ]
+  },
+  "PR-AAL-008": {
+    "file": "focusd/src/app.rs",
+    "tests": [
+      "pr_aal_004_006_008_exemptions_and_independent_helpers_reach_recording_killer"
+    ]
+  },
+  "PR-AAL-005": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_pol_005_aal_005_detox_has_exact_absolute_start_and_end"
+    ]
+  },
+  "PR-AAL-007": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_pol_009_aal_007_matchers_use_only_the_evaluated_process_fields"
+    ]
+  },
+  "PR-AAL-009": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_aal_009_allowlists_require_the_intersection_of_process_identities"
+    ]
+  },
+  "PR-AAL-010": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_aal_009_010_017_wal_012_unlock_does_not_override_another_restriction"
+    ]
+  },
+  "PR-AAL-011": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "tier3_application_allowlists_meter_outside_apps_and_support_manual_unlock"
+    ],
+    "additional": [
+      {
+        "file": "focusd/src/app.rs",
+        "tests": [
+          "process_scan_sync_meters_tier3_application_allowlists_once_per_rule"
+        ]
+      }
+    ]
+  },
+  "PR-AAL-012": {
+    "file": "focusd/src/app.rs",
+    "tests": [
+      "process_scan_sync_meters_tier3_application_allowlists_once_per_rule"
+    ]
+  },
+  "PR-AAL-013": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_aal_013_014_metering_depends_on_process_identity_not_windows"
+    ]
+  },
+  "PR-AAL-014": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_aal_013_014_metering_depends_on_process_identity_not_windows"
+    ]
+  },
+  "PR-AAL-015": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_aal_015_016_018_detox_unlock_by_id_or_identity_expires_without_refilling"
+    ]
+  },
+  "PR-AAL-016": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_aal_016_rejects_strict_tiers_short_reused_reasons_and_hourly_quota",
+      "pr_aal_015_016_018_detox_unlock_by_id_or_identity_expires_without_refilling"
+    ]
+  },
+  "PR-AAL-017": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_aal_009_010_017_wal_012_unlock_does_not_override_another_restriction"
+    ]
+  },
+  "PR-AAL-018": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_aal_015_016_018_detox_unlock_by_id_or_identity_expires_without_refilling"
+    ],
+    "additional": [
+      {
+        "file": "focusd/src/app.rs",
+        "tests": [
+          "process_scan_sync_meters_tier3_application_allowlists_once_per_rule"
+        ]
+      }
+    ]
+  },
+  "PR-EDIT-001": {
+    "file": "focusd/src/rpc.rs",
+    "tests": [
+      "allows_additive_active_site_list_edits",
+      "allows_additive_active_app_rule_edits"
+    ]
+  },
+  "PR-EDIT-002": {
+    "file": "focusd/src/rpc.rs",
+    "tests": [
+      "rejects_active_site_list_edits",
+      "rejects_active_app_rule_edits"
+    ]
+  },
+  "PR-EDIT-003": {
+    "file": "focusd/src/rpc.rs",
+    "tests": [
+      "active_allowlist_can_only_be_made_more_restrictive",
+      "active_application_allowlist_can_only_remove_allowed_identities"
+    ]
+  },
+  "PR-EDIT-004": {
+    "file": "focusd/src/rpc.rs",
+    "tests": [
+      "active_allowlist_can_only_be_made_more_restrictive",
+      "active_application_allowlist_can_only_remove_allowed_identities",
+      "pr_edit_004_005_active_allowlist_fields_and_identity_modifications_are_rejected"
+    ]
+  },
+  "PR-EDIT-005": {
+    "file": "focusd/src/rpc.rs",
+    "tests": [
+      "pr_edit_004_005_active_allowlist_fields_and_identity_modifications_are_rejected",
+      "rejects_active_site_list_edits",
+      "rejects_active_app_rule_edits"
+    ]
+  },
+  "PR-DATA-001": {
+    "file": "focus-core/tests/focus_core.rs",
+    "tests": [
+      "policy_config_roundtrips_through_toml_export"
+    ]
+  },
+  "PR-DATA-002": {
+    "file": "focusd/src/rpc.rs",
+    "tests": [
+      "appends_policy_import_without_tier1_unlock"
+    ]
+  },
+  "PR-DATA-003": {
+    "file": "focusd/src/rpc.rs",
+    "tests": [
+      "skips_identical_policy_import_items",
+      "rejects_conflicting_policy_import_ids"
+    ]
+  },
+  "PR-DATA-004": {
+    "file": "focus-core/tests/pr_ci.rs",
+    "tests": [
+      "pr_data_004_both_allowlist_modes_survive_sqlite_and_recovery_toml"
+    ],
+    "additional": [
+      {
+        "file": "focusd/src/policy_recovery.rs",
+        "tests": [
+          "pr_data_004_recovery_manager_preserves_website_and_application_allowlist_modes"
+        ]
+      }
+    ]
+  },
+  "PR-HB-001": {
+    "file": "focusd/src/rpc.rs",
+    "tests": [
+      "reports_closed_and_starting_browser_states_without_an_error",
+      "reports_recent_extension_heartbeat_as_active",
+      "reports_stale_extension_heartbeat",
+      "reports_missing_extension_heartbeat"
+    ]
+  },
+  "PR-HB-002": {
+    "file": "focusd/src/app.rs",
+    "tests": [
+      "strict_mode_starts_a_new_heartbeat_grace_after_browser_closes_and_reopens",
+      "strict_mode_does_not_kill_new_browser_for_a_stale_previous_session_heartbeat"
+    ]
+  },
+  "PR-HB-003": {
+    "file": "focusd/src/rpc.rs",
+    "tests": [
+      "deferred_browser_policy_repair_waits_for_first_heartbeat"
+    ]
+  },
+  "PR-EXT-001": {
+    "file": "Testing/unit/extensions.test.cjs",
+    "tests": [
+      "PR-EXT-001 navigation and SPA events use the same policy decision",
+      "PR-EXT-001 existing-tab failures require count and elapsed grace; recovery resets failures",
+      "PR-EXT-001 heartbeat expiry fails closed and verified recovery restores health"
+    ]
+  },
+  "PR-EXT-002": {
+    "file": "Testing/unit/extensions.test.cjs",
+    "tests": [
+      "PR-EXT-002 actual blocked-page renderer distinguishes allowlist and blocklist"
+    ]
+  },
+  "PR-GUI-001": {
+    "file": "focus-gui/tests/allowlists.test.ts",
+    "tests": [
+      "PR-GUI-001 selecting application allowlist removes Tier 1 and preserves Tier 3",
+      "PR-GUI-001 website allowlist also disables Tier 1"
+    ]
+  },
+  "PR-GUI-002": {
+    "file": "focus-gui/tests/allowlists.test.ts",
+    "tests": [
+      "PR-GUI-002 allowlist warning precedes saving and can be cancelled"
+    ]
+  },
+  "PR-GUI-003": {
+    "file": "focus-gui/tests/allowlists.test.ts",
+    "tests": [
+      "PR-GUI-003 preferred identities use desktop, path, basename, then command"
+    ]
+  }
+}

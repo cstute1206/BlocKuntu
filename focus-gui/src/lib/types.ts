@@ -27,6 +27,7 @@ export interface Rule {
   name: string;
   tier: "hard" | "scheduled_block" | "controlled_access";
   enabled: boolean;
+  mode: "blocklist" | "allowlist";
   patterns: RulePattern[];
   schedule_ids: string[];
   allowance_id?: string | null;
@@ -48,6 +49,7 @@ export interface AppRule {
   name: string;
   tier: "hard" | "scheduled_block" | "controlled_access";
   enabled: boolean;
+  mode: "blocklist" | "allowlist";
   matchers: AppMatcher[];
   schedule_ids: string[];
   allowance_id?: string | null;
@@ -290,6 +292,7 @@ export interface Tier1EditStatus {
   chromium_incognito_disable_scope?: ChromiumIncognitoDisableScope;
   chromium_incognito_private_browsing_disabled?: boolean;
   chromium_incognito_change_access_mode?: ProtectedAccessMode;
+  chromium_incognito_locked_by_active_allowlist?: boolean;
   chromium_incognito_settings_change_allowed?: boolean;
   chromium_incognito_url_block_count?: number;
   chromium_incognito_unsupported_pattern_count?: number;

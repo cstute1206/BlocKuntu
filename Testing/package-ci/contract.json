@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "release": "1",
+  "previous_accepted_release": null,
+  "architecture": "x86_64",
+  "targets": {
+    "deb": {"architecture": "amd64", "unit_dir": "lib/systemd/system", "mozilla_lib": "usr/lib", "helper_dir": "usr/lib/blockuntu", "dependencies": ["systemd", "passwd", "e2fsprogs", "pkexec", "xdg-utils", "libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1", "librsvg2-2"]},
+    "rpm": {"architecture": "x86_64", "unit_dir": "usr/lib/systemd/system", "mozilla_lib": "usr/lib64", "helper_dir": "usr/libexec/blockuntu", "dependencies": ["systemd", "shadow-utils", "e2fsprogs", "polkit", "xdg-utils", "libayatana-appindicator-gtk3"]},
+    "arch": {"architecture": "x86_64", "unit_dir": "usr/lib/systemd/system", "mozilla_lib": "usr/lib", "helper_dir": "usr/lib/blockuntu", "dependencies": ["bash", "e2fsprogs", "glib2", "gtk3", "hicolor-icon-theme", "libappindicator-gtk3", "polkit", "sqlite", "systemd", "webkit2gtk-4.1", "xdg-utils"]}
+  },
+  "firefox_ids": ["blockuntu@example.local", "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}"],
+  "chrome_origins": ["chrome-extension://opfljaancedgklbpnbpjfhdbbhbfpnoc/"]
+}

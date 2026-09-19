@@ -49,6 +49,7 @@
     systemHealth,
     tier1EditStatus,
     uninstallBlockuntu,
+    quitBlockuntuGui,
     recoveryCredentials,
     hideRecoveryCredentials,
     unlockTier1Edit,
@@ -68,6 +69,7 @@
     clearFirstRunOverviewDismissed,
     defaultApplicationUiPreferences,
     detectedMatchersForRunningApp,
+    addAllDetectedAppMatchers,
     defaultAllowanceForRule,
     firstRunOverviewDismissed,
     formatError,
@@ -201,9 +203,11 @@
   let tier1EditCredentialConfigured = $state(false);
   let protectedAccessMode = $state<ProtectedAccessMode>("all_time");
   let unsupportedBrowserBlockActive = $state(false);
-  let chromiumIncognitoMode = $state<ChromiumIncognitoMode>("policy_url_blocking");
+  let chromiumIncognitoMode = $state<ChromiumIncognitoMode>("manual_consent");
   let chromiumIncognitoDisableScope = $state<ChromiumIncognitoDisableScope>("all_time");
   let chromiumIncognitoPrivateBrowsingDisabled = $state(false);
+  let chromiumIncognitoLockedByActiveAllowlist = $state(false);
+  let chromiumIncognitoSettingsChangeAllowed = $state(false);
   let chromiumIncognitoUrlBlockCount = $state(0);
   let chromiumIncognitoUnsupportedPatternCount = $state(0);
   let chromiumIncognitoUrlBlockLimitExceeded = $state(false);
@@ -521,11 +525,15 @@
       unsupportedBrowserBlockActive =
         tier1EditStatusResult.value.unsupported_browser_block_active ?? false;
       chromiumIncognitoMode =
-        tier1EditStatusResult.value.chromium_incognito_mode ?? "policy_url_blocking";
+        tier1EditStatusResult.value.chromium_incognito_mode ?? "manual_consent";
       chromiumIncognitoDisableScope =
         tier1EditStatusResult.value.chromium_incognito_disable_scope ?? "all_time";
       chromiumIncognitoPrivateBrowsingDisabled =
         tier1EditStatusResult.value.chromium_incognito_private_browsing_disabled ?? false;
+      chromiumIncognitoLockedByActiveAllowlist =
+        tier1EditStatusResult.value.chromium_incognito_locked_by_active_allowlist ?? false;
+      chromiumIncognitoSettingsChangeAllowed =
+        tier1EditStatusResult.value.chromium_incognito_settings_change_allowed ?? false;
       chromiumIncognitoUrlBlockCount =
         tier1EditStatusResult.value.chromium_incognito_url_block_count ?? 0;
       chromiumIncognitoUnsupportedPatternCount =
@@ -537,9 +545,11 @@
       protectedAccessOpenFromDaemon = null;
       protectedAccessLabelFromDaemon = null;
       unsupportedBrowserBlockActive = false;
-      chromiumIncognitoMode = "policy_url_blocking";
+      chromiumIncognitoMode = "manual_consent";
       chromiumIncognitoDisableScope = "all_time";
       chromiumIncognitoPrivateBrowsingDisabled = false;
+      chromiumIncognitoLockedByActiveAllowlist = false;
+      chromiumIncognitoSettingsChangeAllowed = false;
       chromiumIncognitoUrlBlockCount = 0;
       chromiumIncognitoUnsupportedPatternCount = 0;
       chromiumIncognitoUrlBlockLimitExceeded = false;
@@ -687,12 +697,23 @@
       name: savedRule.name,
       tier: savedRule.tier,
       enabled: savedRule.enabled,
+      mode: savedRule.mode,
       allowance_id: savedRule.allowance_id ?? null,
       schedule_ids: [...savedRule.schedule_ids],
-      patterns: [
-        ...savedRule.patterns.map((pattern) => ({ ...pattern })),
-        ...normalized.patterns.slice(savedRule.patterns.length)
-      ]
+      patterns:
+        savedRule.mode === "allowlist"
+          ? normalized.patterns.filter((pattern) =>
+              savedRule.patterns.some(
+                (savedPattern) =>
+                  savedPattern.kind === pattern.kind &&
+                  savedPattern.value === pattern.value &&
+                  savedPattern.match_subdomains === pattern.match_subdomains
+              )
+            )
+          : [
+              ...savedRule.patterns.map((pattern) => ({ ...pattern })),
+              ...normalized.patterns.slice(savedRule.patterns.length)
+            ]
     };
   }
 
@@ -709,12 +730,21 @@
       name: savedRule.name,
       tier: savedRule.tier,
       enabled: savedRule.enabled,
+      mode: savedRule.mode,
       allowance_id: savedRule.allowance_id ?? null,
       schedule_ids: [...savedRule.schedule_ids],
-      matchers: [
-        ...savedRule.matchers.map((matcher) => ({ ...matcher })),
-        ...normalized.matchers.slice(savedRule.matchers.length)
-      ]
+      matchers:
+        savedRule.mode === "allowlist"
+          ? normalized.matchers.filter((matcher) =>
+              savedRule.matchers.some(
+                (savedMatcher) =>
+                  savedMatcher.kind === matcher.kind && savedMatcher.value === matcher.value
+              )
+            )
+          : [
+              ...savedRule.matchers.map((matcher) => ({ ...matcher })),
+              ...normalized.matchers.slice(savedRule.matchers.length)
+            ]
     };
   }
 
@@ -975,6 +1005,7 @@
     try {
       uninstallResult = await uninstallBlockuntu(uninstallPhraseInput);
       clearFirstRunOverviewDismissed();
+      await quitBlockuntuGui();
     } catch (error) {
       uninstallPhraseError = formatError(error);
     } finally {
@@ -1054,6 +1085,7 @@
       name: `Website ${index}`,
       tier: "controlled_access",
       enabled: true,
+      mode: "blocklist",
       patterns: [{ kind: "domain", value: "", match_subdomains: true }],
       schedule_ids: [],
       allowance_id: null
@@ -1156,6 +1188,7 @@
       name: `Application ${index}`,
       tier: "hard",
       enabled: true,
+      mode: "blocklist",
       matchers: [{ kind: "command_name", value: "" }],
       schedule_ids: [],
       allowance_id: null
@@ -1180,9 +1213,23 @@
 
     appRuleDraft.matchers = mergeAppMatchers(
       appRuleDraft.matchers,
-      detectedMatchersForRunningApp(app)
+      detectedMatchersForRunningApp(app, appRuleDraft.mode)
     );
-    appRuleMessage = `Merged detected matchers from PID ${app.pid}.`;
+    appRuleMessage =
+      appRuleDraft.mode === "allowlist"
+        ? `Added ${app.display_name} to the allowlist.`
+        : `Merged detected matchers from PID ${app.pid}.`;
+  }
+
+  function addAllDetectedMatchersToDraft(): void {
+    if (!appRuleDraft) return;
+    const initialCount = appRuleDraft.matchers.filter((matcher) => matcher.value.trim().length > 0).length;
+    const matchers = addAllDetectedAppMatchers(appRuleDraft.matchers, runningApps, appRuleDraft.mode);
+    appRuleDraft.matchers = matchers;
+    const addedCount = matchers.length - initialCount;
+    appRuleMessage = addedCount
+      ? `Added ${addedCount} detected ${addedCount === 1 ? "process identity" : "process identities"}.`
+      : "All detected process identities are already included.";
   }
 
   async function saveAppRuleDraft(): Promise<void> {
@@ -1499,6 +1546,7 @@
         onSelectAppRule={selectAppRule}
         onStartNewAppRule={startNewAppRule}
         onAddDetectedMatchers={addDetectedMatchersToDraft}
+        onAddAllDetectedMatchers={addAllDetectedMatchersToDraft}
         onRefreshRunningApps={() => refreshRunningApps()}
         onSaveAppRuleDraft={saveAppRuleDraft}
         onRemoveAppRuleDraft={removeAppRuleDraft}
@@ -1571,6 +1619,8 @@
         {chromiumIncognitoMode}
         {chromiumIncognitoDisableScope}
         {chromiumIncognitoPrivateBrowsingDisabled}
+        {chromiumIncognitoLockedByActiveAllowlist}
+        {chromiumIncognitoSettingsChangeAllowed}
         {chromiumIncognitoUrlBlockCount}
         {chromiumIncognitoUnsupportedPatternCount}
         {chromiumIncognitoUrlBlockLimitExceeded}

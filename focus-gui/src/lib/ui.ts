@@ -55,7 +55,7 @@ export const patternKinds: Array<{
   {
     id: "domain",
     label: "Domain",
-    help: "Example: youtube.com. Matches that domain; enable Subdomains to also match www.youtube.com and music.youtube.com."
+    help: "Example: youtube.com. Matches that domain. Enable Subdomains to also match www.youtube.com and music.youtube.com."
   },
   {
     id: "exact_url",
@@ -194,6 +194,7 @@ export function normalizeAppRuleDraft(rule: AppRule): AppRule {
     id: rule.id.trim(),
     name: rule.name.trim(),
     enabled: true,
+    mode: rule.mode,
     allowance_id:
       rule.tier === "controlled_access" && rule.allowance_id ? rule.allowance_id.trim() : null,
     matchers: rule.matchers
@@ -203,7 +204,23 @@ export function normalizeAppRuleDraft(rule: AppRule): AppRule {
   };
 }
 
-export function detectedMatchersForRunningApp(app: RunningApp): AppMatcher[] {
+export function detectedMatchersForRunningApp(
+  app: RunningApp,
+  mode: AppRule["mode"] = "blocklist"
+): AppMatcher[] {
+  if (mode === "allowlist") {
+    const preferred = app.desktop_id
+      ? { kind: "desktop_id" as const, value: app.desktop_id }
+      : app.executable_path
+        ? { kind: "executable_path" as const, value: app.executable_path }
+        : app.executable_basename
+          ? { kind: "executable_basename" as const, value: app.executable_basename }
+          : app.command_name
+            ? { kind: "command_name" as const, value: app.command_name }
+            : null;
+    return preferred ? [preferred] : [];
+  }
+
   const candidates: Array<AppMatcher | null> = [
     app.command_name ? { kind: "command_name", value: app.command_name } : null,
     app.executable_basename ? { kind: "executable_basename", value: app.executable_basename } : null,
@@ -212,6 +229,15 @@ export function detectedMatchersForRunningApp(app: RunningApp): AppMatcher[] {
   ];
 
   return dedupeAppMatchers(candidates.filter((matcher): matcher is AppMatcher => matcher !== null));
+}
+
+export function addAllDetectedAppMatchers(
+  existing: AppMatcher[], apps: RunningApp[], mode: AppRule["mode"]
+): AppMatcher[] {
+  return apps.reduce(
+    (matchers, app) => mergeAppMatchers(matchers, detectedMatchersForRunningApp(app, mode)),
+    existing.filter((matcher) => matcher.value.trim().length > 0)
+  );
 }
 
 export function mergeAppMatchers(existing: AppMatcher[], incoming: AppMatcher[]): AppMatcher[] {
@@ -243,6 +269,7 @@ export function normalizeScheduleDraft(schedule: Schedule): Schedule {
 }
 
 export function ruleIsActive(rule: Rule, schedules: Schedule[]): boolean {
+  if (!rule.enabled) return false;
   if (rule.tier === "hard") return true;
   if (rule.schedule_ids.length === 0) return false;
 
@@ -253,6 +280,7 @@ export function ruleIsActive(rule: Rule, schedules: Schedule[]): boolean {
 }
 
 export function appRuleIsActive(rule: AppRule, schedules: Schedule[]): boolean {
+  if (!rule.enabled) return false;
   if (rule.tier === "hard") return true;
   if (rule.schedule_ids.length === 0) return false;
 

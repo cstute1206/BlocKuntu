@@ -6,7 +6,7 @@ https://github.com/user-attachments/assets/4178a567-3bb1-4f56-9f0b-6fb59eb27bc4
 
 ## What it does
 
-- Blocks websites and applications through reusable lists.
+- Blocks websites and applications through reusable blocklists and Tier 2 or Tier 3 allowlists activated by schedules or Detox.
 - Supports schedules and time-limited Detox sessions.
 - Offers three policy tiers:
   - **Tier 1:** always blocked while enabled. Editing an active list requires a Tier 1 edit unlock.
@@ -22,7 +22,7 @@ For detailed behavior, see [Features](Docs/FEATURES.md).
 Download the latest `.deb` package from the [latest BlocKuntu release](https://github.com/cstute1206/BlocKuntu/releases/latest), then run:
 
 ```bash
-sudo apt install ./blockuntu_0.1.1_amd64.deb
+sudo apt install ./blockuntu_0.2.0-1_amd64.deb
 sudo usermod -aG blockuntu "$USER"
 ```
 

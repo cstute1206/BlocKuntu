@@ -4,8 +4,8 @@ use url::Url;
 use crate::{
     AllowanceStatus, AppMatcherConfig, AppMatcherKind, AppRuleConfig, BlockReason, Config,
     ControlledBlockReason, Database, Decision, DetoxSession, DetoxTargetKind, Error,
-    EvaluationContext, ProcessIdentity, RuleConfig, RulePatternConfig, RulePatternKind, RuleTier,
-    ScheduleConfig, UnlockError, UnlockState, VisitState, Weekday,
+    EvaluationContext, ListMode, ProcessIdentity, RuleConfig, RulePatternConfig, RulePatternKind,
+    RuleTier, ScheduleConfig, UnlockError, UnlockState, VisitState, Weekday,
 };
 
 const TIER_3_UNLOCK_MINUTES: u32 = 2;
@@ -57,7 +57,7 @@ impl<'a> PolicyEngine<'a> {
             }
         };
 
-        for rule in self.matching_rules(&parsed, RuleTier::Hard) {
+        if let Some(rule) = self.matching_rules(&parsed, RuleTier::Hard).next() {
             return Decision::Block(BlockReason::HardBlock {
                 rule_id: rule.id.clone(),
                 rule_name: rule.name.clone(),
@@ -110,7 +110,7 @@ impl<'a> PolicyEngine<'a> {
         process: &ProcessIdentity,
         context: &EvaluationContext<'_>,
     ) -> Decision {
-        for rule in self.matching_app_rules(process, RuleTier::Hard) {
+        if let Some(rule) = self.matching_app_rules(process, RuleTier::Hard).next() {
             return Decision::Block(BlockReason::HardBlock {
                 rule_id: rule.id.clone(),
                 rule_name: rule.name.clone(),
@@ -471,7 +471,12 @@ impl<'a> PolicyEngine<'a> {
         target: &str,
         context: &EvaluationContext<'_>,
     ) -> Result<ResolvedUnlockRule, Error> {
-        if let Some(rule) = self.config.app_rules.iter().find(|rule| rule.id == target) {
+        if let Some(rule) = self
+            .config
+            .app_rules
+            .iter()
+            .find(|rule| rule.enabled && rule.id == target)
+        {
             let active = match rule.tier {
                 RuleTier::Hard => true,
                 RuleTier::ScheduledBlock => self.app_rule_is_active(rule, context),
@@ -484,7 +489,7 @@ impl<'a> PolicyEngine<'a> {
 
         if let Some(parsed) = normalize_unlock_url_target(target) {
             let unlock_target = parsed.url_without_fragment.clone();
-            for rule in self.matching_rules(&parsed, RuleTier::Hard) {
+            if let Some(rule) = self.matching_rules(&parsed, RuleTier::Hard).next() {
                 return Err(UnlockError::TargetIsHardBlocked {
                     rule_id: rule.id.clone(),
                 }
@@ -508,12 +513,9 @@ impl<'a> PolicyEngine<'a> {
             }
         }
 
-        if let Some(rule) = self
-            .config
-            .app_rules
-            .iter()
-            .find(|rule| rule.tier == RuleTier::Hard && app_rule_target_matches(rule, target))
-        {
+        if let Some(rule) = self.config.app_rules.iter().find(|rule| {
+            rule.enabled && rule.tier == RuleTier::Hard && app_rule_target_matches(rule, target)
+        }) {
             return Err(UnlockError::TargetIsHardBlocked {
                 rule_id: rule.id.clone(),
             }
@@ -521,7 +523,8 @@ impl<'a> PolicyEngine<'a> {
         }
 
         if let Some(rule) = self.config.app_rules.iter().find(|rule| {
-            rule.tier == RuleTier::ScheduledBlock
+            rule.enabled
+                && rule.tier == RuleTier::ScheduledBlock
                 && self.app_rule_is_active(rule, context)
                 && app_rule_target_matches(rule, target)
         }) {
@@ -535,7 +538,7 @@ impl<'a> PolicyEngine<'a> {
             .config
             .app_rules
             .iter()
-            .filter(|rule| rule.tier == RuleTier::ControlledAccess)
+            .filter(|rule| rule.enabled && rule.tier == RuleTier::ControlledAccess)
         {
             if app_rule_target_matches(rule, target)
                 && self.controlled_app_rule_is_active(rule, context)?
@@ -576,7 +579,7 @@ impl<'a> PolicyEngine<'a> {
             .config
             .app_rules
             .iter()
-            .filter(|rule| rule.tier == RuleTier::ScheduledBlock)
+            .filter(|rule| rule.enabled && rule.tier == RuleTier::ScheduledBlock)
             .filter(|rule| rule.id == target || app_rule_target_matches(rule, target))
             .map(|rule| rule.id.as_str())
             .collect();
@@ -718,11 +721,7 @@ impl<'a> PolicyEngine<'a> {
                     Ok(parsed) => parsed,
                     Err(_) => continue,
                 };
-                if !rule
-                    .patterns
-                    .iter()
-                    .any(|pattern| pattern_matches(pattern, &parsed))
-                {
+                if !site_rule_applies(rule, &parsed) {
                     continue;
                 }
             }
@@ -866,14 +865,10 @@ impl<'a> PolicyEngine<'a> {
         let mut block: Option<(&DetoxSession, &RuleConfig)> = None;
 
         for rule in &self.config.rules {
-            if rule.tier != RuleTier::ScheduledBlock {
+            if !rule.enabled || rule.tier != RuleTier::ScheduledBlock {
                 continue;
             }
-            if !rule
-                .patterns
-                .iter()
-                .any(|pattern| pattern_matches(pattern, parsed))
-            {
+            if !site_rule_applies(rule, parsed) {
                 continue;
             }
 
@@ -924,14 +919,10 @@ impl<'a> PolicyEngine<'a> {
         let mut block: Option<(&DetoxSession, &AppRuleConfig)> = None;
 
         for rule in &self.config.app_rules {
-            if rule.tier != RuleTier::ScheduledBlock {
+            if !rule.enabled || rule.tier != RuleTier::ScheduledBlock {
                 continue;
             }
-            if !rule
-                .matchers
-                .iter()
-                .any(|matcher| app_matcher_matches(matcher, process))
-            {
+            if !app_rule_applies(rule, process) {
                 continue;
             }
 
@@ -977,12 +968,8 @@ impl<'a> PolicyEngine<'a> {
         self.config
             .rules
             .iter()
-            .filter(move |rule| rule.tier == tier)
-            .filter(move |rule| {
-                rule.patterns
-                    .iter()
-                    .any(|pattern| pattern_matches(pattern, parsed))
-            })
+            .filter(move |rule| rule.enabled && rule.tier == tier)
+            .filter(move |rule| site_rule_applies(rule, parsed))
     }
 
     fn matching_app_rules<'b>(
@@ -993,15 +980,14 @@ impl<'a> PolicyEngine<'a> {
         self.config
             .app_rules
             .iter()
-            .filter(move |rule| rule.tier == tier)
-            .filter(move |rule| {
-                rule.matchers
-                    .iter()
-                    .any(|matcher| app_matcher_matches(matcher, process))
-            })
+            .filter(move |rule| rule.enabled && rule.tier == tier)
+            .filter(move |rule| app_rule_applies(rule, process))
     }
 
     fn rule_is_active(&self, rule: &RuleConfig, context: &EvaluationContext<'_>) -> bool {
+        if !rule.enabled {
+            return false;
+        }
         match rule.tier {
             RuleTier::Hard => true,
             RuleTier::ScheduledBlock | RuleTier::ControlledAccess => {
@@ -1011,6 +997,9 @@ impl<'a> PolicyEngine<'a> {
     }
 
     fn app_rule_is_active(&self, rule: &AppRuleConfig, context: &EvaluationContext<'_>) -> bool {
+        if !rule.enabled {
+            return false;
+        }
         match rule.tier {
             RuleTier::Hard => true,
             RuleTier::ScheduledBlock | RuleTier::ControlledAccess => {
@@ -1024,10 +1013,11 @@ impl<'a> PolicyEngine<'a> {
         rule: &RuleConfig,
         context: &EvaluationContext<'_>,
     ) -> Result<bool, Error> {
-        Ok(self.rule_is_active(rule, context)
-            || active_detox_sessions(self.database, context)?
-                .iter()
-                .any(|session| session.site_rule_ids.iter().any(|id| id == &rule.id)))
+        Ok(rule.enabled
+            && (self.rule_is_active(rule, context)
+                || active_detox_sessions(self.database, context)?
+                    .iter()
+                    .any(|session| session.site_rule_ids.iter().any(|id| id == &rule.id))))
     }
 
     fn controlled_app_rule_is_active(
@@ -1035,10 +1025,11 @@ impl<'a> PolicyEngine<'a> {
         rule: &AppRuleConfig,
         context: &EvaluationContext<'_>,
     ) -> Result<bool, Error> {
-        Ok(self.app_rule_is_active(rule, context)
-            || active_detox_sessions(self.database, context)?
-                .iter()
-                .any(|session| session.app_rule_ids.iter().any(|id| id == &rule.id)))
+        Ok(rule.enabled
+            && (self.app_rule_is_active(rule, context)
+                || active_detox_sessions(self.database, context)?
+                    .iter()
+                    .any(|session| session.app_rule_ids.iter().any(|id| id == &rule.id))))
     }
 
     fn schedule_ids_are_active(
@@ -1159,9 +1150,25 @@ fn active_detox_sessions(
 }
 
 fn app_rule_target_matches(rule: &AppRuleConfig, target: &str) -> bool {
-    rule.matchers
+    let member = rule
+        .matchers
         .iter()
-        .any(|matcher| app_matcher_value_matches(matcher.kind, &matcher.value, target))
+        .any(|matcher| app_matcher_value_matches(matcher.kind, &matcher.value, target));
+    match rule.mode {
+        ListMode::Blocklist => member,
+        ListMode::Allowlist => !member,
+    }
+}
+
+fn app_rule_applies(rule: &AppRuleConfig, process: &ProcessIdentity) -> bool {
+    let member = rule
+        .matchers
+        .iter()
+        .any(|matcher| app_matcher_matches(matcher, process));
+    match rule.mode {
+        ListMode::Blocklist => member,
+        ListMode::Allowlist => !member,
+    }
 }
 
 fn app_matcher_matches(matcher: &AppMatcherConfig, process: &ProcessIdentity) -> bool {
@@ -1268,6 +1275,17 @@ fn pattern_matches(pattern: &RulePatternConfig, parsed: &NormalizedUrl) -> bool 
             .to_ascii_lowercase()
             .contains(&pattern.value.to_ascii_lowercase()),
         RulePatternKind::PathPrefix => path_prefix_matches(&pattern.value, parsed),
+    }
+}
+
+fn site_rule_applies(rule: &RuleConfig, parsed: &NormalizedUrl) -> bool {
+    let member = rule
+        .patterns
+        .iter()
+        .any(|pattern| pattern_matches(pattern, parsed));
+    match rule.mode {
+        ListMode::Blocklist => member,
+        ListMode::Allowlist => !member,
     }
 }
 

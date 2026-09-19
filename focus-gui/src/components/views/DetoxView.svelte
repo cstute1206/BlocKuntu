@@ -67,12 +67,8 @@
     { label: "Weeks", value: "weeks" }
   ];
 
-  let detoxSiteRules = $derived(
-    config?.rules.filter((rule) => rule.tier !== "hard") ?? []
-  );
-  let detoxAppRules = $derived(
-    config?.app_rules.filter((rule) => rule.tier !== "hard") ?? []
-  );
+  let detoxSiteRules = $derived(config?.rules.filter((rule) => rule.tier !== "hard") ?? []);
+  let detoxAppRules = $derived(config?.app_rules.filter((rule) => rule.tier !== "hard") ?? []);
   let activeSessions = $derived(
     detoxSessions.filter(
       (session) =>
@@ -122,7 +118,8 @@
 
   function ruleLabel(rule: Rule | AppRule): string {
     const tier = rule.tier === "scheduled_block" ? "Tier 2" : "Tier 3";
-    return `${rule.name || rule.id} (${tier})`;
+    const mode = rule.mode === "allowlist" ? " · Allowlist" : "";
+    return `${rule.name || rule.id} (${tier}${mode})`;
   }
 
   function sessionTitle(session: DetoxSession): string {
