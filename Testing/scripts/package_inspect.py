@@ -233,6 +233,9 @@ def inspect_package(entries, meta, hooks, kind):
         require('systemctl enable --now blockuntu.socket blockuntu.service blockuntu-watchdog.service blockuntu-hosts.path' in all_hooks, 'Recovery units not enabled by hook contract')
         require('Restart=always' in text(units + '/blockuntu-watchdog.service'), 'Missing watchdog restart')
         require('PathChanged=/etc/hosts' in text(units + '/blockuntu-hosts.path'), 'Missing hosts watch')
+        path_unit = text(units + '/blockuntu-hosts.path')
+        require(not re.search(r'^\s*After\s*=.*\bblockuntu\.service(?:\s|$)', path_unit, re.M),
+                'Hosts watcher must not order after the daemon: default path dependencies create a boot cycle')
     case('PKG-HARD-002', recovery_units)
 
     def credentials():
