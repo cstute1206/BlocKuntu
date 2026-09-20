@@ -3,7 +3,8 @@ Description=Watch /etc/hosts for BlocKuntu managed block repairs
 Documentation=man:systemd.path(5)
 BindsTo=blockuntu.service
 Wants=blockuntu.service
-After=blockuntu.service
+# Path units must start before paths.target/basic.target. The repair service
+# orders its work after the daemon; ordering the watcher there creates a cycle.
 StartLimitIntervalSec=0
 
 [Path]

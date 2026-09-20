@@ -96,6 +96,12 @@ class PackageTests(unittest.TestCase):
         self.assert_case_fails('PKG-CONTENT-006', entries=entries)
         self.assert_case_fails('PKG-HARD-002', entries=entries)
 
+    def test_hosts_watcher_boot_order_cycle(self):
+        entries = copy.deepcopy(self.entries)
+        entries['lib/systemd/system/blockuntu-hosts.path']['data'] = entries[
+            'lib/systemd/system/blockuntu-hosts.path']['data'].replace(b'[Unit]', b'[Unit]\nAfter=blockuntu.service')
+        self.assert_case_fails('PKG-HARD-002', entries=entries)
+
     def test_bad_metadata(self):
         for key, value, case in [('version', '0.1.0-26', 'PKG-META-001'), ('architecture', 'arm64', 'PKG-META-002'), ('dependencies', [], 'PKG-META-002')]:
             meta = copy.deepcopy(self.meta)
