@@ -21,6 +21,10 @@ Generated binaries are written under `Testing/artifacts/fixtures/bin/` and are
 ignored by Git. Build them on the guest distribution, or on a compatible build
 environment, before running process enforcement tests.
 
+Layer 3 uploads copies named `bk-test-*` (also supported by the fixture) because
+BlocKuntu exempts executable names beginning with `blockuntu` from enforcement.
+The original names remain suitable for the Phase 0 infrastructure checks only.
+
 Example:
 
 ```bash

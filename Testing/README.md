@@ -16,6 +16,7 @@ implementation order, the test layers, and the expected results for each case.
 | [layers/01-pr-ci.md](layers/01-pr-ci.md) | Fast source, policy, GUI, and extension checks for every pull request |
 | [phase-2.md](phase-2.md) | Package build/inspection implementation, commands, and limitations |
 | [layers/02-package-ci.md](layers/02-package-ci.md) | Package builds and static artifact inspection |
+| [phase-3.md](phase-3.md) | Ubuntu smoke runner, automation stack, commands and current boundaries |
 | [layers/03-vm-acceptance.md](layers/03-vm-acceptance.md) | Installed-package, GUI, browser, blocking, and allowlist acceptance |
 | [layers/04-destructive-and-soak.md](layers/04-destructive-and-soak.md) | Hardening, recovery, uninstall, failure, and long-duration tests |
 

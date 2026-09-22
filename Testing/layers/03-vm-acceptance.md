@@ -7,6 +7,30 @@ covers systemd, the daemon socket, GUI-to-daemon RPC, browser Native Messaging,
 managed policy, real process termination, and the effective policy seen by a
 user.
 
+## Agreed implementation scope
+
+Implement an Ubuntu smoke suite first, then extend it to Fedora and CachyOS,
+then the remaining cases and browser-package matrix. Initial browser coverage
+is native Firefox and native Google Chrome using their published store
+extensions. Snap and Flatpak coverage belongs to the later matrix expansion.
+A passing smoke suite is not completion of all Layer 3 cases.
+
+Use the existing immutable guest templates and record the actual OS release,
+kernel and desktop session on each run. The last Phase 0 evidence identifies
+Ubuntu 26.04 LTS, Fedora 44 Workstation and rolling CachyOS; these are not a
+claim of runtime acceptance on the Layer 2 build distributions. No additional
+OS-version guests are required for this milestone.
+
+Run with the host VPN disabled. VPN-enabled operation is outside this test
+scope. The operator reports that disabling the VPN resolved the prior network
+issue; confirm DHCP, SSH and reboot connectivity on fresh clones before claiming
+repeatability. Do not change host VPN/firewall settings automatically.
+
+Consume the exact Layer 2 artifacts and verify their checksums; do not rebuild
+the application for acceptance. Record package source commit and test-harness
+commit separately. The validated Ubuntu milestone uses run `35539295807`,
+commit `d4814ac8c538dce0c3dac184a540163d99e5306c`.
+
 ## VM and package matrix
 
 | Guest | Package installation |
@@ -29,6 +53,56 @@ login session or reboot before testing GUI access.
   identified child process.
 - A generated policy TOML whose IDs contain the test-run ID.
 - Browser profiles dedicated to the suite. Never use a person's normal profile.
+
+## Timing assertions
+
+These are initial acceptance deadlines, not changes to product timing. Use
+monotonic elapsed time for deadlines and record guest wall time/timezone for
+schedule and absolute-expiry assertions. Poll observable state at most once
+per second; stop when the expected result is observed instead of sleeping for
+the whole deadline. Never extend a deadline silently or retry away a failure.
+
+The current daemon defaults to a 10-second process scan and a 30-second policy
+repair interval (`focusd/src/cli.rs`). Both extension sources use 5-second tab
+revalidation/heartbeat timers, 10-second visit heartbeats and a 30-second alarm
+fallback (`browser-extension-{firefox,chrome}/src/background.ts`). Record the
+installed daemon arguments and store extension version: store builds need not
+match these source files. A timing mismatch requires investigation, not an
+automatic relaxation of the limits.
+
+| Observation | Deadline or observation window |
+| --- | --- |
+| DHCP and SSH after boot/reboot | 180 seconds for address discovery, then 180 seconds for SSH. |
+| Active graphical desktop after SSH is ready | 240 seconds. |
+| Service/socket and successful daemon RPC after installation or reboot/SSH readiness | 60 seconds. |
+| BlocKuntu window and successful GUI-to-daemon interaction after launch | 60 seconds. |
+| First verified heartbeat after store installation completes or an installed-extension browser restarts | 30 seconds; also require the browser to survive its configured startup grace. |
+| Process termination after policy activation, process readiness, confirmed allowance exhaustion or unlock expiry | 30 seconds. Identify the original PID and start time; require termination rather than merely an RPC deny result. |
+| Navigation/SPA blocking, existing-tab revalidation or restored website access after a policy transition | 45 seconds. Require the expected page; a network error or terminated browser is not a blocked-page pass. |
+| Managed hosts contents after a schedule/Detox transition | 45 seconds. |
+| Allowed or near-miss process remains running; allowed site remains accessible; allowed-only usage stays unchanged | Observe for 30 seconds, with checks throughout the window. |
+| One-minute allowance accounting with uninterrupted eligible activity | Confirm positive usage within 30 seconds and exhaustion within 120 seconds of activity readiness; then apply the process/browser enforcement deadline above. |
+
+For allowance cases, begin with fresh zero usage, prove access before exhaustion,
+and inspect daemon-recorded usage rather than assuming a wall-clock sleep has
+consumed the allowance. Run each foreground/background/minimized variant with
+fresh allowance state. Failure to accumulate usage or reach exhaustion within
+the bounds is a failure even if eventual blocking occurs.
+
+For schedule cases, establish a 30-second pre-window baseline and use a
+three-minute active window. For ordinary Detox transitions use a three-minute
+session; observe natural expiry without changing the guest clock. Apply the
+30-second process and 45-second browser/hosts deadlines from each actual
+boundary. Relaunch terminated fixtures and navigate again to test restored
+access; deactivation does not resurrect a process or automatically reopen a
+blocked page. Ensure no other rule remains active in these transition cases.
+
+Manual unlock duration remains exactly 120 seconds according to daemon state;
+acceptance tolerances must not extend the grant. Prove access during the grant,
+then rejection within the enforcement deadlines after recorded expiry, with
+allowance still exhausted. For unlock-during-Detox cases, use a five-minute
+Detox so it remains active beyond exhaustion, unlock and reblocking. Check
+other-rule precedence and the normal reason/quota preconditions separately.
 
 ## Installation and desktop cases
 
@@ -72,7 +146,7 @@ login session or reboot before testing GUI access.
 | ID | Actions | Expected result |
 | --- | --- | --- |
 | VM-APP-001 | Start an application before activating its matching rule. | The running matching process is terminated on a subsequent daemon scan. |
-| VM-APP-002 | Start the same application while its matching rule is already active. | It may start, but it is detected and terminated within the documented scan interval. |
+| VM-APP-002 | Start the same application while its matching rule is already active. | It may start, but it is detected and terminated within the 30-second process-enforcement deadline. |
 | VM-APP-003 | Start a near-miss process whose identity resembles but does not equal the matcher. | It remains running. |
 | VM-APP-004 | Run a one-minute Controlled Access application block. | The process remains before exhaustion, consumes eligible runtime, and is terminated after exhaustion. |
 | VM-APP-005 | Minimize or background the metered application. | Runtime continues to count because application metering is process-based. |
@@ -92,7 +166,21 @@ login session or reboot before testing GUI access.
 ## Browser integration cases
 
 Run only one browser of a family at a time. Record the browser package source,
-version, extension version, profile path, and policy path.
+version, extension ID/version, store URL, installation time, profile path, and
+policy path. Obtain the published extension directly from
+[Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/blockuntu/) or
+the [Chrome Web Store](https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc).
+The operator does not need to supply a signed archive. Do not substitute the
+unsigned Layer 2 XPI or a developer-loaded extension for store acceptance.
+
+An onboarding profile starts without the extension and exercises the normal
+store installation and permission prompts (`VM-BR-001`). Regression profiles
+contain that store-installed extension for subsequent automated cases; their
+reuse does not count as a fresh onboarding pass. Record any manual interaction
+explicitly. Store unavailability blocks onboarding rather than failing local
+policy matching. If an extension updates during a suite, record the change and
+repeat affected cases with a consistent version. Acceptance covers the tested
+package/store-extension combination, not an assumed common source commit.
 
 | ID | Actions | Expected result |
 | --- | --- | --- |
@@ -139,7 +227,7 @@ allowlist. Confirm both positive access and fail-closed rejection.
 | VM-WAL-009 | Use a Tier 3 allowlist with a one-minute allowance and visit only its listed site. | The listed site stays accessible and does not consume the allowlist allowance. |
 | VM-WAL-010 | Visit an outside site under the same Tier 3 allowlist. | Usage is charged and the outside site is blocked after exhaustion. |
 | VM-WAL-011 | Request a valid Tier 3 unlock for the rejecting allowlist. | The outside site is temporarily accessible, subject to all other active rules. |
-| VM-WAL-012 | Attempt Tier 3 unlock while the allowlist is a Detox target. | The unlock is rejected. |
+| VM-WAL-012 | Exhaust the Tier 3 website-allowlist allowance during targeted Detox, then request a valid Manual Unlock. | The normal two-minute unlock succeeds under the usual reason/quota preconditions. The outside site is temporarily accessible unless another rule rejects it; after unlock expiry it is blocked again while Detox remains active, without refilling the allowance. |
 | VM-WAL-013 | Test regular and private windows. | Regular windows are protected; private-window behavior matches the explicit Firefox or Chromium setting. |
 
 ## Process-level application allowlist acceptance
@@ -162,7 +250,7 @@ collect evidence without relying on the graphical session.
 | VM-AAL-010 | Run only allowed processes under a Tier 3 application allowlist. | The allowlist allowance remains unused. |
 | VM-AAL-011 | Start a rejected process in the foreground, background, and minimized states under a one-minute Tier 3 allowance. | Each state consumes process-based runtime and is terminated after exhaustion. |
 | VM-AAL-012 | Run two rejected processes simultaneously for one Tier 3 allowlist. | Elapsed time is charged once to the rule, not multiplied by process count. |
-| VM-AAL-013 | Request Manual Unlock using the allowlist ID and relaunch a rejected process. | The process remains during the fixed two-minute unlock if no other rule rejects it. |
+| VM-AAL-013 | Request Manual Unlock using the allowlist ID and relaunch a rejected process, both during schedule activation and targeted Detox. | The process remains during the fixed two-minute unlock if no other rule rejects it. |
 | VM-AAL-014 | Request Manual Unlock using a rejected process identity. | It resolves to the rejecting allowlist and follows the same preconditions, duration, and quota. |
 | VM-AAL-015 | Leave another allowlist or blocklist rejecting the process while one rule is unlocked. | The process is still terminated by the other restriction. |
 | VM-AAL-016 | Let the unlock expire while the rejected process is running. | The process is terminated on a subsequent scan and exhausted allowance remains exhausted. |
@@ -172,13 +260,30 @@ collect evidence without relying on the graphical session.
 | VM-AAL-020 | Observe PID 1, root-owned services, and non-desktop system accounts. | They remain outside normal application-allowlist termination. |
 | VM-AAL-021 | With an explicitly curated safety list, verify user D-Bus, portals/authentication, audio, clipboard, terminal children, IDE language servers, and browser helpers. | Every required regular-user process has its own matching identity and the desktop remains healthy. |
 
-## Upgrade smoke case
+## Upgrade smoke case (deferred)
+
+`VM-UPGRADE-001` remains specified below but is explicitly skipped for this
+milestone: no previously accepted baseline exists and upgrade implementation
+is deferred. Report that reason and do not count the case as passed or as a
+current milestone gate. Before the next release, establish an accepted baseline
+and re-enable Layers 2–4 upgrade checks, including the known Debian `prerm`
+cleanup concern documented in `02-package-ci.md`.
 
 | ID | Actions | Expected result |
 | --- | --- | --- |
 | VM-UPGRADE-001 | Install a previously accepted package, create blocklists and allowlists, use them, then install the newer package with the native package manager. | Upgrade succeeds; configuration, policy modes, installation identity, intended credentials, and enforcement survive; services and browser heartbeat recover. |
 
 ## Completion criteria
+
+For the initial milestone, require the Ubuntu smoke path (installation/reboot,
+service/socket/RPC health, actual GUI startup and import/export, native Firefox
+and Chrome store integration, website/application blocking and both allowlist
+types) to pass on two consecutive fresh clones without manual state cleanup.
+Record onboarding interactions separately. Enumerate the exact case IDs run,
+and mark remaining cases as planned or skipped with reasons.
+
+Full Layer 3 acceptance, after the subsequent distribution and browser phases,
+requires the following, with the explicit upgrade deferral above:
 
 - Every pass references the exact package checksum.
 - Core acceptance passes on Ubuntu, Fedora, and CachyOS.

@@ -25,19 +25,24 @@ static void fail(const char *message) {
 }
 
 static const char *identity_for_executable(const char *executable) {
-    if (strcmp(executable, "blockuntu-test-app-a") == 0) {
+    if (strcmp(executable, "blockuntu-test-app-a") == 0 ||
+        strcmp(executable, "bk-test-app-a") == 0) {
         return "bk-test-app-a";
     }
-    if (strcmp(executable, "blockuntu-test-app-b") == 0) {
+    if (strcmp(executable, "blockuntu-test-app-b") == 0 ||
+        strcmp(executable, "bk-test-app-b") == 0) {
         return "bk-test-app-b";
     }
-    if (strcmp(executable, "blockuntu-test-block") == 0) {
+    if (strcmp(executable, "blockuntu-test-block") == 0 ||
+        strcmp(executable, "bk-test-block") == 0) {
         return "bk-test-block";
     }
-    if (strcmp(executable, "blockuntu-test-parent") == 0) {
+    if (strcmp(executable, "blockuntu-test-parent") == 0 ||
+        strcmp(executable, "bk-test-parent") == 0) {
         return "bk-test-parent";
     }
-    if (strcmp(executable, "blockuntu-test-helper") == 0) {
+    if (strcmp(executable, "blockuntu-test-helper") == 0 ||
+        strcmp(executable, "bk-test-helper") == 0) {
         return "bk-test-helper";
     }
     return "bk-test-unknown";
