@@ -81,6 +81,18 @@ class PackageTests(unittest.TestCase):
         self.assert_case_fails('PKG-CONTENT-004', entries=entries)
         self.assert_case_fails('PKG-CONTENT-010', entries=entries)
 
+    def test_rpm_requires_native_firefox_manifest_location(self):
+        entries = copy.deepcopy(self.entries)
+        for browser in ('mozilla', 'librewolf', 'waterfox'):
+            path = f'usr/lib/{browser}/native-messaging-hosts/blockuntu_native.json'
+            entries[path.replace('usr/lib/', 'usr/lib64/', 1)] = copy.deepcopy(entries[path])
+        def manifest_status():
+            rows = inspect_package(entries, self.meta, self.hooks, 'rpm')
+            return next(row['status'] for row in rows if row['id'] == 'PKG-CONTENT-004')
+        self.assertEqual(manifest_status(), 'pass')
+        del entries['usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json']
+        self.assertEqual(manifest_status(), 'fail')
+
     def test_bad_defaults_and_empty_allowlist(self):
         entries = copy.deepcopy(self.entries)
         path = 'etc/blockuntu/config.toml'

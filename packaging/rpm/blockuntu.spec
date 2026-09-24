@@ -122,6 +122,7 @@ chmod 0644 %{buildroot}%{_unitdir}/blockuntu.service \
 
 install -d \
   %{buildroot}%{_libdir}/mozilla/native-messaging-hosts \
+  %{buildroot}%{_prefix}/lib/mozilla/native-messaging-hosts \
   %{buildroot}%{_libdir}/librewolf/native-messaging-hosts \
   %{buildroot}%{_libdir}/waterfox/native-messaging-hosts \
   %{buildroot}%{_sysconfdir}/opt/chrome/native-messaging-hosts \
@@ -133,6 +134,11 @@ sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
   packaging/native-messaging/blockuntu_native.json \
   >%{buildroot}%{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json
 chmod 0644 %{buildroot}%{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json
+# Mozilla's native Firefox archive searches /usr/lib/mozilla on Fedora x86-64,
+# while the Fedora RPM macro above resolves to /usr/lib64/mozilla.
+install -pm 0644 \
+  %{buildroot}%{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json \
+  %{buildroot}%{_prefix}/lib/mozilla/native-messaging-hosts/blockuntu_native.json
 sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
   packaging/native-messaging/blockuntu_native.json \
   >%{buildroot}%{_libdir}/librewolf/native-messaging-hosts/blockuntu_native.json
@@ -417,6 +423,7 @@ fi
 %config(noreplace) %{_sysconfdir}/opt/vivaldi/native-messaging-hosts/blockuntu_native.json
 %config(noreplace) %{_sysconfdir}/vivaldi/native-messaging-hosts/blockuntu_native.json
 %{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json
+%{_prefix}/lib/mozilla/native-messaging-hosts/blockuntu_native.json
 %{_libdir}/librewolf/native-messaging-hosts/blockuntu_native.json
 %{_libdir}/waterfox/native-messaging-hosts/blockuntu_native.json
 %{_unitdir}/blockuntu.socket
