@@ -73,7 +73,17 @@ def click(name, app='blockuntu-gui', role='button'):
             raise TimeoutError(f'Control remained disabled: {app}/{name}')
         time.sleep(0.25)
     action = node.queryAction()
-    if not action.doAction(0):
+    try:
+        activated = action.doAction(0)
+    except Exception as error:
+        # Fedora's GTK file chooser can enter its nested modal loop before the
+        # initiating AT-SPI D-Bus call returns. The caller must still observe
+        # the requested dialog/control, so accept only this specific dispatch
+        # timeout for the BlocKuntu GUI opener.
+        if app == 'blockuntu-gui' and 'Did not receive a reply' in str(error):
+            return
+        raise
+    if not activated:
         raise RuntimeError(f'Action failed: {name}')
 
 

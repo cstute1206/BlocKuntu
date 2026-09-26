@@ -90,6 +90,28 @@ class CloneGuardTests(unittest.TestCase):
 
 
 class NetworkDiagnosticsTests(unittest.TestCase):
+    def test_cachyos_mounts_discover_root_partition(self):
+        for partition in ('/dev/sda2', '/dev/sda3'):
+            with patch.object(vm, 'run', return_value=subprocess.CompletedProcess([], 0,
+                    stdout=f'/dev/sda1: vfat\n{partition}: btrfs\n')):
+                self.assertEqual(vm.mounts('cachyos', '/clone.qcow2'),
+                    ['-m', f'{partition}:/:subvol=@', '-m', f'{partition}:/home:subvol=@home'])
+        with patch.object(vm, 'run', return_value=subprocess.CompletedProcess([], 0,
+                stdout='/dev/sda2: btrfs\n/dev/sda3: btrfs\n')):
+            with self.assertRaisesRegex(ValueError, 'exactly one Btrfs'):
+                vm.mounts('cachyos', '/clone.qcow2')
+
+    def test_base_check_allows_device_number_change_after_host_remount(self):
+        before = {"ubuntu": {"uuid": "base", "xml": "definition",
+                             "storage": {"/base.qcow2": [10, 42, 100, 123, 456]}}}
+        after = {"ubuntu": {"uuid": "base", "xml": "definition",
+                            "storage": {"/base.qcow2": [11, 42, 100, 123, 456]}}}
+        with patch.object(vm, "base_records", return_value=after):
+            vm.unchanged({"bases": before})
+            after["ubuntu"]["storage"]["/base.qcow2"][2] += 1
+            with self.assertRaisesRegex(ValueError, "Base VM definition"):
+                vm.unchanged({"bases": before})
+
     def test_diagnostics_are_read_only_and_saved(self):
         xml = ET.fromstring('<domain><devices><interface><source network="default"/></interface></devices></domain>')
         with tempfile.TemporaryDirectory(dir=vm.ROOT / "runtime") as directory, \

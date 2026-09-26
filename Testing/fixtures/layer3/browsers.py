@@ -13,8 +13,29 @@ from guest import WORK, host_action, rpc, run, wait
 STORES = {
     'firefox': 'https://addons.mozilla.org/en-US/firefox/addon/blockuntu/',
     'chrome': 'https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc',
+    'chromium': 'https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc',
 }
-APPS = {'firefox': 'Firefox', 'chrome': 'Google Chrome'}
+APPS = {'firefox': 'Firefox', 'chrome': 'Google Chrome', 'chromium': 'Chromium'}
+BROWSER_CONFIG = {
+    'firefox': {
+        'binary': '/opt/firefox/firefox',
+        'component': 'firefox_extension',
+        'policy': '/etc/firefox/policies/policies.json',
+        'package_source': 'Mozilla native release archive',
+    },
+    'chrome': {
+        'binary': 'google-chrome',
+        'component': 'chrome_extension',
+        'policy': '/etc/opt/chrome/policies/managed/blockuntu.json',
+        'package_source': 'google-chrome-stable native package',
+    },
+    'chromium': {
+        'binary': 'chromium',
+        'component': 'chromium_extension',
+        'policy': '/etc/chromium/policies/managed/blockuntu.json',
+        'package_source': 'CachyOS native Chromium package',
+    },
+}
 
 
 def optional_click(name, app, role='button', seconds=2):
@@ -26,6 +47,49 @@ def optional_click(name, app, role='button', seconds=2):
     return True
 
 
+def dismiss_google_consent(app):
+    """Act on the consent button even when it is below the visible viewport."""
+    def page_ready():
+        page = visible_document_text(app)
+        return ('consent' if 'Before you continue to Google' in page else
+                'store' if 'BlocKuntu - Chrome Web Store' in page else None)
+    if wait(page_ready, 60) == 'store':
+        return False
+    button = find('Reject all', 'button', app, seconds=15)
+    assert button.queryAction().doAction(0), 'Could not reject store consent'
+    wait(lambda: 'BlocKuntu - Chrome Web Store' in visible_document_text(app), 60)
+    return True
+
+
+def add_from_chrome_store(browser, app):
+    wait(lambda: 'BlocKuntu - Chrome Web Store' in visible_document_text(app), 60)
+    if browser != 'chromium':
+        click('Add to Chrome', app=app)
+        return
+    # The Web Store can show Chromium a Chrome promotion banner while its
+    # extension button remains actionable below the viewport.
+    assert 'BlocKuntu - Chrome Web Store' in visible_document_text(app), 'BlocKuntu store page is not visible'
+    button = find('Add to Chrome', 'button', app, seconds=30)
+    assert button.getState().contains(pyatspi.STATE_SENSITIVE), 'Store install button is unavailable'
+    assert button.queryAction().doAction(0), 'Store install action failed'
+
+
+def firefox_managed_store_source(profile, extension_id):
+    """Verify that policy installed this profile's add-on from published AMO."""
+    policy = json.loads(Path(BROWSER_CONFIG['firefox']['policy']).read_text())
+    setting = policy['policies']['ExtensionSettings'][extension_id]
+    source = setting['install_url']
+    assert (setting['installation_mode'] == 'force_installed' and
+            source == 'https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi'), \
+        'Firefox managed install is not pinned to published AMO'
+    addons = json.loads((profile / 'extensions.json').read_text())['addons']
+    matching = [addon for addon in addons if addon['id'] == extension_id]
+    assert len(matching) == 1 and matching[0].get('sourceURI') == source, \
+        'Firefox profile add-on source differs from the managed AMO URL'
+    return {'installation_path': 'managed_store_policy', 'install_url': source,
+            'permission_prompt': 'not_applicable_for_force_install'}
+
+
 
 def confirm_install(name, app):
     """Confirm the permission prompt and observe dismissal before heartbeat timing.
@@ -33,6 +97,9 @@ def confirm_install(name, app):
     Browser security delays can ignore a successful AT-SPI action even when
     the button reports enabled. Retry only this exact visible confirmation.
     """
+    # The store may need to download the extension before it creates the
+    # browser-owned permission prompt. That time precedes the heartbeat SLA.
+    find(name, 'button', app, seconds=60, visible=True)
     click(name, app=app)
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
@@ -47,9 +114,9 @@ def confirm_install(name, app):
 
 def start(browser, profile, urls):
     if browser == 'firefox':
-        command = ['/opt/firefox/firefox', '--no-remote', '--profile', str(profile)]
+        command = [BROWSER_CONFIG[browser]['binary'], '--no-remote', '--profile', str(profile)]
     else:
-        command = ['google-chrome', '--user-data-dir=' + str(profile), '--no-first-run',
+        command = [BROWSER_CONFIG[browser]['binary'], '--user-data-dir=' + str(profile), '--no-first-run',
                    '--password-store=basic', '--force-renderer-accessibility']
     run('systemd-run', '--user', '--collect', '--unit=blockuntu-test-' + browser, *command, *urls)
 
@@ -91,12 +158,17 @@ def select_tab(browser, predicate):
 
 
 def heartbeat(browser):
-    status = rpc('extension_status', {'component': browser + '_extension'})
+    status = rpc('extension_status', {'component': BROWSER_CONFIG[browser]['component']})
     return status if status.get('state') == 'active' and status.get('current_session_heartbeat') is True else None
 
 
-def setup():
-    if not Path('/opt/firefox/firefox').exists():
+def setup(guest):
+    if guest == 'cachyos':
+        package = run('pacman', '-Q', 'firefox').stdout.strip()
+        assert Path('/usr/bin/firefox').is_file(), 'Native Firefox package binary missing'
+        BROWSER_CONFIG['firefox'].update(binary='/usr/bin/firefox',
+            package_source='CachyOS native package: ' + package)
+    elif not Path('/opt/firefox/firefox').exists():
         archive = WORK / 'firefox.tar.xz'
         answer = run('curl', '--fail', '--location', '--max-time', '180',
                      'https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US',
@@ -106,8 +178,21 @@ def setup():
             raise RuntimeError('Native Firefox download failed')
         run('sudo', '-n', 'tar', '-xJf', str(archive), '-C', '/opt')
         (WORK / 'firefox-archive.sha256').write_text(hashlib.sha256(archive.read_bytes()).hexdigest())
-    # Chrome is provided by the existing Ubuntu template; reject missing native package.
-    run('dpkg-query', '-W', 'google-chrome-stable')
+    if guest == 'ubuntu':
+        # Chrome is provided by the existing Ubuntu template.
+        run('dpkg-query', '-W', 'google-chrome-stable')
+    elif guest == 'fedora' and run('rpm', '-q', 'google-chrome-stable', check=False).returncode:
+        package = WORK / 'google-chrome-stable.rpm'
+        answer = run('curl', '--fail', '--location', '--max-time', '180',
+                     'https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm',
+                     '-o', str(package), check=False, timeout=200)
+        (WORK / 'chrome-download.log').write_text(answer.stdout + answer.stderr)
+        if answer.returncode:
+            raise RuntimeError('Native Google Chrome download failed')
+        (WORK / 'chrome-package.sha256').write_text(hashlib.sha256(package.read_bytes()).hexdigest())
+        run('sudo', '-n', 'dnf', 'install', '-y', str(package), timeout=300)
+    elif guest == 'cachyos':
+        run('sudo', '-n', 'pacman', '-S', '--noconfirm', '--needed', 'chromium', timeout=300)
     run('systemd-run', '--user', '--collect', '--unit=blockuntu-test-site', '/usr/bin/python3',
         str(WORK / 'server.py'), '--bind', '127.0.0.1', '--port', '18080')
     def site_ready():
@@ -119,19 +204,20 @@ def setup():
     wait(site_ready, 15)
 
 
-def run_cases(case, result, run_id):
-    setup()
+def run_cases(case, result, run_id, guest='ubuntu'):
+    setup(guest)
     metadata = {}
-    for browser in ['firefox', 'chrome']:
+    browsers = ['firefox', 'chromium'] if guest == 'cachyos' else ['firefox', 'chrome']
+    for browser in browsers:
         app = APPS[browser]
         profile = WORK / (browser + '-profile')
         profile.mkdir(exist_ok=False)
         if browser == 'firefox':
             (profile / 'user.js').write_text('user_pref("browser.shell.checkDefaultBrowser", false);\n')
+        config = BROWSER_CONFIG[browser]
         metadata[browser] = {'store_url': STORES[browser], 'profile': str(profile),
-            'browser_version': run('/opt/firefox/firefox' if browser == 'firefox' else 'google-chrome', '--version').stdout.strip(),
-            'package_source': 'Mozilla native release archive' if browser == 'firefox' else 'google-chrome-stable DEB',
-            'policy_path': '/etc/firefox/policies/policies.json' if browser == 'firefox' else '/etc/opt/chrome/policies/managed/blockuntu.json'}
+            'browser_version': run(config['binary'], '--version').stdout.strip(),
+            'package_source': config['package_source'], 'policy_path': config['policy']}
         def browser_case(cid, action):
             passed = case(cid, action, browser=browser)
             if not passed:
@@ -142,17 +228,26 @@ def run_cases(case, result, run_id):
 
         try:
             def onboarding():
+                assert not (profile / 'extensions.json').exists(), 'Onboarding profile already has extensions'
                 start(browser, profile, ['http://web.blockuntu.test:18080/free', STORES[browser]])
                 if browser == 'firefox':
                     optional_click('Continue', app, seconds=15)
                     select_tab(browser, lambda name: 'BlocKuntu' in name and 'test route' not in name)
-                    click('Add to Firefox', app=app, role='link')
-                    confirm_install('Add', app)
-                    optional_click('OK', app, seconds=3)
+                    try:
+                        find('Add to Firefox', 'link', app, seconds=5, visible=True)
+                    except TimeoutError:
+                        find('Remove', 'link', app, seconds=30, visible=True)
+                        current = wait(lambda: heartbeat(browser), 30)
+                        metadata[browser].update(firefox_managed_store_source(profile, current['extension_id']))
+                    else:
+                        click('Add to Firefox', app=app, role='link')
+                        confirm_install('Add', app)
+                        optional_click('OK', app, seconds=3)
+                        metadata[browser]['installation_path'] = 'store_prompt'
                 else:
                     select_tab(browser, lambda name: bool(name) and 'test route' not in name)
-                    optional_click('Reject all', app, seconds=15)
-                    click('Add to Chrome', app=app)
+                    dismiss_google_consent(app)
+                    add_from_chrome_store(browser, app)
                     confirm_install('Add extension', app)
                 status = wait(lambda: heartbeat(browser), 30)
                 metadata[browser].update(extension_id=status['extension_id'], extension_version=status['extension_version'],
@@ -176,12 +271,13 @@ def run_cases(case, result, run_id):
             def restart():
                 old = heartbeat(browser)
                 stop(browser)
-                wait(lambda: not rpc('extension_status', {'component': browser + '_extension'})['browser_running'], 30)
+                component = BROWSER_CONFIG[browser]['component']
+                wait(lambda: not rpc('extension_status', {'component': component})['browser_running'], 30)
                 # The daemon records session end on its 10-second process scan.
                 # Keep the browser absent through a complete scan before restart.
                 absent_until = time.monotonic() + 15
                 while time.monotonic() < absent_until:
-                    assert not rpc('extension_status', {'component': browser + '_extension'})['browser_running']
+                    assert not rpc('extension_status', {'component': component})['browser_running']
                     time.sleep(1)
                 start(browser, profile, ['http://web.blockuntu.test:18080/free'])
                 def fresh_heartbeat():

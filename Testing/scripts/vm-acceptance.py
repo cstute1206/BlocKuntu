@@ -20,17 +20,46 @@ vm = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(vm)
 ROOT = vm.ROOT
 
+PLATFORMS = {
+    'ubuntu': {
+        'component': 'deb',
+        'suffix': '.deb',
+        'remote': '/home/akhi/Testing/layer3/blockuntu.deb',
+        'install': ('sudo -n env DEBIAN_FRONTEND=noninteractive apt-get '
+                    '-o DPkg::Lock::Timeout=180 install -y {package}'),
+        'version': "dpkg-query -W -f='${Version}' blockuntu",
+    },
+    'fedora': {
+        'component': 'rpm',
+        'suffix': '.rpm',
+        'remote': '/home/akhi/Testing/layer3/blockuntu.rpm',
+        'install': 'sudo -n dnf install -y {package}',
+        'version': "rpm -q --qf '%{VERSION}-%{RELEASE}' blockuntu",
+    },
+    'cachyos': {
+        'component': 'arch',
+        'suffix': '.pkg.tar.zst',
+        'remote': '/home/akhi/Testing/layer3/blockuntu.pkg.tar.zst',
+        'install': 'sudo -n pacman --noconfirm -U {package}',
+        'version': "pacman -Q blockuntu | awk '{print $2}'",
+    },
+}
 
-def artifact(report_path):
+
+def artifact(report_path, guest='ubuntu'):
+    if guest not in PLATFORMS:
+        raise ValueError(f'Unsupported acceptance guest: {guest}')
+    platform = PLATFORMS[guest]
     report_path = Path(report_path).resolve()
     report = json.loads(report_path.read_text())
     if report.get('passed') is not True or report.get('build_provenance_verified') is not True:
         raise ValueError('Acceptance requires a passed, provenance-verified Layer 2 report')
-    if report.get('component') != 'deb' or not re.fullmatch(r'[0-9a-f]{40}', report.get('commit', '')):
-        raise ValueError('Ubuntu acceptance requires a DEB report and full source commit')
-    entries = [a for a in report['artifacts'] if a['filename'].endswith('.deb')]
+    if (report.get('component') != platform['component'] or
+            not re.fullmatch(r'[0-9a-f]{40}', report.get('commit', ''))):
+        raise ValueError(f"{guest} acceptance requires a {platform['component']} report and full source commit")
+    entries = [a for a in report['artifacts'] if a['filename'].endswith(platform['suffix'])]
     if len(entries) != 1:
-        raise ValueError('Expected exactly one DEB artifact')
+        raise ValueError(f"Expected exactly one {platform['suffix']} artifact")
     entry = entries[0]
     if Path(entry['filename']).name != entry['filename']:
         raise ValueError('Artifact filename must be a basename')
@@ -78,6 +107,38 @@ def stop(record):
     vm.unchanged(record)
 
 
+def prepare_cachyos(record, destination, refresh=False):
+    """Record the supplied baseline; refresh only when explicitly requested."""
+    baseline = vm.ssh(record, 'cat /etc/os-release; uname -r; df -h /; lsblk -b -o NAME,SIZE,FSTYPE,MOUNTPOINTS; pacman -Q', check=False)
+    (destination / 'cachyos-baseline.log').write_text(baseline.stdout + baseline.stderr)
+    if baseline.returncode:
+        raise RuntimeError('Could not inspect CachyOS baseline')
+    if not refresh:
+        return
+    def clean_cache(stage):
+        name = f'pacman-cache-{stage}.log'
+        cleaned = vm.ssh(record, "printf 'y\\ny\\n' | sudo -n env LC_ALL=C pacman -Scc",
+                         timeout=120, check=False)
+        (destination / name).write_text(cleaned.stdout + cleaned.stderr)
+        if cleaned.returncode:
+            raise RuntimeError(f'CachyOS package cache cleanup failed; see {name}')
+    clean_cache('before-update')
+    updated = vm.ssh(record, 'sudo -n pacman -Syyu --noconfirm', timeout=1800, check=False)
+    (destination / 'os-update.log').write_text(updated.stdout + updated.stderr)
+    if updated.returncode:
+        raise RuntimeError('CachyOS system update failed; see os-update.log')
+    clean_cache('after-update')
+    boot_id = vm.ssh(record, 'cat /proc/sys/kernel/random/boot_id').stdout.strip()
+    vm.ssh(record, 'sudo -n systemctl reboot', check=False)
+    time.sleep(5)
+    def rebooted():
+        record['ip'] = vm.address(record) or record['ip']
+        answer = vm.ssh(record, 'cat /proc/sys/kernel/random/boot_id', check=False)
+        return answer.returncode == 0 and answer.stdout.strip() != boot_id
+    vm.wait_until(rebooted, 'post-update CachyOS reboot')
+    vm.graphical_check(record, '-updated')
+
+
 def collect(record, destination):
     for name, command in {
         'journal.log': 'sudo -n journalctl -b --no-pager -u blockuntu.service -u blockuntu.socket -u blockuntu-watchdog.service -u blockuntu-hosts.service',
@@ -93,6 +154,8 @@ def collect(record, destination):
         'firefox-failure.json': 'cat Testing/layer3/firefox-failure.json',
         'chrome-failure.json': 'cat Testing/layer3/chrome-failure.json',
         'prerequisites.log': 'cat Testing/layer3/prerequisites.log',
+        'accessibility-status.txt': 'cat Testing/layer3/accessibility-status.txt',
+        'keyboard-layout.txt': 'cat Testing/layer3/keyboard-layout.txt',
         'process.log': 'cat Testing/layer3/process.log',
         'process-results.json': 'cat Testing/layer3/process-results.json',
         'process-completion.json': 'cat Testing/layer3/process-completion.json',
@@ -119,9 +182,11 @@ def exercise_guest(record, destination, run_id, result):
     for source in (ROOT / 'artifacts/fixtures/bin').glob('blockuntu-test-*'):
         upload(record, source, '/home/akhi/Testing/layer3/' + source.name.replace('blockuntu-test-', 'bk-test-'))
     vm.ssh(record, 'chmod +x Testing/layer3/bk-test-*')
+    inhibitor = 'kde-inhibit --power --screenSaver ' if record['template'] == 'cachyos' else ''
     vm.ssh(record, 'systemd-run --user --collect --unit=blockuntu-acceptance-suite '
-           '--property=RuntimeMaxSec=1800 /usr/bin/python3 /home/akhi/Testing/layer3/guest.py --run-id '
-           + shlex.quote(run_id))
+           '--property=RuntimeMaxSec=1800 ' + inhibitor +
+           '/usr/bin/python3 /home/akhi/Testing/layer3/guest.py --run-id '
+           + shlex.quote(run_id) + ' --guest ' + shlex.quote(record['template']))
     deadline = time.monotonic() + 1800
     handled = set()
     reported = set()
@@ -182,23 +247,30 @@ def exercise_guest(record, destination, run_id, result):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-id', required=True)
+    parser.add_argument('--guest', choices=sorted(PLATFORMS), default='ubuntu')
     parser.add_argument('--package-report', type=Path, required=True)
-    parser.add_argument('--prepared', action='store_true', help='Use an existing untouched, prepared Ubuntu clone')
+    parser.add_argument('--prepared', action='store_true', help='Use an existing untouched, prepared clone')
     parser.add_argument('--keep', action='store_true', help='Retain stopped clone even on success')
+    parser.add_argument('--refresh-cachyos', action='store_true',
+                        help='Fully update the CachyOS clone before acceptance; default uses the supplied baseline')
     args = parser.parse_args()
+    if args.refresh_cachyos and args.guest != 'cachyos':
+        parser.error('--refresh-cachyos requires --guest cachyos')
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,39}', args.run_id):
         parser.error('Run ID requires 1-40 lowercase letters, digits or hyphens')
-    package, report = artifact(args.package_report)
+    package, report = artifact(args.package_report, args.guest)
+    platform = PLATFORMS[args.guest]
     vm.RUNTIME.mkdir(parents=True, exist_ok=True)
     with (vm.RUNTIME / 'runner.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         vm.guestfs_setup()
         if args.prepared:
-            record = json.loads((vm.RUNTIME / args.run_id / 'ubuntu/owner.json').read_text())
-            if record['stage'] != 'prepared' or record['run_id'] != args.run_id or record['template'] != 'ubuntu':
-                raise ValueError('Expected matching prepared Ubuntu clone')
+            record = json.loads((vm.RUNTIME / args.run_id / args.guest / 'owner.json').read_text())
+            if (record['stage'] != 'prepared' or record['run_id'] != args.run_id or
+                    record['template'] != args.guest):
+                raise ValueError(f'Expected matching prepared {args.guest} clone')
         else:
-            record = vm.prepare('ubuntu', args.run_id)
+            record = vm.prepare(args.guest, args.run_id)
         destination = Path(record['evidence']) / 'acceptance'
         destination.mkdir(exist_ok=False)
         destination.chmod(0o700)
@@ -206,7 +278,8 @@ def main():
         vm.save(destination / 'harness-files.json', {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in [Path(__file__), ROOT / 'scripts/phase0-vm.py', ROOT / 'fixtures/test-processes/test_process.c',
                           ROOT / 'fixtures/test-site/server.py', *sorted((ROOT / 'fixtures/layer3').glob('*.py'))]})
-        result = {'schema_version': 1, 'layer': 'vm-acceptance', 'suite': 'ubuntu-smoke',
+        result = {'schema_version': 1, 'layer': 'vm-acceptance', 'suite': f'{args.guest}-smoke',
+                  'guest': args.guest, 'refresh_cachyos': args.refresh_cachyos,
                   'run_id': args.run_id, 'package_commit': report['commit'],
                   'package': report['artifacts'], 'harness_commit': vm.run(['git', 'rev-parse', 'HEAD']).stdout.strip(),
                   'harness_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -216,23 +289,36 @@ def main():
             vm.run(['bash', ROOT / 'scripts/build-test-processes.sh'])
             vm.verify(record)
             boot(record)
-            print('Ubuntu infrastructure passed; installing exact CI artifact', flush=True)
+            if args.guest == 'cachyos':
+                print('cachyos: checking supplied baseline' + (' and refreshing the rolling guest' if args.refresh_cachyos else ''), flush=True)
+                prepare_cachyos(record, destination, refresh=args.refresh_cachyos)
+            print(f'{args.guest}: infrastructure passed; installing exact CI artifact', flush=True)
             vm.ssh(record, 'mkdir -p Testing/layer3; chmod 700 Testing/layer3')
             vm.ssh(record, 'sudo -n tee -a /etc/hosts >/dev/null',
                    input='\n# BlocKuntu acceptance fixtures (outside managed block)\n127.0.0.1 web.blockuntu.test allowed.blockuntu.test outside.blockuntu.test\n')
-            upload(record, package, '/home/akhi/Testing/layer3/blockuntu.deb')
-            actual = vm.ssh(record, 'sha256sum Testing/layer3/blockuntu.deb').stdout.split()[0]
+            upload(record, package, platform['remote'])
+            actual = vm.ssh(record, 'sha256sum ' + shlex.quote(platform['remote'])).stdout.split()[0]
             if actual != next(a['sha256'] for a in report['artifacts'] if a['filename'] == package.name):
                 raise ValueError('Guest package checksum mismatch')
-            installation = vm.ssh(record, 'sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y /home/akhi/Testing/layer3/blockuntu.deb', timeout=900, check=False)
+            installation = vm.ssh(
+                record,
+                platform['install'].format(package=shlex.quote(platform['remote'])),
+                timeout=900,
+                check=False,
+            )
             (destination / 'install.log').write_text(installation.stdout + installation.stderr)
             if installation.returncode:
                 raise RuntimeError('Package installation failed; see install.log')
-            version = vm.ssh(record, "dpkg-query -W -f='${Version}' blockuntu").stdout.strip()
+            version = vm.ssh(record, platform['version']).stdout.strip()
             if version != report['package_metadata']['version']:
                 raise ValueError('Installed version differs from artifact metadata')
             result['cases'].append({'id': 'VM-INSTALL-001', 'status': 'pass', 'version': version})
             vm.ssh(record, 'sudo -n usermod -aG blockuntu akhi')
+            if args.guest == 'cachyos':
+                # KWin reads kxkbrc when the graphical session starts. Write
+                # it before the required post-install reboot, not in guest.py.
+                vm.ssh(record, 'kwriteconfig6 --file kxkbrc --group Layout --key Use true')
+                vm.ssh(record, 'kwriteconfig6 --file kxkbrc --group Layout --key LayoutList us')
             boot_id = vm.ssh(record, 'cat /proc/sys/kernel/random/boot_id').stdout.strip()
             vm.ssh(record, 'sudo -n systemctl reboot', check=False)
             time.sleep(5)
@@ -247,7 +333,8 @@ def main():
             result['cases'].extend(guest['cases'])
             specified = set(re.findall(r'^\| (VM-[A-Z]+-\d+) \|', (ROOT / 'layers/03-vm-acceptance.md').read_text(), re.M))
             observed = {row['id'] for row in result['cases']}
-            result['cases'].extend({'id': cid, 'status': 'planned', 'reason': 'Outside initial Ubuntu smoke subset'}
+            result['cases'].extend({'id': cid, 'status': 'planned',
+                                    'reason': f'Outside initial {args.guest} smoke subset'}
                                    for cid in sorted(specified - observed))
             result['status'] = ('fail' if any(c['status'] == 'fail' for c in guest['cases'])
                                 else 'pass' if guest['status'] == 'pass' else 'incomplete')

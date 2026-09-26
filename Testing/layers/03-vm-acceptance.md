@@ -11,8 +11,9 @@ user.
 
 Implement an Ubuntu smoke suite first, then extend it to Fedora and CachyOS,
 then the remaining cases and browser-package matrix. Initial browser coverage
-is native Firefox and native Google Chrome using their published store
-extensions. Snap and Flatpak coverage belongs to the later matrix expansion.
+is native Firefox and native Google Chrome on Ubuntu/Fedora, with native
+Chromium on CachyOS, using their published store extensions.
+Snap and Flatpak coverage belongs to the later matrix expansion.
 A passing smoke suite is not completion of all Layer 3 cases.
 
 Use the existing immutable guest templates and record the actual OS release,
@@ -173,8 +174,13 @@ the [Chrome Web Store](https://chromewebstore.google.com/detail/blockuntu/opflja
 The operator does not need to supply a signed archive. Do not substitute the
 unsigned Layer 2 XPI or a developer-loaded extension for store acceptance.
 
-An onboarding profile starts without the extension and exercises the normal
-store installation and permission prompts (`VM-BR-001`). Regression profiles
+An onboarding profile starts without the extension and exercises the published
+store install (`VM-BR-001`). When the installed package's managed policy
+force-installs the published store version before the store page can offer an
+install button, verify both the policy `install_url` and the clean profile's
+recorded add-on source URL against that store. Record whether installation
+used a permission prompt or the managed store policy; a force install does not
+have a permission prompt. Regression profiles
 contain that store-installed extension for subsequent automated cases; their
 reuse does not count as a fresh onboarding pass. Record any manual interaction
 explicitly. Store unavailability blocks onboarding rather than failing local
@@ -184,7 +190,7 @@ package/store-extension combination, not an assumed common source commit.
 
 | ID | Actions | Expected result |
 | --- | --- | --- |
-| VM-BR-001 | With a clean onboarding profile, install the signed extension from its store after BlocKuntu installation. | The first verified heartbeat arrives without replacing an ordinary allowed page. |
+| VM-BR-001 | With a clean onboarding profile, install the signed extension from its store after BlocKuntu installation, either through its prompt or the installed package's verified managed store policy. | The first verified heartbeat arrives without replacing an ordinary allowed page. |
 | VM-BR-002 | Restart the browser after the first verified heartbeat. | Managed policy is loaded and the extension remains enabled according to that browser's supported policy mechanism. |
 | VM-BR-003 | Try to disable or remove the managed extension. | The supported browser prevents the protected action. |
 | VM-BR-004 | Test a normal window and the configured private-browsing mode. | Firefox private browsing or the selected Chromium incognito strategy matches the GUI setting; the result is not generalized across browser families. |

@@ -63,12 +63,16 @@ def host_action(action, **kwargs):
 
 
 
-def finalize_result(result):
+def browsers_for_guest(guest):
+    return ('firefox', 'chromium') if guest == 'cachyos' else ('firefox', 'chrome')
+
+
+def finalize_result(result, guest='ubuntu'):
     required = {(cid, None) for cid in (
         'VM-INSTALL-002', 'VM-INSTALL-003', 'VM-INSTALL-004', 'VM-INSTALL-005',
         'VM-DATA-001', 'VM-DATA-002', 'VM-DATA-003', 'VM-DATA-004',
         'VM-APP-001', 'VM-APP-002', 'VM-APP-003', 'VM-AAL-004')}
-    required.update((cid, browser) for browser in ('firefox', 'chrome')
+    required.update((cid, browser) for browser in browsers_for_guest(guest)
                     for cid in ('VM-BR-001', 'VM-BR-002', 'VM-WEB-002', 'VM-WAL-004'))
     observed = {(row['id'], row.get('browser')) for row in result['cases']}
     for cid, browser in sorted(required - observed, key=str):
@@ -85,6 +89,7 @@ def finalize_result(result):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--run-id', required=True)
+    parser.add_argument('--guest', choices=('ubuntu', 'fedora', 'cachyos'), default='ubuntu')
     args = parser.parse_args()
     result = {'status': 'running', 'cases': []}
     save_result(result)
@@ -132,31 +137,58 @@ def main():
 
     try:
         case('VM-INSTALL-002', units)
-        for command in [
-            ['sudo', '-n', 'apt-get', 'update'],
-            ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-o', 'DPkg::Lock::Timeout=180',
-             'install', '-y', 'python3-pyatspi', 'curl'],
-        ]:
+        prerequisite_commands = {
+            'ubuntu': [
+                ['sudo', '-n', 'apt-get', 'update'],
+                ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get',
+                 '-o', 'DPkg::Lock::Timeout=180', 'install', '-y', 'python3-pyatspi', 'curl'],
+            ],
+            'fedora': [
+                ['sudo', '-n', 'dnf', 'install', '-y', 'python3-pyatspi', 'curl', 'xz'],
+            ],
+            'cachyos': [
+                ['sudo', '-n', 'pacman', '-S', '--noconfirm', '--needed',
+                 'python-atspi', 'curl', 'xz'],
+            ],
+        }
+        for command in prerequisite_commands[args.guest]:
             answer = run(*command, check=False, timeout=300)
             with (WORK / 'prerequisites.log').open('a') as log:
                 log.write(answer.stdout + answer.stderr)
             if answer.returncode:
                 raise RuntimeError('Guest prerequisites failed; see prerequisites.log')
-        run('gsettings', 'set', 'org.gnome.desktop.interface', 'toolkit-accessibility', 'true')
-        run('gsettings', 'set', 'org.gnome.desktop.session', 'idle-delay', '0')
-        run('gsettings', 'set', 'org.gnome.desktop.screensaver', 'lock-enabled', 'false')
-        run('gsettings', 'set', 'org.gnome.desktop.input-sources', 'sources', "[('xkb', 'us')]")
+        run('systemctl', '--user', 'set-environment', 'GTK_MODULES=gail:atk-bridge')
+        if args.guest in ('ubuntu', 'fedora'):
+            run('gsettings', 'set', 'org.gnome.desktop.interface', 'toolkit-accessibility', 'true')
+            run('gsettings', 'set', 'org.gnome.desktop.session', 'idle-delay', '0')
+            run('gsettings', 'set', 'org.gnome.desktop.screensaver', 'lock-enabled', 'false')
+            run('gsettings', 'set', 'org.gnome.desktop.input-sources', 'sources', "[('xkb', 'us')]")
+        else:
+            address = ['--session', '--dest', 'org.a11y.Bus', '--object-path', '/org/a11y/bus']
+            run('gdbus', 'call', *address, '--method', 'org.freedesktop.DBus.Properties.Set',
+                'org.a11y.Status', 'IsEnabled', '<true>')
+            enabled = run('gdbus', 'call', *address, '--method',
+                          'org.freedesktop.DBus.Properties.Get', 'org.a11y.Status', 'IsEnabled').stdout.strip()
+            assert enabled == '(<true>,)', f'KDE accessibility bus not enabled: {enabled}'
+            (WORK / 'accessibility-status.txt').write_text(enabled + '\n')
+            layouts = run('busctl', '--user', 'call', 'org.kde.keyboard', '/Layouts',
+                          'org.kde.KeyboardLayouts', 'getLayoutsList').stdout.strip()
+            selected = run('busctl', '--user', 'call', 'org.kde.keyboard', '/Layouts',
+                           'org.kde.KeyboardLayouts', 'getLayout').stdout.strip()
+            assert '"us"' in layouts and selected == 'u 0', \
+                f'KDE session did not activate the US keyboard layout: {layouts}; {selected}'
+            (WORK / 'keyboard-layout.txt').write_text(layouts + '\n' + selected + '\n')
         run('systemd-run', '--user', '--collect', '--property=ExitType=cgroup',
             '--unit=blockuntu-acceptance-gui', 'gtk-launch', 'local.blockuntu.gui')
         from gui import run_cases
         try:
-            run_cases(case, args.run_id)
+            run_cases(case, args.run_id, args.guest)
         except Exception as error:
             result['cases'].append({'id': 'SETUP-GUI', 'status': 'fail', 'error': str(error)})
             save_result(result)
         from browsers import run_cases as browser_cases
         try:
-            browser_cases(case, result, args.run_id)
+            browser_cases(case, result, args.run_id, args.guest)
         except Exception as error:
             result['cases'].append({'id': 'SETUP-BROWSERS', 'status': 'blocked', 'reason': str(error)})
             save_result(result)
@@ -181,7 +213,7 @@ def main():
         result['cases'].append({'id': 'SETUP-GUEST', 'status': 'fail', 'error': str(error)})
     finally:
         result['cases'].append({'id': 'VM-UPGRADE-001', 'status': 'skip', 'reason': 'Agreed upgrade deferral; no accepted baseline'})
-        finalize_result(result)
+        finalize_result(result, args.guest)
         save_result(result)
     return int(result['status'] != 'pass')
 

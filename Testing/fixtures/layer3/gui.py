@@ -3,11 +3,126 @@ import json
 import stat
 import tomllib
 from pathlib import Path
-from accessibility import click, dump, find, texts
+import pyatspi
+from accessibility import app_name, apps, click, dump, find, texts, walk
 from guest import WORK, host_action, rpc, run, wait
 
 
-def run_cases(case, run_id):
+def chooser_app(title):
+    """Return the native chooser's AT-SPI application across GNOME/KDE."""
+    def locate():
+        for application in apps():
+            name = app_name(application)
+            if name in (None, '', 'gnome-shell', 'blockuntu-gui'):
+                continue
+            for node in walk(application):
+                try:
+                    if (node.name == title and node.getRoleName() in ('dialog', 'frame', 'file chooser') and
+                            node.getState().contains(pyatspi.STATE_SHOWING)):
+                        return name
+                except Exception:
+                    continue
+        return None
+    return wait(locate, 30)
+
+
+def chooser_editable(application):
+    def locate():
+        for candidate in apps():
+            if app_name(candidate) != application:
+                continue
+            for node in walk(candidate):
+                try:
+                    if not node.getState().contains(pyatspi.STATE_SHOWING):
+                        continue
+                    node.queryEditableText()
+                    return node
+                except Exception:
+                    continue
+        return None
+    return wait(locate, 15)
+
+
+def chooser_filename_editable(application):
+    """Select KDE's filename field, not its earlier editable location bar."""
+    def locate():
+        for candidate in apps():
+            if app_name(candidate) != application:
+                continue
+            for label in walk(candidate):
+                try:
+                    if (label.name != 'Name:' or label.getRoleName() != 'label' or
+                            not label.getState().contains(pyatspi.STATE_SHOWING)):
+                        continue
+                    field = label.parent[label.getIndexInParent() + 1]
+                    for node in walk(field):
+                        try:
+                            if node.getState().contains(pyatspi.STATE_SHOWING):
+                                node.queryEditableText()
+                                return node
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+        return None
+    return wait(locate, 15)
+
+
+def chooser_button(application, *names):
+    for name in names:
+        try:
+            find(name, 'button', application, seconds=2, visible=True)
+        except TimeoutError:
+            continue
+        click(name, app=application)
+        return
+    raise TimeoutError(f'Native chooser action unavailable: {application}/{names}')
+
+
+def leave_desktop_overview(guest):
+    """Close GNOME's overview if a modal chooser dispatch exposed it."""
+    if guest == 'fedora':
+        # Fedora 44 can expose the first chooser in GNOME's overview, while
+        # later choosers open directly. Esc is only safe in the overview.
+        try:
+            find('Overview', 'panel', app='gnome-shell', seconds=1, visible=True)
+        except TimeoutError:
+            return
+        host_action('keys', keys=['KEY_ESC'])
+        try:
+            find('Overview', 'panel', app='gnome-shell', seconds=1, visible=True)
+        except TimeoutError:
+            return
+        raise RuntimeError('Fedora desktop overview remained open above the native chooser')
+    for _ in range(3):
+        try:
+            find('Type to search', app='gnome-shell', seconds=1, visible=True)
+        except TimeoutError:
+            return
+        host_action('keys', keys=['KEY_ESC'])
+    try:
+        find('Type to search', app='gnome-shell', seconds=1, visible=True)
+    except TimeoutError:
+        return
+    raise RuntimeError('Desktop overview remained open above the native chooser')
+
+
+def chooser_item(application, basename):
+    def locate():
+        for candidate in apps():
+            if app_name(candidate) != application:
+                continue
+            for node in walk(candidate):
+                try:
+                    if node.name in (basename, basename + '. File'):
+                        return node
+                except Exception:
+                    continue
+        return None
+    return wait(locate, 15)
+
+
+def run_cases(case, run_id, guest='ubuntu'):
     prefix = run_id + '-gui'
     policy = WORK / 'import.toml'
     contents = f'''[[rules]]
@@ -70,14 +185,15 @@ patterns = [{{kind = "domain", value = "allowed.blockuntu.test"}}]
 
     def choose_import(expected='Policy appended from'):
         click('Append TOML')
-        find('Append BlocKuntu policy', 'frame', 'org.gnome.Nautilus')
+        dialog_app = chooser_app('Append BlocKuntu policy')
+        leave_desktop_overview(guest)
         host_action('keys', keys=['KEY_LEFTCTRL', 'KEY_L'])
-        entry = find('', 'text', 'org.gnome.Nautilus')
+        entry = chooser_editable(dialog_app)
         assert entry.queryEditableText().setTextContents(str(policy))
         host_action('keys', keys=['KEY_ENTER'])
-        item = find('import.toml. File', 'table cell', 'org.gnome.Nautilus')
+        item = chooser_item(dialog_app, 'import.toml')
         assert item.parent.querySelection().selectChild(item.getIndexInParent())
-        click('Select', app='org.gnome.Nautilus')
+        chooser_button(dialog_app, 'Select', 'Open')
         wait(lambda: expected.lower() in texts().lower(), 30)
 
     def imported():
@@ -122,10 +238,13 @@ patterns = [{{kind = "domain", value = "allowed.blockuntu.test"}}]
         target = Path.home() / basename
         assert not target.exists(), 'Export target already exists'
         click('Export TOML')
-        find('Export BlocKuntu policy', 'frame', 'org.gnome.Nautilus')
-        entry = find('File Name', 'text', 'org.gnome.Nautilus')
-        assert entry.queryEditableText().setTextContents(basename)
-        click('Save', app='org.gnome.Nautilus')
+        dialog_app = chooser_app('Export BlocKuntu policy')
+        leave_desktop_overview(guest)
+        entry = (chooser_filename_editable(dialog_app) if guest == 'cachyos'
+                 else chooser_editable(dialog_app))
+        filename = str(target) if guest == 'cachyos' else basename
+        assert entry.queryEditableText().setTextContents(filename)
+        chooser_button(dialog_app, 'Save')
         wait(target.exists, 30)
         exported_text = target.read_text()
         config = tomllib.loads(exported_text)

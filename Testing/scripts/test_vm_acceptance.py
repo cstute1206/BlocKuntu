@@ -64,6 +64,40 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.check_report()
 
+    def test_selects_distribution_specific_package(self):
+        cases = [
+            ('fedora', 'rpm', 'test.rpm'),
+            ('cachyos', 'arch', 'test.pkg.tar.zst'),
+        ]
+        for guest, component, filename in cases:
+            with self.subTest(guest=guest):
+                package = self.root / 'artifacts' / filename
+                package.write_bytes(guest.encode())
+                self.report.update(component=component, artifacts=[{
+                    'filename': filename,
+                    'sha256': hashlib.sha256(package.read_bytes()).hexdigest(),
+                }])
+                self.path.write_text(json.dumps(self.report))
+                self.assertEqual(suite.artifact(self.path, guest)[0], package)
+
+    def test_rejects_report_for_another_distribution(self):
+        with self.assertRaisesRegex(ValueError, 'rpm report'):
+            self.check_report_for_guest('fedora')
+
+    def check_report_for_guest(self, guest):
+        self.path.write_text(json.dumps(self.report))
+        return suite.artifact(self.path, guest)
+
+
+class CachyOSBaselineTests(unittest.TestCase):
+    def test_supplied_baseline_is_inspected_without_update_or_reboot(self):
+        answer = types.SimpleNamespace(returncode=0, stdout='baseline packages', stderr='')
+        with tempfile.TemporaryDirectory() as directory, patch.object(suite.vm, 'ssh', return_value=answer) as ssh:
+            suite.prepare_cachyos({}, Path(directory))
+            self.assertEqual(ssh.call_count, 1)
+            self.assertNotIn('sudo', ssh.call_args.args[1])
+            self.assertEqual((Path(directory) / 'cachyos-baseline.log').read_text(), 'baseline packages')
+
 
 class BrowserEvidenceTests(unittest.TestCase):
     def test_disabled_install_confirmation_is_not_activated(self):
@@ -94,6 +128,23 @@ class BrowserEvidenceTests(unittest.TestCase):
                 module.click('Add', app='Firefox')
         self.assertEqual(activated, [0], 'Browser permission delays also require ENABLED')
 
+    def test_gui_modal_dispatch_timeout_requires_caller_observation(self):
+        fake = types.SimpleNamespace(STATE_ENABLED=1, STATE_SENSITIVE=2,
+            Atspi=types.SimpleNamespace(set_timeout=lambda *args: None))
+        spec = importlib.util.spec_from_file_location('modal_accessibility',
+            Path(__file__).parents[1] / 'fixtures/layer3/accessibility.py')
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict('sys.modules', pyatspi=fake):
+            spec.loader.exec_module(module)
+        state = types.SimpleNamespace(contains=lambda value: value in (fake.STATE_SENSITIVE, fake.STATE_ENABLED))
+        timeout = RuntimeError('atspi_error: Did not receive a reply')
+        node = types.SimpleNamespace(getState=lambda: state,
+            queryAction=lambda: types.SimpleNamespace(doAction=lambda index: (_ for _ in ()).throw(timeout)))
+        with patch.object(module, 'find', return_value=node):
+            module.click('Append TOML', app='blockuntu-gui')
+            with self.assertRaisesRegex(RuntimeError, 'Did not receive a reply'):
+                module.click('Add', app='Firefox')
+
     def test_install_confirmation_requires_prompt_dismissal(self):
         accessibility = types.ModuleType('accessibility')
         for name in ('click', 'dump', 'find', 'visible_document_text', 'walk', 'apps', 'app_name'):
@@ -109,7 +160,7 @@ class BrowserEvidenceTests(unittest.TestCase):
                         accessibility=accessibility, guest=guest):
             spec.loader.exec_module(module)
         with patch.object(module, 'click') as click, \
-             patch.object(module, 'find', side_effect=[object(), TimeoutError()]), \
+             patch.object(module, 'find', side_effect=[object(), object(), TimeoutError()]), \
              patch.object(module.time, 'sleep'):
             module.confirm_install('Add', 'Firefox')
             self.assertEqual(click.call_count, 2, 'A no-op action must not start heartbeat timing')
@@ -117,6 +168,39 @@ class BrowserEvidenceTests(unittest.TestCase):
              patch.object(module.time, 'monotonic', side_effect=[0, 16]):
             with self.assertRaisesRegex(TimeoutError, 'prompt did not close'):
                 module.confirm_install('Add', 'Firefox')
+
+    def test_managed_firefox_onboarding_requires_amo_profile_source(self):
+        accessibility = types.ModuleType('accessibility')
+        for name in ('click', 'dump', 'find', 'visible_document_text', 'walk', 'apps', 'app_name'):
+            setattr(accessibility, name, lambda *args, **kwargs: None)
+        guest = types.ModuleType('guest')
+        guest.WORK = Path('/unused')
+        for name in ('host_action', 'rpc', 'run', 'wait'):
+            setattr(guest, name, lambda *args, **kwargs: None)
+        spec = importlib.util.spec_from_file_location('managed_firefox_browsers',
+            Path(__file__).parents[1] / 'fixtures/layer3/browsers.py')
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict('sys.modules', pyatspi=types.ModuleType('pyatspi'),
+                        accessibility=accessibility, guest=guest):
+            spec.loader.exec_module(module)
+        extension_id = '{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}'
+        source = 'https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = root / 'policies.json'
+            profile = root / 'profile'
+            profile.mkdir()
+            policy.write_text(json.dumps({'policies': {'ExtensionSettings': {extension_id: {
+                'installation_mode': 'force_installed', 'install_url': source}}}}))
+            addons = profile / 'extensions.json'
+            addons.write_text(json.dumps({'addons': [{'id': extension_id, 'sourceURI': source}]}))
+            with patch.dict(module.BROWSER_CONFIG['firefox'], policy=str(policy)):
+                self.assertEqual(module.firefox_managed_store_source(profile, extension_id)['installation_path'],
+                                 'managed_store_policy')
+                addons.write_text(json.dumps({'addons': [{'id': extension_id,
+                    'sourceURI': 'file:///tmp/unsigned.xpi'}]}))
+                with self.assertRaisesRegex(AssertionError, 'source differs'):
+                    module.firefox_managed_store_source(profile, extension_id)
 
     def test_background_tab_and_toolbar_cannot_satisfy_page_assertion(self):
         class Node:
@@ -190,6 +274,13 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(result['status'], 'incomplete')
         self.assertIn('VM-BR-001:chrome', result['missing_required_cases'])
         self.assertEqual(sum(row['status'] == 'blocked' for row in result['cases']), 4)
+
+    def test_cachyos_requires_chromium_dimension(self):
+        empty = {'cases': []}
+        self.guest.finalize_result(empty, 'cachyos')
+        required = {(row['id'], row.get('browser')) for row in empty['cases']}
+        self.assertIn(('VM-BR-001', 'chromium'), required)
+        self.assertNotIn(('VM-BR-001', 'chrome'), required)
 
     def test_extra_setup_failure_cannot_be_hidden_by_passing_cases(self):
         result = {'cases': self.passing_cases() + [{'id': 'SETUP-GUEST', 'status': 'fail'}]}

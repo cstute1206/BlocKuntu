@@ -1,4 +1,63 @@
-# Layer 3 validation progress — 2026-09-21
+# Layer 3 validation progress — 2026-09-26
+
+## Current status
+
+Ubuntu's initial smoke milestone remains validated by the September 21 runs
+below. The refreshed CachyOS run `layer3-20260926-cachyos-b` completed with
+**20 of 21 required observations passing**. It is a failed acceptance run:
+Firefox's restart heartbeat missed the unchanged 30-second deadline. Two
+consecutive complete passes are still required. Upgrades remain deferred.
+
+- [CachyOS terminal report](../results/layer3-20260926-cachyos-b/cachyos/acceptance/result.json)
+- [CachyOS harness manifest](../results/layer3-20260926-cachyos-b/cachyos/acceptance/harness-files.json)
+- [Separate Firefox restart diagnostic](../results/layer3-20260926-cachyos-b/cachyos/diagnostic-firefox-restart/README.md)
+
+The new supplied base has a 30 GiB virtual disk and a 26 GiB Btrfs filesystem
+with approximately 17 GiB free. It runs kernel `7.2.7-1-cachyos`, native
+Firefox `156.0.1-1.1`, and native Chromium `153.0.8010.52-1.1`. The runner now
+discovers the single Btrfs partition instead of assuming partition 2, preserves
+the base, uses its installed Firefox, and records its package/filesystem state.
+The full rolling update is opt-in via `--refresh-cachyos`; this run did not
+perform it. Preparation A failed on the changed partition layout before boot;
+its copied storage was removed and its evidence retained.
+
+CachyOS used the exact Arch package from Layer 2 run `35539295807`, source
+commit `d4814ac8c538dce0c3dac184a540163d99e5306c`, SHA-256
+`3ef44e3336b237d959dd560f96906de3a55c83be53d505bec18b2a79705e0eda`.
+All installation, GUI import/export, process blocking/allowlisting, Firefox
+onboarding/exact-URL/website-allowlist, and Chromium browser cases passed.
+The pre-reboot KDE keyboard configuration fixed the earlier navigation issue.
+Published store extensions were Firefox `0.2.6` and Chromium `0.2.5`.
+Base metadata integrity was verified at the end of acceptance.
+
+The separate restart diagnostic used the same signed Firefox store extension.
+With all Detox sessions expired, launch 0 had no new heartbeat for 69 seconds.
+Launch 1 also had none until deliberate navigation; it became active at
+56.778 seconds. The initial diagnostic attempt overlapped the process Detox
+and is explicitly invalid. The installed XPI has no `runtime.onStartup`
+listener. Mozilla documents that an event page needs this listener to run at
+least once per browser session:
+[runtime.onStartup](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/runtime/onStartup).
+A source fix is committed as `d1cf9be` on `fix/firefox-startup-heartbeat` in
+[draft PR #10](https://github.com/cstute1206/BlocKuntu/pull/10); its
+unit tests do not establish signed-store runtime acceptance. Publish a new
+signed store version, then repeat the fresh-clone runs before claiming a pass.
+
+Fedora remains dependent on the RPM native messaging path fix in
+[PR #9](https://github.com/cstute1206/BlocKuntu/pull/9) and a new verified Layer 2
+RPM. Its chooser changes still need a full fresh acceptance run with that RPM.
+The September 25 CachyOS run failed during the OS refresh after SSH stopped
+responding; no acceptance cases ran. Its cleanup guard also found the base
+running. The September 26 runs use a fresh baseline record for the updated base.
+
+Validation of the current harness: 20 acceptance-runner unit tests and 14
+Phase 0 unit tests pass; Python compilation passes. The Firefox fix separately
+passes all eight extension unit tests and the manifest check.
+The shared Chrome harness passes seven tests, with the Firefox-only startup
+case skipped. After collecting diagnostics, the CachyOS test clone was removed
+through guarded cleanup; only the three stopped bases remain.
+
+## Ubuntu milestone — September 21
 
 Status: **initial Ubuntu smoke milestone validated**. Two consecutive fresh-clone
 runs passed with identical harness manifests and the same verified CI package.
