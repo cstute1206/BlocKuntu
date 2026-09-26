@@ -24,7 +24,7 @@ async function harness() {
     Promise.resolve(result).then(value => port.onMessage.listeners.forEach(fn => fn({ id: message.id, result: value })), error => port.onMessage.listeners.forEach(fn => fn({ id: message.id, error: { message: error.message } })));
   }};
   const api = {
-    runtime: { id: 'test-extension', getURL: value => `${scheme}//test/${value}`, getManifest: () => ({ version: 'test' }), getBrowserInfo: async () => ({ name: 'Firefox' }), connectNative: () => port },
+    runtime: { id: 'test-extension', onStartup: event(), getURL: value => `${scheme}//test/${value}`, getManifest: () => ({ version: 'test' }), getBrowserInfo: async () => ({ name: 'Firefox' }), connectNative: () => port },
     storage: { local: {
       get: (_, callback) => callback ? callback({}) : Promise.resolve({}),
       set: (_, callback) => callback ? callback() : Promise.resolve(),
@@ -51,6 +51,22 @@ async function harness() {
 }
 const nav = { tabId: 7, frameId: 0, url: 'https://outside.test/work' };
 const block = { decision: 'block', reason: { kind: 'scheduled_block', list_mode: 'allowlist', rule_id: 'work', rule_name: 'Work' } };
+
+test('Firefox startup wakes heartbeat and checks restored tabs without navigation', { skip: !firefox }, async () => {
+  const h = await harness();
+  assert.equal(h.api.runtime.onStartup.listeners.length, 1);
+  await h.advance(h.run('HEARTBEAT_TIMEOUT_MS') + 1);
+  h.requests.length = 0;
+  h.api.tabs.query = async () => [{ id: nav.tabId, url: nav.url, active: true }];
+  h.respond(method => method === 'evaluate_url' ? block : { browser_extension_mode: 'active' });
+  h.api.runtime.onStartup.listeners[0]();
+  await flush();
+  assert.ok(h.requests.some(request => request.method === 'extension_heartbeat'));
+  assert.equal(h.run('refreshHealthState()'), true);
+  assert.ok(h.requests.some(request => request.method === 'evaluate_url'));
+  assert.equal(h.updates.length, 1);
+  assert.equal(new URL(h.updates[0].url).searchParams.get('url'), nav.url);
+});
 
 test('PR-WAL-006 top-level HTTP(S) navigation boundary', async () => {
   const h = await harness();
