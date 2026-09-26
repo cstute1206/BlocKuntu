@@ -166,6 +166,9 @@ def inspect_package(entries, meta, hooks, kind):
 
     def manifests():
         paths = [(target['mozilla_lib'] + '/' + browser + '/native-messaging-hosts/blockuntu_native.json', 'allowed_extensions', CONTRACT['firefox_ids']) for browser in ['mozilla', 'librewolf', 'waterfox']]
+        if target.get('mozilla_native_lib') and target['mozilla_native_lib'] != target['mozilla_lib']:
+            paths.append((target['mozilla_native_lib'] + '/mozilla/native-messaging-hosts/blockuntu_native.json',
+                          'allowed_extensions', CONTRACT['firefox_ids']))
         paths += [(base + '/native-messaging-hosts/blockuntu_native.json', 'allowed_origins', CONTRACT['chrome_origins']) for base in ['etc/opt/chrome', 'etc/chromium', 'etc/opt/edge', 'etc/opt/vivaldi', 'etc/vivaldi']]
         for path, key, ids in paths:
             manifest = json.loads(text(path))
