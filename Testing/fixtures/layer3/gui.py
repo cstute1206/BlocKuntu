@@ -17,7 +17,13 @@ def chooser_app(title):
                 continue
             for node in walk(application):
                 try:
-                    if (node.name == title and node.getRoleName() in ('dialog', 'frame', 'file chooser') and
+                    role = node.getRoleName()
+                    # Fedora's GTK4 Nautilus chooser exposes its root as a
+                    # filler. Keep this exception scoped to Nautilus so a
+                    # desktop/taskbar entry cannot be mistaken for the dialog.
+                    chooser_role = role in ('dialog', 'frame', 'file chooser') or (
+                        name == 'org.gnome.Nautilus' and role == 'filler')
+                    if (node.name == title and chooser_role and
                             node.getState().contains(pyatspi.STATE_SHOWING)):
                         return name
                 except Exception:

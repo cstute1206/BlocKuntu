@@ -1,15 +1,16 @@
 # Phase 3: Installed-package smoke acceptance
 
-Status: **Ubuntu smoke validated** on 2026-09-21. Runs `layer3-20260921-c` and
-`layer3-20260921-d` each passed all 21 required observations on fresh clones
-with identical harness manifests. Both used the provenance-verified artifact
-from Layer 2 run `35539295807`, including the watcher boot-ordering fix.
-Each run took approximately 15 minutes and removed its clone on success.
-See the [validation report](reports/phase-3-validation.md) for evidence.
-CachyOS run `layer3-20260926-cachyos-b` passed 20/21 observations on the refreshed
-base; Firefox store extension 0.2.6 missed the restart-heartbeat deadline.
-The separate startup fix needs a signed store release before fresh acceptance
-reruns. Fedora awaits the corrected Layer 2 RPM. Upgrades are deferred.
+Status: **initial smoke subset validated on all three guests**. On 2026-09-27,
+CachyOS runs `layer3-20260927-cachyos-a/b` and Fedora runs
+`layer3-20260927-fedora-b/c` each passed 21/21 required observations, with
+identical harness manifests within each guest's pair. Ubuntu regression run
+`layer3-20260927-ubuntu-a` also passed 21/21, following its two initial passes
+on September 21. All used published Firefox extension `0.2.8`; the September 27
+packages came from provenance-verified Layer 2 run `36258082653`.
+All test clones were removed and base integrity verified.
+See the [validation report](reports/phase-3-validation.md) for evidence,
+the Fedora chooser correction, and the recorded harness differences.
+The remaining 59 broader cases are planned; upgrades are deferred.
 
 ## Single entry point
 

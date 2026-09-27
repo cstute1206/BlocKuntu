@@ -1,6 +1,71 @@
-# Layer 3 validation progress — 2026-09-26
+# Layer 3 validation progress — 2026-09-27
 
 ## Current status
+
+**The requested smoke validation round passed:** two consecutive fresh CachyOS
+runs, two consecutive fresh Fedora runs, and one fresh Ubuntu regression run.
+All five passed 21 required observations, used Firefox store extension `0.2.8`,
+verified base metadata integrity, and removed their disposable clones.
+This validates the initial smoke subset, not the entire Layer 3 matrix.
+Each run still records 59 broader cases as planned and upgrade testing as deferred.
+
+| Guest / run | Required observations | Minutes | Base integrity | Clone |
+| --- | ---: | ---: | --- | --- |
+| [CachyOS A](../results/layer3-20260927-cachyos-a/cachyos/acceptance/result.json) | 21 passed | 15.6 | Verified | Removed |
+| [CachyOS B](../results/layer3-20260927-cachyos-b/cachyos/acceptance/result.json) | 21 passed | 16.0 | Verified | Removed |
+| [Fedora B](../results/layer3-20260927-fedora-b/fedora/acceptance/result.json) | 21 passed | 17.4 | Verified | Removed |
+| [Fedora C](../results/layer3-20260927-fedora-c/fedora/acceptance/result.json) | 21 passed | 17.6 | Verified | Removed |
+| [Ubuntu A regression](../results/layer3-20260927-ubuntu-a/ubuntu/acceptance/result.json) | 21 passed | 15.2 | Verified | Removed |
+
+The CachyOS pair has identical harness manifests, as does the Fedora pair.
+Ubuntu used the same manifest as the passing Fedora pair. The only difference
+between the CachyOS and Fedora harness manifests is the later Nautilus chooser
+fix in `fixtures/layer3/gui.py`; its exception is scoped to Nautilus and does
+not change the KDE chooser path. See each run's `harness-files.json` and the
+[aggregate verification](../results/layer3-store-20260927/smoke-summary.json).
+
+### Published Firefox fix
+
+Downloaded the public AMO `0.2.8` XPI and verified its SHA-256 against AMO's
+metadata before running the VMs. Its compiled background script registers
+`browser.runtime.onStartup.addListener`, calls `sendHeartbeat`, and revalidates
+open tabs. SHA-256:
+`a2ee1593de9087d5586e870738a9abe75899c2c15b8b3abc9d91f209283c9897`.
+The browser cases installed the published store extension in fresh profiles;
+the downloaded inspection archive was not sideloaded. All five runs confirmed
+extension `0.2.8` and passed the unchanged restart-heartbeat deadline.
+[Store verification](../results/layer3-store-20260927/verification.json).
+
+Browser versions: Firefox `156.0.1` on all guests; Chromium `153.0.8010.52`
+on CachyOS; Chrome `151.0.7922.71` on Fedora and `150.0.7871.186` on Ubuntu.
+The Chrome/Chromium store extension was `0.2.5` throughout.
+
+### Package provenance and Fedora correction
+
+All five runs consumed the exact, provenance-verified native packages from
+[Layer 2 run 36258082653](https://github.com/cstute1206/BlocKuntu/actions/runs/36258082653),
+source commit `4b85aa97287ee8fd28433f05b2ad1142ab7ab3ff`, including PR #9's
+Fedora native-messaging manifest fix. No application package was rebuilt.
+
+| Package | SHA-256 |
+| --- | --- |
+| Arch `blockuntu-0.2.0-1-x86_64.pkg.tar.zst` | `c7adf3be84776ac733521986368ef4002bafda5e8d2a4250b2b9add5869096cf` |
+| RPM `blockuntu-0.2.0-1.fc43.x86_64.rpm` | `1891414d82edc23c8effec8bc1d6a4ca5bc70ce43a4767dab094120e4ca3c7d6` |
+| DEB `blockuntu_0.2.0-1_amd64.deb` | `3dc4578e83f2bb8798bb56e5ff353eb2796c1fc97dc4c04f9d2f9dc3e020f886` |
+
+Initial Fedora run `layer3-20260927-fedora-a` failed because Nautilus exposed
+the open native chooser as an AT-SPI `filler`, while the harness accepted only
+dialog/frame/file-chooser roles. The unhandled dialog caused subsequent GUI
+failures; browser failures and missing-fixture cases remain recorded in that
+failed report. Added a Nautilus-only filler exception, retaining exact title
+and visibility checks. A regression test rejects similarly named desktop/taskbar
+entries. Fresh Fedora B and C then passed the full subset. Failed A's evidence
+is retained and its clone was removed using guarded cleanup.
+
+All 21 acceptance-harness tests and 14 Phase 0 tests pass. Final libvirt
+inventory contains only stopped `Ubuntu`, `Fedora`, and `CachyOS` bases.
+
+## Historical status — September 26
 
 Ubuntu's initial smoke milestone remains validated by the September 21 runs
 below. The refreshed CachyOS run `layer3-20260926-cachyos-b` completed with

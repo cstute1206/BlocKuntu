@@ -99,6 +99,34 @@ class CachyOSBaselineTests(unittest.TestCase):
             self.assertEqual((Path(directory) / 'cachyos-baseline.log').read_text(), 'baseline packages')
 
 
+class ChooserEvidenceTests(unittest.TestCase):
+    def test_nautilus_filler_is_a_chooser_but_taskbar_entries_are_not(self):
+        accessibility = types.ModuleType('accessibility')
+        for name in ('app_name', 'apps', 'click', 'dump', 'find', 'texts', 'walk'):
+            setattr(accessibility, name, lambda *args, **kwargs: None)
+        guest = types.ModuleType('guest')
+        guest.WORK = Path('/unused')
+        for name in ('host_action', 'rpc', 'run', 'wait'):
+            setattr(guest, name, lambda *args, **kwargs: None)
+        fake = types.SimpleNamespace(STATE_SHOWING=1)
+        spec = importlib.util.spec_from_file_location('chooser_gui',
+            Path(__file__).parents[1] / 'fixtures/layer3/gui.py')
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict('sys.modules', pyatspi=fake, accessibility=accessibility, guest=guest):
+            spec.loader.exec_module(module)
+        for app, role, expected in [('org.gnome.Nautilus', 'filler', 'org.gnome.Nautilus'),
+                                    ('plasmashell', 'filler', None),
+                                    ('plasmashell', 'button', None)]:
+            node = types.SimpleNamespace(name='Append BlocKuntu policy', getRoleName=lambda: role,
+                getState=lambda: types.SimpleNamespace(contains=lambda state: True))
+            with self.subTest(app=app, role=role), \
+                 patch.object(module, 'apps', return_value=[object()]), \
+                 patch.object(module, 'app_name', return_value=app), \
+                 patch.object(module, 'walk', return_value=[node]), \
+                 patch.object(module, 'wait', side_effect=lambda predicate, seconds: predicate()):
+                self.assertEqual(module.chooser_app('Append BlocKuntu policy'), expected)
+
+
 class BrowserEvidenceTests(unittest.TestCase):
     def test_disabled_install_confirmation_is_not_activated(self):
         fake = types.SimpleNamespace(STATE_ENABLED=1, STATE_SENSITIVE=2,
