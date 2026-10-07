@@ -423,7 +423,6 @@ remove_hosts_block() {
 }
 
 remove_browser_policies() {
-  firefox_policy="/etc/firefox/policies/policies.json"
   chrome_policy="/etc/opt/chrome/policies/managed/blockuntu.json"
   chromium_policy="/etc/chromium/policies/managed/blockuntu.json"
   brave_policy="/etc/brave/policies/managed/blockuntu.json"
@@ -433,11 +432,10 @@ remove_browser_policies() {
   legacy_vivaldi_policy="/etc/opt/vivaldi/policies/managed/blockuntu.json"
   chrome_update_manifest="/usr/local/share/blockuntu/chrome-extension-updates.xml"
 
-  if [ -f "${firefox_policy}" ] && grep -qi "blockuntu" "${firefox_policy}" 2>/dev/null; then
-    rm -f "${firefox_policy}"
-    remove_empty_dir "/etc/firefox/policies"
-    remove_empty_dir "/etc/firefox"
-  fi
+  # GUI prepare_uninstall restores the merged Firefox policy before granting
+  # the removal lease. This shared document may still contain unrelated data.
+  remove_empty_dir "/etc/firefox/policies"
+  remove_empty_dir "/etc/firefox"
 
   rm -f "${chrome_policy}" "${chromium_policy}" "${brave_policy}" "${opera_policy}" "${edge_policy}" "${vivaldi_policy}" "${legacy_vivaldi_policy}"
   for chromium_snap_policy in /var/snap/chromium/*/policies/managed/blockuntu.json; do

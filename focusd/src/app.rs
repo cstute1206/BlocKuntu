@@ -70,11 +70,133 @@ const STRICT_EDGE_BROWSER_SESSION_STARTED_AT_KEY: &str =
 const STRICT_VIVALDI_BROWSER_SESSION_STARTED_AT_KEY: &str =
     "strict_mode.vivaldi_browser_session_started_at";
 const MIN_BROWSER_STARTUP_HEARTBEAT_GRACE_SECONDS: i64 = 60;
+const BROWSER_RECONNECT_GRACE_SECONDS: u64 = 60;
 const NOTIFICATION_STATE_INTERVAL_SECONDS: u64 = 5;
 const ALLOWANCE_NOTIFICATION_TTL_MINUTES: i64 = 5;
 const LIFECYCLE_NOTIFICATION_TTL_MINUTES: i64 = 10;
 const SLOW_RPC_THRESHOLD_MS: u128 = 500;
 const EVENT_RETENTION_MAINTENANCE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
+
+#[derive(Default)]
+struct BrowserReconnectGrace {
+    last_scan: Option<Instant>,
+    previously_healthy: HashSet<SupportedBrowser>,
+    windows: HashMap<SupportedBrowser, BrowserReconnectWindow>,
+}
+
+struct BrowserReconnectWindow {
+    started_at: DateTime<Utc>,
+    deadline: Instant,
+    expiry_logged: bool,
+}
+
+impl BrowserReconnectGrace {
+    // Only defer the strict stale-extension process kill. Heartbeat state,
+    // website decisions and every application rule retain their own checks.
+    fn deferred_browsers(
+        &mut self,
+        processes: &[ProcessInfo],
+        strict_mode: &StrictModeConfig,
+        database: &Database,
+        now: DateTime<Utc>,
+        monotonic: Instant,
+        scan_interval: Duration,
+    ) -> Result<HashSet<SupportedBrowser>> {
+        let first_scan = self.last_scan.is_none();
+        let gap_threshold = Duration::from_secs(u64::from(strict_mode.grace_seconds))
+            .max(scan_interval.saturating_mul(2));
+        let interrupted = self
+            .last_scan
+            .is_some_and(|last| monotonic.saturating_duration_since(last) > gap_threshold);
+        self.last_scan = Some(monotonic);
+        let present: HashSet<_> = processes
+            .iter()
+            .filter_map(|p| supported_browser_for_process(&p.identity()))
+            .collect();
+        let mut deferred = HashSet::new();
+        for browser in SupportedBrowser::MANAGED {
+            if !present.contains(&browser)
+                || !strict_mode.kill_supported_browser_if_extension_stale
+                || !browser_required_by_strict_mode(browser, strict_mode)
+            {
+                self.windows.remove(&browser);
+                self.previously_healthy.remove(&browser);
+                continue;
+            }
+            let session = strict_browser_session_started_at(database, browser)?;
+            let heartbeat = database.heartbeat(browser.extension_component())?;
+            let current = heartbeat
+                .as_ref()
+                .filter(|h| session.is_some_and(|start| h.last_seen_at >= start));
+            let healthy = current.is_some_and(|h| {
+                now.signed_duration_since(h.last_seen_at)
+                    .num_seconds()
+                    .max(0)
+                    <= i64::from(strict_mode.grace_seconds)
+            });
+            if let Some(window) = self.windows.get_mut(&browser) {
+                if healthy && current.is_some_and(|h| h.last_seen_at >= window.started_at) {
+                    self.windows.remove(&browser);
+                    self.previously_healthy.insert(browser);
+                    database.record_event(
+                        "browser_reconnect_grace_completed",
+                        Some(browser.label()),
+                        None,
+                        now,
+                    )?;
+                } else {
+                    self.previously_healthy.remove(&browser);
+                    if monotonic <= window.deadline {
+                        deferred.insert(browser);
+                    } else if !window.expiry_logged {
+                        window.expiry_logged = true;
+                        database.record_event(
+                            "browser_reconnect_grace_expired",
+                            Some(browser.label()),
+                            None,
+                            now,
+                        )?;
+                    }
+                }
+                // An outstanding/expired window cannot be extended by another
+                // scan gap. A fresh verified heartbeat must rearm eligibility.
+                continue;
+            }
+            let recovering = (first_scan && current.is_some())
+                || (interrupted && self.previously_healthy.contains(&browser));
+            if recovering && !healthy {
+                self.windows.insert(
+                    browser,
+                    BrowserReconnectWindow {
+                        started_at: now,
+                        deadline: monotonic + Duration::from_secs(BROWSER_RECONNECT_GRACE_SECONDS),
+                        expiry_logged: false,
+                    },
+                );
+                self.previously_healthy.remove(&browser);
+                deferred.insert(browser);
+                database.record_event(
+                    "browser_reconnect_grace_started",
+                    Some(browser.label()),
+                    Some(&format!(
+                        "trigger={};grace_seconds={BROWSER_RECONNECT_GRACE_SECONDS}",
+                        if first_scan {
+                            "daemon_start"
+                        } else {
+                            "process_scan_gap"
+                        }
+                    )),
+                    now,
+                )?;
+            } else if healthy {
+                self.previously_healthy.insert(browser);
+            } else {
+                self.previously_healthy.remove(&browser);
+            }
+        }
+        Ok(deferred)
+    }
+}
 
 #[derive(Clone)]
 pub struct DaemonApp {
@@ -89,6 +211,7 @@ pub struct DaemonApp {
     defer_chrome_policy_repair_until_heartbeat: bool,
     process_scan_interval: Duration,
     policy_repair_interval: Duration,
+    browser_reconnect_grace: Arc<Mutex<BrowserReconnectGrace>>,
 }
 
 impl DaemonApp {
@@ -145,10 +268,15 @@ impl DaemonApp {
         let gecko_policies = vec![
             GeckoPolicyBinding::new(
                 SupportedBrowser::Firefox,
-                FirefoxPolicyManager::for_browser(
+                FirefoxPolicyManager::merging_existing_policy(
                     &args.firefox_policy,
                     &args.extension_id,
                     &args.firefox_extension_install_url,
+                    args.firefox_policy_backup.clone().unwrap_or_else(|| {
+                        args.database
+                            .with_file_name("browser-policy-backups")
+                            .join("firefox.json")
+                    }),
                 ),
             ),
             GeckoPolicyBinding::new(
@@ -251,6 +379,7 @@ impl DaemonApp {
                 .defer_chrome_policy_repair_until_heartbeat(),
             process_scan_interval: Duration::from_secs(args.process_scan_interval_seconds),
             policy_repair_interval: Duration::from_secs(args.policy_repair_interval_seconds),
+            browser_reconnect_grace: Arc::new(Mutex::new(BrowserReconnectGrace::default())),
         })
     }
 
@@ -716,6 +845,21 @@ impl DaemonApp {
 
             let strict_mode = core.config().strict_mode.clone();
             let mut deferred_browsers = HashSet::new();
+            if !clock_tampered {
+                deferred_browsers.extend(
+                    self.browser_reconnect_grace
+                        .lock()
+                        .map_err(|_| DaemonError::LockPoisoned)?
+                        .deferred_browsers(
+                            &processes,
+                            &strict_mode,
+                            core.database(),
+                            now.with_timezone(&Utc),
+                            Instant::now(),
+                            self.process_scan_interval,
+                        )?,
+                );
+            }
             if self.defer_firefox_policy_repair_until_heartbeat {
                 for browser in SupportedBrowser::MANAGED
                     .into_iter()
@@ -1879,9 +2023,222 @@ mod tests {
         sync_allowance_notifications, sync_metered_app_usage_sessions, sync_schedule_notifications,
         UNSUPPORTED_BROWSER_RULE_ID,
     };
+    use super::{strict_browser_kill_details_except, BrowserReconnectGrace};
     use crate::error::DaemonError;
     use crate::policy_recovery::PolicyRecoveryManager;
     use crate::process_scan::{supported_browser_for_process, ProcessInfo, SupportedBrowser};
+
+    fn connected_browsers() -> (
+        Database,
+        StrictModeConfig,
+        chrono::DateTime<Utc>,
+        Vec<ProcessInfo>,
+    ) {
+        let db = Database::in_memory().unwrap();
+        let strict = StrictModeConfig::default();
+        let start = Utc
+            .with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+            .single()
+            .unwrap();
+        let processes = vec![process_info(1234, "firefox"), process_info(1235, "chrome")];
+        strict_browser_kill_details(&processes, strict.clone(), &db, start).unwrap();
+        for browser in [SupportedBrowser::Firefox, SupportedBrowser::Chrome] {
+            db.upsert_heartbeat(
+                browser.extension_component(),
+                Some("{}"),
+                start + Duration::seconds(5),
+            )
+            .unwrap();
+        }
+        (db, strict, start, processes)
+    }
+
+    #[test]
+    fn daemon_pause_gives_connected_browsers_one_bounded_reconnect_window() {
+        let (db, strict, start, processes) = connected_browsers();
+        let mut grace = BrowserReconnectGrace::default();
+        let origin = std::time::Instant::now();
+        let interval = std::time::Duration::from_secs(10);
+        assert!(grace
+            .deferred_browsers(
+                &processes,
+                &strict,
+                &db,
+                start + Duration::seconds(10),
+                origin,
+                interval
+            )
+            .unwrap()
+            .is_empty());
+        let resumed = start + Duration::seconds(180);
+        let deferred = grace
+            .deferred_browsers(
+                &processes,
+                &strict,
+                &db,
+                resumed,
+                origin + std::time::Duration::from_secs(170),
+                interval,
+            )
+            .unwrap();
+        assert_eq!(deferred.len(), 2);
+        assert!(strict_browser_kill_details_except(
+            &processes,
+            strict.clone(),
+            &db,
+            resumed,
+            &deferred
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(
+            db.heartbeat("firefox_extension")
+                .unwrap()
+                .unwrap()
+                .last_seen_at,
+            start + Duration::seconds(5)
+        );
+        let deadline = grace.windows[&SupportedBrowser::Firefox].deadline;
+        // A further long pause cannot grant a second window without a heartbeat.
+        let expired = start + Duration::seconds(251);
+        let deferred = grace
+            .deferred_browsers(
+                &processes,
+                &strict,
+                &db,
+                expired,
+                origin + std::time::Duration::from_secs(241),
+                interval,
+            )
+            .unwrap();
+        assert!(deferred.is_empty());
+        assert_eq!(grace.windows[&SupportedBrowser::Firefox].deadline, deadline);
+        assert_eq!(
+            strict_browser_kill_details_except(&processes, strict, &db, expired, &deferred)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn daemon_restart_allows_reconnect_but_requires_a_fresh_current_session_heartbeat() {
+        let (db, strict, start, processes) = connected_browsers();
+        let mut grace = BrowserReconnectGrace::default();
+        let origin = std::time::Instant::now();
+        let now = start + Duration::seconds(180);
+        let interval = std::time::Duration::from_secs(10);
+        assert_eq!(
+            grace
+                .deferred_browsers(&processes, &strict, &db, now, origin, interval)
+                .unwrap()
+                .len(),
+            2
+        );
+        db.upsert_heartbeat("firefox_extension", Some("{}"), now + Duration::seconds(1))
+            .unwrap();
+        let deferred = grace
+            .deferred_browsers(
+                &processes,
+                &strict,
+                &db,
+                now + Duration::seconds(2),
+                origin + std::time::Duration::from_secs(2),
+                interval,
+            )
+            .unwrap();
+        assert_eq!(
+            deferred,
+            std::collections::HashSet::from([SupportedBrowser::Chrome])
+        );
+        assert!(!grace.windows.contains_key(&SupportedBrowser::Firefox));
+        assert!(grace
+            .previously_healthy
+            .contains(&SupportedBrowser::Firefox));
+        assert!(!grace.previously_healthy.contains(&SupportedBrowser::Chrome));
+        // A completed recovery can rearm a later genuine outage, while the
+        // browser that never reconnected cannot extend its original window.
+        let deferred = grace
+            .deferred_browsers(
+                &processes,
+                &strict,
+                &db,
+                now + Duration::seconds(180),
+                origin + std::time::Duration::from_secs(180),
+                interval,
+            )
+            .unwrap();
+        assert_eq!(
+            deferred,
+            std::collections::HashSet::from([SupportedBrowser::Firefox])
+        );
+    }
+
+    #[test]
+    fn ordinary_extension_failure_does_not_receive_daemon_recovery_grace() {
+        let (db, strict, start, processes) = connected_browsers();
+        let mut grace = BrowserReconnectGrace::default();
+        let origin = std::time::Instant::now();
+        for elapsed in [10, 30, 50, 70] {
+            assert!(grace
+                .deferred_browsers(
+                    &processes,
+                    &strict,
+                    &db,
+                    start + Duration::seconds(elapsed),
+                    origin + std::time::Duration::from_secs(elapsed as u64),
+                    std::time::Duration::from_secs(10)
+                )
+                .unwrap()
+                .is_empty());
+        }
+        assert!(grace.windows.is_empty());
+        assert_eq!(
+            strict_browser_kill_details(&processes, strict, &db, start + Duration::seconds(70))
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn unconnected_browser_uses_startup_grace_without_a_recovery_window() {
+        let db = Database::in_memory().unwrap();
+        let strict = StrictModeConfig::default();
+        assert_eq!(strict.grace_seconds, 60);
+        let start = Utc
+            .with_ymd_and_hms(2026, 5, 28, 10, 0, 0)
+            .single()
+            .unwrap();
+        let processes = [process_info(1234, "firefox")];
+        let mut grace = BrowserReconnectGrace::default();
+        assert!(grace
+            .deferred_browsers(
+                &processes,
+                &strict,
+                &db,
+                start,
+                std::time::Instant::now(),
+                std::time::Duration::from_secs(10)
+            )
+            .unwrap()
+            .is_empty());
+        assert!(grace.windows.is_empty());
+        assert!(strict_browser_kill_details(
+            &processes,
+            strict.clone(),
+            &db,
+            start + Duration::seconds(1)
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(
+            strict_browser_kill_details(&processes, strict, &db, start + Duration::seconds(62))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn snap_native_bridge_requires_the_expected_token_and_payload() {
@@ -2798,13 +3155,13 @@ mod tests {
             &processes,
             strict_mode,
             &database,
-            started_at + Duration::seconds(36),
+            started_at + Duration::seconds(66),
         )
         .expect("strict check should pass");
         assert!(result
             .get(&1234)
             .expect("firefox should be selected")
-            .contains("heartbeat_age_seconds=31"));
+            .contains("heartbeat_age_seconds=61"));
     }
 
     fn process(name: &str) -> ProcessIdentity {

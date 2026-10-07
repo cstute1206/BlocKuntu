@@ -23,6 +23,10 @@ Website and application lists can contain multiple entries with different blocki
 
 ## Browser and application enforcement
 
+Native Firefox policy activation and repair preserve unrelated settings and other extensions. GUI-authorized uninstall restores the previous values of settings BlocKuntu changed and preserves unrelated additions made during use.
+
+The default strict browser heartbeat grace is 60 seconds. Initial browser startup allows at least 60 seconds, and packaged manual setup waits for the first extension connection. After a daemon restart or sustained pause, previously connected browser sessions receive a bounded 60-second reconnect window. Without a fresh heartbeat, strict browser closure resumes; extension fail-closed behavior and application rules remain active.
+
 Install the extension for Firefox or Chrome:
 
 Install the [Firefox extension](https://addons.mozilla.org/en-US/firefox/addon/blockuntu/).

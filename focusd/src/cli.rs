@@ -62,6 +62,9 @@ pub struct Args {
     pub socket: PathBuf,
     #[arg(long, default_value = DEFAULT_FIREFOX_POLICY_PATH)]
     pub firefox_policy: PathBuf,
+    /// Override the Firefox policy backup; defaults beside the daemon database.
+    #[arg(long)]
+    pub firefox_policy_backup: Option<PathBuf>,
     #[arg(long, default_value = DEFAULT_EXTENSION_ID)]
     pub extension_id: String,
     #[arg(long, default_value = DEFAULT_FIREFOX_EXTENSION_INSTALL_URL)]

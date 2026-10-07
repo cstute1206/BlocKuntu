@@ -733,5 +733,5 @@ fn default_enabled() -> bool {
 }
 
 fn default_strict_grace_seconds() -> u32 {
-    30
+    60
 }

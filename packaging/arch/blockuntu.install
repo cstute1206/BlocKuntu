@@ -150,8 +150,8 @@ remove_hosts_block() {
 }
 
 remove_browser_policies() {
+  # Firefox's shared policy is restored by GUI prepare_uninstall; preserve it.
   for policy in \
-    /etc/firefox/policies/policies.json \
     /etc/opt/chrome/policies/managed/blockuntu.json \
     /etc/chromium/policies/managed/blockuntu.json \
     /etc/brave/policies/managed/blockuntu.json \

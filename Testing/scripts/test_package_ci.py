@@ -62,6 +62,11 @@ class PackageTests(unittest.TestCase):
         del entries['usr/bin/blockuntu-native']
         self.assert_case_fails('PKG-CONTENT-001', entries=entries)
 
+    def test_rejects_shared_firefox_policy_deletion_in_native_hook(self):
+        hooks = copy.deepcopy(self.hooks)
+        hooks['prerm'] += '\nrm -f /etc/firefox/policies/policies.json\n'
+        self.assert_case_fails('PKG-CONTENT-005', hooks=hooks)
+
     def test_wrong_elf_architecture(self):
         entries = copy.deepcopy(self.entries)
         entries['usr/bin/blockuntud']['data'] = b'#!/bin/sh\n'

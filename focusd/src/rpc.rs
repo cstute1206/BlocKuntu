@@ -5378,10 +5378,11 @@ mod tests {
         let gecko_policies = vec![
             GeckoPolicyBinding::new(
                 SupportedBrowser::Firefox,
-                FirefoxPolicyManager::new(
+                FirefoxPolicyManager::merging_existing_policy(
                     temp.path().join("firefox/policies.json"),
                     "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
                     "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi",
+                    temp.path().join("backups/firefox.json"),
                 ),
             ),
             GeckoPolicyBinding::new(
@@ -8447,6 +8448,17 @@ mod tests {
     #[test]
     fn prepare_uninstall_marks_browser_extension_mode() {
         let (temp, context) = rpc_context_with_enforcement_managers(true);
+        let firefox_path = temp.path().join("firefox/policies.json");
+        fs::create_dir_all(firefox_path.parent().unwrap()).unwrap();
+        let original = json!({"policies": {"DisableTelemetry": true,
+            "DisableDeveloperTools": false,
+            "ExtensionSettings": {"other@example.local": {"installation_mode": "normal_installed"}}}});
+        fs::write(&firefox_path, serde_json::to_vec(&original).unwrap()).unwrap();
+        context
+            .gecko_policy(SupportedBrowser::Firefox)
+            .unwrap()
+            .verify_and_repair()
+            .unwrap();
         let lease_path = temp.path().join("package-removal-lease");
         let context = context.with_package_removal_lease_path(&lease_path);
         let prepare = json!({
@@ -8466,6 +8478,9 @@ mod tests {
         assert!(response.get("error").is_none(), "{response}");
         assert_eq!(response["result"]["status"], "ok");
         assert_eq!(response["result"]["browser_extension_mode"], "uninstalling");
+        let restored: Value = serde_json::from_slice(&fs::read(&firefox_path).unwrap()).unwrap();
+        assert_eq!(restored, original);
+        assert!(!temp.path().join("backups/firefox.json").exists());
         let lease = fs::read_to_string(&lease_path).expect("package removal lease should exist");
         let lease_token = response["result"]["package_removal_lease"]
             .as_str()

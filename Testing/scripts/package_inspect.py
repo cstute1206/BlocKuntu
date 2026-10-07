@@ -161,7 +161,7 @@ def inspect_package(entries, meta, hooks, kind):
         strict = config['strict_mode']
         for key in ['require_firefox_extension', 'require_chrome_extension', 'kill_supported_browser_if_extension_stale', 'block_unsupported_browsers']:
             require(strict[key] is True, f'Unsafe default: {key}')
-        require(strict['grace_seconds'] == 30, 'Unexpected grace period')
+        require(strict['grace_seconds'] == 60, 'Unexpected grace period')
     case('PKG-CONTENT-003', defaults)
 
     def manifests():
@@ -181,7 +181,11 @@ def inspect_package(entries, meta, hooks, kind):
     def policy_paths():
         # Policies are generated at runtime. Here verify packaged lifecycle references;
         # actual browser discovery and policy writing remain VM acceptance.
-        for base in ['etc/firefox/policies/policies.json', 'etc/opt/chrome', 'etc/chromium', 'etc/brave', 'etc/opt/opera', 'etc/opt/edge', 'etc/vivaldi']:
+        # GUI prepare_uninstall restores the shared Firefox document. Native
+        # hooks must never delete it after that restoration.
+        require('/etc/firefox/policies/policies.json' not in all_hooks and
+                'firefox_policy' not in all_hooks, 'Destructive shared Firefox policy cleanup')
+        for base in ['etc/opt/chrome', 'etc/chromium', 'etc/brave', 'etc/opt/opera', 'etc/opt/edge', 'etc/vivaldi']:
             require('/' + base in all_hooks, f'Missing browser policy lifecycle path: {base}')
     case('PKG-CONTENT-005', policy_paths)
 
