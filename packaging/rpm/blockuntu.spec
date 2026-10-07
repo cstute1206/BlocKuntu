@@ -32,6 +32,7 @@ Requires:       libayatana-appindicator-gtk3
 Requires:       polkit
 Requires:       shadow-utils
 Requires:       systemd
+Requires:       util-linux
 Requires:       xdg-utils
 Recommends:     wmctrl
 
@@ -80,6 +81,8 @@ chmod 0755 %{buildroot}%{_bindir}/blockuntu-setup-confined-chromium
 
 install -Dpm 0644 packaging/deb/blockuntu.toml \
   %{buildroot}%{_sysconfdir}/blockuntu/config.toml
+install -Dpm 0755 scripts/remove-user-native-hosts.sh \
+  %{buildroot}%{_libexecdir}/blockuntu/remove-user-native-hosts.sh
 
 for size in 32 64 128; do
   install -Dpm 0644 focus-gui/src-tauri/icons/${size}x${size}.png \
@@ -372,6 +375,10 @@ if [ -d /run/systemd/system ]; then
   fi
 fi
 
+if [ "$1" -eq 0 ]; then
+  %{_libexecdir}/blockuntu/remove-user-native-hosts.sh
+fi
+
 %postun
 if [ "$1" -eq 0 ]; then
   rm -f /run/systemd/system/blockuntu.service.d/99-rpm-transaction.conf
@@ -416,6 +423,7 @@ fi
 %{_bindir}/blockuntu-setup-confined-chromium
 %{_libexecdir}/blockuntu/setup-confined-chromium-native-host.sh
 %{_libexecdir}/blockuntu/setup-confined-firefox-native-host.sh
+%{_libexecdir}/blockuntu/remove-user-native-hosts.sh
 %config(noreplace) %{_sysconfdir}/blockuntu/config.toml
 %config(noreplace) %{_sysconfdir}/opt/chrome/native-messaging-hosts/blockuntu_native.json
 %config(noreplace) %{_sysconfdir}/chromium/native-messaging-hosts/blockuntu_native.json

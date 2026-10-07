@@ -186,6 +186,8 @@ def inspect_package(entries, meta, hooks, kind):
     case('PKG-CONTENT-005', policy_paths)
 
     def helpers():
+        require(entry(target['helper_dir'] + '/remove-user-native-hosts.sh', 0o755).startswith(b'#!'),
+                'Missing per-user uninstall cleanup helper')
         for browser in ['firefox', 'chromium']:
             path = target['helper_dir'] + '/setup-confined-' + browser + '-native-host.sh'
             require(entry(path, 0o755).startswith(b'#!'), f'Invalid helper {path}')
@@ -204,6 +206,8 @@ def inspect_package(entries, meta, hooks, kind):
     def lifecycle():
         required = ['install'] if kind == 'arch' else ['postinst', 'prerm', 'postrm']
         require(all(hooks.get(key, '').strip() not in ['', '(none)'] for key in required), 'Missing lifecycle hooks')
+        require('/' + target['helper_dir'] + '/remove-user-native-hosts.sh' in all_hooks,
+                'Removal hook must invoke per-user Native Messaging cleanup')
         for fragment in ['systemctl daemon-reload', 'systemctl', 'remove_hosts_block', 'remove_browser_policies', 'recovery-credentials-hidden']:
             require(fragment in all_hooks, f'Missing hook contract: {fragment}')
         for name, body in hooks.items():
@@ -233,6 +237,8 @@ def inspect_package(entries, meta, hooks, kind):
     case('PKG-HARD-001', removal_contract)
 
     def recovery_units():
+        require(re.search(r'^RuntimeDirectoryPreserve=restart\s*$', text(units + '/blockuntu.service'), re.M),
+                'Daemon restarts must preserve the active socket pathname')
         require('systemctl enable --now blockuntu.socket blockuntu.service blockuntu-watchdog.service blockuntu-hosts.path' in all_hooks, 'Recovery units not enabled by hook contract')
         require('Restart=always' in text(units + '/blockuntu-watchdog.service'), 'Missing watchdog restart')
         require('PathChanged=/etc/hosts' in text(units + '/blockuntu-hosts.path'), 'Missing hosts watch')

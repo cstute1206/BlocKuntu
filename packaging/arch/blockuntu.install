@@ -229,6 +229,7 @@ pre_remove() {
   if [ -d /run/systemd/system ]; then
     systemctl disable ${unit_names} >/dev/null 2>&1 || true
   fi
+  /usr/lib/blockuntu/remove-user-native-hosts.sh || return 1
 }
 
 post_remove() {

@@ -20,6 +20,7 @@ depends=(
   'polkit'
   'sqlite'
   'systemd'
+  'util-linux'
   'webkit2gtk-4.1'
   'xdg-utils'
 )
@@ -81,6 +82,8 @@ package() {
 
   install -Dm755 scripts/setup-confined-chromium-native-host.sh \
     "${pkgdir}/usr/lib/blockuntu/setup-confined-chromium-native-host.sh"
+  install -Dm755 scripts/remove-user-native-hosts.sh \
+    "${pkgdir}/usr/lib/blockuntu/remove-user-native-hosts.sh"
 
   install -d "${pkgdir}/usr/bin"
   cat >"${pkgdir}/usr/bin/blockuntu-setup-confined-firefox" <<'EOF'

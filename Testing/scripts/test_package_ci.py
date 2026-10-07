@@ -114,6 +114,104 @@ class PackageTests(unittest.TestCase):
             'lib/systemd/system/blockuntu-hosts.path']['data'].replace(b'[Unit]', b'[Unit]\nAfter=blockuntu.service')
         self.assert_case_fails('PKG-HARD-002', entries=entries)
 
+    def test_daemon_restart_cannot_unlink_socket_runtime_directory(self):
+        entries = copy.deepcopy(self.entries)
+        path = 'lib/systemd/system/blockuntu.service'
+        entries[path]['data'] = entries[path]['data'].replace(b'RuntimeDirectoryPreserve=restart\n', b'')
+        self.assert_case_fails('PKG-HARD-002', entries=entries)
+
+    def test_user_native_cleanup_is_shipped_and_called(self):
+        entries = copy.deepcopy(self.entries)
+        del entries['usr/lib/blockuntu/remove-user-native-hosts.sh']
+        self.assert_case_fails('PKG-CONTENT-006', entries=entries)
+        hooks = {name: body.replace('/usr/lib/blockuntu/remove-user-native-hosts.sh', ':') for name, body in self.hooks.items()}
+        self.assert_case_fails('PKG-CONTENT-008', hooks=hooks)
+
+    def cleanup_fixture(self, home):
+        helper = home.parent / 'packaged-cleanup.sh'
+        helper.write_bytes(self.entries['usr/lib/blockuntu/remove-user-native-hosts.sh']['data'])
+        helper.chmod(0o755)
+        command = ['/bin/sh', str(helper), '--user', str(home)]
+        if os.geteuid() == 0:
+            # Package-inspector tests may also run in a root container. Cleanup
+            # must still execute as an ordinary account, with an owned fixture.
+            for path in [home.parent, *home.parent.rglob('*')]:
+                os.chown(path, 65534, 65534)
+            command = ['runuser', '-u', 'nobody', '--', *command]
+        subprocess.run(command, check=True, capture_output=True)
+
+    def test_confirmed_six_user_native_leftovers_removed_without_other_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / 'home with spaces'
+            managed = [
+                '.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/blockuntu_native.json',
+                'snap/chromium/common/chromium/NativeMessagingHosts/blockuntu_native.json',
+                'snap/firefox/common/.mozilla/native-messaging-hosts/blockuntu_native.json',
+                'snap/chromium/common/.local/share/blockuntu/blockuntu-native',
+                'snap/chromium/common/.local/share/blockuntu/blockuntu-native-launcher',
+                'snap/firefox/common/.local/share/blockuntu/blockuntu-native',
+            ]
+            for name in managed:
+                path = home / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text('managed fixture')
+            sentinels = [home / '.mozilla/prefs.js', home / 'snap/firefox/common/.mozilla/native-messaging-hosts/other.json',
+                         home / 'snap/chromium/common/.local/share/blockuntu/unrelated.txt']
+            for path in sentinels:
+                path.parent.mkdir(parents=True, exist_ok=True); path.write_text('keep me')
+            self.cleanup_fixture(home)
+            self.assertTrue(all(not (home / name).exists() for name in managed))
+            self.assertTrue(all(path.read_text() == 'keep me' for path in sentinels))
+            self.cleanup_fixture(home)  # Final-removal retries must be harmless.
+
+    def test_flatpak_and_snap_revision_native_cleanup_keeps_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / 'home'
+            managed = [home / '.var/app/org.mozilla.firefox/data/blockuntu/blockuntu-native',
+                       home / '.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts/blockuntu_native.json']
+            for browser, profile in [('brave', 'BraveSoftware/Brave-Browser'), ('opera', 'google-chrome'), ('vivaldi', 'vivaldi')]:
+                for revision in ('123', '456'):
+                    path = home / 'snap' / browser / revision / '.config' / profile / 'NativeMessagingHosts/blockuntu_native.json'
+                    path.parent.mkdir(parents=True); managed.append(path)
+                (home / 'snap' / browser / 'current').symlink_to('456', target_is_directory=True)
+            for path in managed:
+                path.parent.mkdir(parents=True, exist_ok=True); path.write_text('managed fixture')
+            sentinel = home / 'snap/brave/456/.config/BraveSoftware/Brave-Browser/Preferences'
+            sentinel.write_text('keep profile')
+            self.cleanup_fixture(home)
+            self.assertTrue(all(not path.exists() for path in managed))
+            self.assertEqual(sentinel.read_text(), 'keep profile')
+            self.assertTrue((home / 'snap/brave/current').is_symlink())
+
+    def test_user_cleanup_refuses_root_privileges_before_touching_home(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / 'home'
+            path = home / '.mozilla/native-messaging-hosts/blockuntu_native.json'
+            path.parent.mkdir(parents=True); path.write_text('keep')
+            fake_bin = Path(directory) / 'bin'; fake_bin.mkdir()
+            fake_id = fake_bin / 'id'; fake_id.write_text('#!/bin/sh\necho 0\n'); fake_id.chmod(0o755)
+            result = subprocess.run(['/bin/sh', str(ROOT / 'scripts/remove-user-native-hosts.sh'), '--user', str(home)],
+                                    env={**os.environ, 'PATH': str(fake_bin) + ':' + os.environ['PATH']}, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(path.read_text(), 'keep')
+
+    def test_cleanup_dispatch_drops_privileges_and_excludes_system_accounts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); home = root / 'home with spaces'; home.mkdir()
+            manifest = home / '.mozilla/native-messaging-hosts/blockuntu_native.json'
+            manifest.parent.mkdir(parents=True); manifest.write_text('must not delete as root')
+            passwd = root / 'passwd'
+            passwd.write_text('\n'.join(f'{name}:x:{uid}:1000::{home}:/bin/sh' for name,uid in
+                                       [('root',0),('service',1),('nobody',65534),('desktop',2147483000)])+'\n')
+            log = root / 'runuser.json'; fake_bin = root / 'bin'; fake_bin.mkdir()
+            tools = {'id':'#!/bin/sh\necho 0\n',
+                     'getent':'#!/bin/sh\nexec /bin/cat "$PASSWD_FIXTURE"\n',
+                     'runuser':f'#!{sys.executable}\nimport json,os,sys\nopen(os.environ["RUNUSER_LOG"],"w").write(json.dumps(sys.argv[1:]))\n'}
+            for name,body in tools.items():
+                path = fake_bin / name; path.write_text(body); path.chmod(0o755)
+            subprocess.run(['/bin/sh',str(ROOT / 'scripts/remove-user-native-hosts.sh')], check=True, capture_output=True,
+                env={**os.environ,'PATH':str(fake_bin)+':'+os.environ['PATH'],'PASSWD_FIXTURE':str(passwd),'RUNUSER_LOG':str(log)})
+            self.assertEqual(json.loads(log.read_text()), ['-u','desktop','--','/bin/sh',str(ROOT / 'scripts/remove-user-native-hosts.sh'),'--user',str(home)])
+            self.assertEqual(manifest.read_text(), 'must not delete as root')
+
     def test_bad_metadata(self):
         for key, value, case in [('version', '0.1.0-26', 'PKG-META-001'), ('architecture', 'arm64', 'PKG-META-002'), ('dependencies', [], 'PKG-META-002')]:
             meta = copy.deepcopy(self.meta)

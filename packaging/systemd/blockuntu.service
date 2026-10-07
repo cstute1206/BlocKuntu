@@ -17,6 +17,8 @@ User=root
 Group=root
 RuntimeDirectory=blockuntu
 RuntimeDirectoryMode=0755
+# The socket unit retains its listener across daemon restarts. Keep its path too.
+RuntimeDirectoryPreserve=restart
 StateDirectory=blockuntu
 StateDirectoryMode=0700
 ConfigurationDirectory=blockuntu

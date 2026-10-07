@@ -128,6 +128,8 @@ install -Dm755 scripts/setup-confined-firefox-native-host.sh \
   "${PKG_ROOT}/usr/lib/blockuntu/setup-confined-firefox-native-host.sh"
 install -Dm755 scripts/setup-confined-chromium-native-host.sh \
   "${PKG_ROOT}/usr/lib/blockuntu/setup-confined-chromium-native-host.sh"
+install -Dm755 scripts/remove-user-native-hosts.sh \
+  "${PKG_ROOT}/usr/lib/blockuntu/remove-user-native-hosts.sh"
 cat >"${PKG_ROOT}/usr/bin/blockuntu-setup-confined-firefox" <<'SH'
 #!/bin/sh
 exec /usr/lib/blockuntu/setup-confined-firefox-native-host.sh "$@"
@@ -219,7 +221,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${ARCHITECTURE}
-Depends: systemd, passwd, e2fsprogs, pkexec, xdg-utils, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, librsvg2-2
+Depends: systemd, passwd, e2fsprogs, util-linux, pkexec, xdg-utils, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, librsvg2-2
 Recommends: wmctrl
 Maintainer: BlocKuntu <local@blockuntu.invalid>
 Description: Local Linux focus blocker
@@ -483,6 +485,9 @@ fi
 
 remove_hosts_block
 remove_browser_policies
+if [ "$1" = 'remove' ]; then
+  /usr/lib/blockuntu/remove-user-native-hosts.sh
+fi
 rm -rf /run/blockuntu
 PRERM
 
