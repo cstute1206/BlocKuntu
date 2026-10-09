@@ -900,67 +900,16 @@ impl DaemonApp {
             return Ok(());
         }
 
-        let events = kill_processes(&processes, &blocked_pids, &LinuxSignalKiller)?;
-        if events.is_empty() {
-            return Ok(());
-        }
-
+        let report = kill_processes(&processes, &blocked_pids, &LinuxSignalKiller);
         let core = self.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        let now = chrono::Utc::now();
-        for event in events {
-            let detail_prefix = kill_details_by_pid
-                .get(&event.pid)
-                .map(String::as_str)
-                .unwrap_or("reason=<unknown>");
-            let event_kind = kill_event_kind_by_pid
-                .get(&event.pid)
-                .copied()
-                .unwrap_or("app_killed");
-            let application_name = event
-                .command_name
-                .as_deref()
-                .or(event.executable_basename.as_deref())
-                .or(event.desktop_id.as_deref())
-                .unwrap_or("Application");
-            core.database().record_event(
-                event_kind,
-                Some(application_name),
-                Some(&format!(
-                    "pid={};{};exe={};basename={};command={};desktop_id={};window_titles={}",
-                    event.pid,
-                    detail_prefix,
-                    event
-                        .executable_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "<unknown>".to_string()),
-                    event.executable_basename.as_deref().unwrap_or("<unknown>"),
-                    event.command_name.as_deref().unwrap_or("<unknown>"),
-                    event.desktop_id.as_deref().unwrap_or("<unknown>"),
-                    if event.window_titles.is_empty() {
-                        "<none>".to_string()
-                    } else {
-                        event.window_titles.join(" | ")
-                    }
-                )),
-                now,
-            )?;
-            if let Some(rule_id) = blocked_rule_id_by_pid.get(&event.pid) {
-                let notification_name = notification_name_by_pid
-                    .get(&event.pid)
-                    .map(String::as_str)
-                    .unwrap_or(application_name);
-                if let Err(error) = crate::rpc::enqueue_application_block_notification(
-                    &core,
-                    rule_id,
-                    notification_name,
-                    now,
-                ) {
-                    eprintln!("could not queue application block notification: {error}");
-                }
-            }
-        }
-        Ok(())
+        record_process_kill_report(
+            &core,
+            report,
+            &kill_details_by_pid,
+            &kill_event_kind_by_pid,
+            &blocked_rule_id_by_pid,
+            &notification_name_by_pid,
+        )
     }
 
     fn has_extension_heartbeat(&self, component: &str) -> Result<bool> {
@@ -1046,6 +995,82 @@ impl DaemonApp {
                 }
             }
         }
+    }
+}
+
+fn record_process_kill_report(
+    core: &FocusCore,
+    report: crate::process_scan::ProcessKillReport,
+    kill_details_by_pid: &HashMap<u32, String>,
+    kill_event_kind_by_pid: &HashMap<u32, &str>,
+    blocked_rule_id_by_pid: &HashMap<u32, String>,
+    notification_name_by_pid: &HashMap<u32, String>,
+) -> Result<()> {
+    let now = chrono::Utc::now();
+    for event in report.events {
+        let detail_prefix = kill_details_by_pid
+            .get(&event.pid)
+            .map(String::as_str)
+            .unwrap_or("reason=<unknown>");
+        let event_kind = kill_event_kind_by_pid
+            .get(&event.pid)
+            .copied()
+            .unwrap_or("app_killed");
+        let application_name = event
+            .command_name
+            .as_deref()
+            .or(event.executable_basename.as_deref())
+            .or(event.desktop_id.as_deref())
+            .unwrap_or("Application");
+        core.database().record_event(
+            event_kind,
+            Some(application_name),
+            Some(&format!(
+                "pid={};{};exe={};basename={};command={};desktop_id={};window_titles={}",
+                event.pid,
+                detail_prefix,
+                event
+                    .executable_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+                event.executable_basename.as_deref().unwrap_or("<unknown>"),
+                event.command_name.as_deref().unwrap_or("<unknown>"),
+                event.desktop_id.as_deref().unwrap_or("<unknown>"),
+                if event.window_titles.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    event.window_titles.join(" | ")
+                }
+            )),
+            now,
+        )?;
+        if let Some(rule_id) = blocked_rule_id_by_pid.get(&event.pid) {
+            let notification_name = notification_name_by_pid
+                .get(&event.pid)
+                .map(String::as_str)
+                .unwrap_or(application_name);
+            if let Err(error) = crate::rpc::enqueue_application_block_notification(
+                core,
+                rule_id,
+                notification_name,
+                now,
+            ) {
+                eprintln!("could not queue application block notification: {error}");
+            }
+        }
+    }
+    if report.failures.is_empty() {
+        Ok(())
+    } else {
+        Err(DaemonError::KillBatchFailed {
+            failures: report
+                .failures
+                .into_iter()
+                .map(|failure| format!("pid={}: {}", failure.pid, failure.error))
+                .collect::<Vec<_>>()
+                .join("; "),
+        })
     }
 }
 
@@ -2788,12 +2813,12 @@ mod tests {
 
     #[test]
     fn pr_aal_004_006_008_exemptions_and_independent_helpers_reach_recording_killer() {
-        use crate::process_scan::{kill_processes, ProcessKiller};
+        use crate::process_scan::{kill_processes, ProcessKillOutcome, ProcessKiller};
         struct Recorder(std::cell::RefCell<Vec<u32>>);
         impl ProcessKiller for Recorder {
-            fn kill(&self, pid: u32) -> crate::error::Result<()> {
+            fn kill(&self, pid: u32) -> crate::error::Result<ProcessKillOutcome> {
                 self.0.borrow_mut().push(pid);
-                Ok(())
+                Ok(ProcessKillOutcome::SignalSent)
             }
         }
         let config = Config::from_toml_str(
@@ -2844,8 +2869,87 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(pids, vec![40, 41, 42, 43, 44]);
         let recorder = Recorder(std::cell::RefCell::new(vec![]));
-        kill_processes(&processes, &pids, &recorder).unwrap();
+        assert!(kill_processes(&processes, &pids, &recorder)
+            .failures
+            .is_empty());
         assert_eq!(*recorder.0.borrow(), pids);
+    }
+
+    #[test]
+    fn process_kill_events_are_persisted_before_reporting_batch_failures() {
+        use crate::process_scan::{kill_processes, ProcessKillOutcome, ProcessKiller};
+        use std::collections::HashMap;
+        struct MixedKiller;
+        impl ProcessKiller for MixedKiller {
+            fn kill(&self, pid: u32) -> crate::error::Result<ProcessKillOutcome> {
+                match pid {
+                    102 => Ok(ProcessKillOutcome::AlreadyGone),
+                    103 | 105 => Err(DaemonError::KillFailed {
+                        pid,
+                        errno: libc::EPERM,
+                    }),
+                    _ => Ok(ProcessKillOutcome::SignalSent),
+                }
+            }
+        }
+        let core =
+            focus_core::FocusCore::new(Config::default(), Database::in_memory().unwrap()).unwrap();
+        let processes = (101..=106)
+            .map(|pid| process_info(pid, "firefox"))
+            .collect::<Vec<_>>();
+        let report = kill_processes(&processes, &[101, 102, 103, 104, 105, 106], &MixedKiller);
+        let kinds = (101..=106)
+            .map(|pid| (pid, "browser_killed_extension_stale"))
+            .collect();
+        let details = (101..=106)
+            .map(|pid| (pid, "reason=extension_stale".to_string()))
+            .collect();
+        let error = super::record_process_kill_report(
+            &core,
+            report,
+            &details,
+            &kinds,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(&error, DaemonError::KillBatchFailed { .. }));
+        assert!(error.to_string().contains("pid=103"));
+        assert!(error.to_string().contains("pid=105"));
+        let log = core.database().event_log_snapshot().unwrap();
+        assert_eq!(log.matches("browser_killed_extension_stale").count(), 3);
+        for pid in [101, 104, 106] {
+            assert!(log.contains(&format!("pid={pid};reason=extension_stale")));
+        }
+        for pid in [102, 103, 105] {
+            assert!(!log.contains(&format!("pid={pid};")));
+        }
+    }
+
+    #[test]
+    fn already_gone_kill_batch_does_not_record_a_kill_or_return_an_error() {
+        use crate::process_scan::{kill_processes, ProcessKillOutcome, ProcessKiller};
+        use std::collections::HashMap;
+        struct GoneKiller;
+        impl ProcessKiller for GoneKiller {
+            fn kill(&self, _: u32) -> crate::error::Result<ProcessKillOutcome> {
+                Ok(ProcessKillOutcome::AlreadyGone)
+            }
+        }
+        let core =
+            focus_core::FocusCore::new(Config::default(), Database::in_memory().unwrap()).unwrap();
+        let report = kill_processes(&[process_info(102, "firefox")], &[102], &GoneKiller);
+        assert_eq!(report.already_gone_pids, vec![102]);
+        super::record_process_kill_report(
+            &core,
+            report,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(core.database().event_log_snapshot().unwrap().is_empty());
     }
 
     #[test]

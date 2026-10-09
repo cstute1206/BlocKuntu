@@ -99,8 +99,27 @@ pub struct ProcessKillEvent {
     pub window_titles: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessKillOutcome {
+    SignalSent,
+    AlreadyGone,
+}
+
+#[derive(Debug)]
+pub struct ProcessKillFailure {
+    pub pid: u32,
+    pub error: DaemonError,
+}
+
+#[derive(Debug, Default)]
+pub struct ProcessKillReport {
+    pub events: Vec<ProcessKillEvent>,
+    pub already_gone_pids: Vec<u32>,
+    pub failures: Vec<ProcessKillFailure>,
+}
+
 pub trait ProcessKiller {
-    fn kill(&self, pid: u32) -> Result<()>;
+    fn kill(&self, pid: u32) -> Result<ProcessKillOutcome>;
 }
 
 pub trait WindowTitleProvider {
@@ -125,13 +144,22 @@ pub struct WindowTitleSnapshot {
 pub struct LinuxSignalKiller;
 
 impl ProcessKiller for LinuxSignalKiller {
-    fn kill(&self, pid: u32) -> Result<()> {
+    fn kill(&self, pid: u32) -> Result<ProcessKillOutcome> {
         let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
         if result == 0 {
-            return Ok(());
+            return Ok(ProcessKillOutcome::SignalSent);
         }
 
         let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+        signal_error_outcome(pid, errno)
+    }
+}
+
+fn signal_error_outcome(pid: u32, errno: i32) -> Result<ProcessKillOutcome> {
+    if errno == libc::ESRCH {
+        // The process can exit between the procfs snapshot and the signal.
+        Ok(ProcessKillOutcome::AlreadyGone)
+    } else {
         Err(DaemonError::KillFailed { pid, errno })
     }
 }
@@ -335,8 +363,8 @@ pub fn kill_processes<K: ProcessKiller>(
     processes: &[ProcessInfo],
     blocked_pids: &[u32],
     killer: &K,
-) -> Result<Vec<ProcessKillEvent>> {
-    let mut events = Vec::new();
+) -> ProcessKillReport {
+    let mut report = ProcessKillReport::default();
     let processes_by_pid = processes
         .iter()
         .map(|process| (process.pid, process))
@@ -349,8 +377,20 @@ pub fn kill_processes<K: ProcessKiller>(
         let Some(process) = processes_by_pid.get(pid) else {
             continue;
         };
-        killer.kill(*pid)?;
-        events.push(ProcessKillEvent {
+        match killer.kill(*pid) {
+            Ok(ProcessKillOutcome::SignalSent) => {}
+            Ok(ProcessKillOutcome::AlreadyGone) => {
+                report.already_gone_pids.push(*pid);
+                continue;
+            }
+            Err(error) => {
+                report
+                    .failures
+                    .push(ProcessKillFailure { pid: *pid, error });
+                continue;
+            }
+        }
+        report.events.push(ProcessKillEvent {
             pid: *pid,
             executable_path: process.executable_path.clone(),
             executable_basename: process.executable_basename.clone(),
@@ -359,7 +399,7 @@ pub fn kill_processes<K: ProcessKiller>(
             window_titles: process.window_titles.clone(),
         });
     }
-    Ok(events)
+    report
 }
 
 impl ProcessInfo {
@@ -701,10 +741,10 @@ mod tests {
     use super::{
         application_allowlist_exempt_process_ids, application_allowlist_process_is_exempt,
         attach_window_titles, kill_processes, parse_wmctrl_titles, scan_procfs,
-        unsupported_browser_installation_for_process, ProcessInfo, ProcessKiller,
-        WindowTitleProvider,
+        signal_error_outcome, unsupported_browser_installation_for_process, ProcessInfo,
+        ProcessKillOutcome, ProcessKiller, WindowTitleProvider,
     };
-    use crate::error::Result;
+    use crate::error::{DaemonError, Result};
 
     #[derive(Default)]
     struct RecordingKiller {
@@ -712,9 +752,9 @@ mod tests {
     }
 
     impl ProcessKiller for RecordingKiller {
-        fn kill(&self, pid: u32) -> Result<()> {
+        fn kill(&self, pid: u32) -> Result<ProcessKillOutcome> {
             self.killed.borrow_mut().push(pid);
-            Ok(())
+            Ok(ProcessKillOutcome::SignalSent)
         }
     }
 
@@ -781,7 +821,9 @@ mod tests {
         );
 
         let killer = RecordingKiller::default();
-        let events = kill_processes(&processes, &[1234], &killer).expect("enforcement should pass");
+        let report = kill_processes(&processes, &[1234], &killer);
+        assert!(report.failures.is_empty());
+        let events = report.events;
 
         assert_eq!(killer.killed.borrow().as_slice(), &[1234]);
         assert_eq!(events[0].executable_path, Some(app_path));
@@ -848,14 +890,78 @@ mod tests {
         ];
         let killer = RecordingKiller::default();
 
-        let events = kill_processes(&processes, &[101, 100, 101], &killer)
-            .expect("group enforcement should pass");
+        let report = kill_processes(&processes, &[101, 100, 101], &killer);
+        assert!(report.failures.is_empty());
+        let events = report.events;
 
         assert_eq!(killer.killed.borrow().as_slice(), &[101, 100]);
         assert_eq!(
             events.iter().map(|event| event.pid).collect::<Vec<_>>(),
             vec![101, 100]
         );
+    }
+
+    struct MixedKiller {
+        attempted: RefCell<Vec<u32>>,
+    }
+
+    impl ProcessKiller for MixedKiller {
+        fn kill(&self, pid: u32) -> Result<ProcessKillOutcome> {
+            self.attempted.borrow_mut().push(pid);
+            match pid {
+                102 => signal_error_outcome(pid, libc::ESRCH),
+                103 | 105 => signal_error_outcome(pid, libc::EPERM),
+                _ => Ok(ProcessKillOutcome::SignalSent),
+            }
+        }
+    }
+
+    #[test]
+    fn kill_batch_preserves_successes_and_continues_after_missing_and_failed_targets() {
+        let processes = (101..=106)
+            .map(|pid| process_info(pid, Some(1), 1000, "browser", None, &[]))
+            .collect::<Vec<_>>();
+        let killer = MixedKiller {
+            attempted: RefCell::new(Vec::new()),
+        };
+        let report = kill_processes(
+            &processes,
+            &[101, 102, 103, 104, 105, 106, 102, 103, 999],
+            &killer,
+        );
+        assert_eq!(
+            *killer.attempted.borrow(),
+            vec![101, 102, 103, 104, 105, 106]
+        );
+        assert_eq!(
+            report.events.iter().map(|e| e.pid).collect::<Vec<_>>(),
+            vec![101, 104, 106]
+        );
+        assert_eq!(report.already_gone_pids, vec![102]);
+        assert_eq!(
+            report.failures.iter().map(|e| e.pid).collect::<Vec<_>>(),
+            vec![103, 105]
+        );
+        assert!(report.failures.iter().all(|f| matches!(
+            f.error,
+            DaemonError::KillFailed {
+                errno: libc::EPERM,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn only_esrch_is_an_expected_signal_race() {
+        assert_eq!(
+            signal_error_outcome(102, libc::ESRCH).unwrap(),
+            ProcessKillOutcome::AlreadyGone
+        );
+        for errno in [libc::EPERM, libc::EINVAL, -1] {
+            assert!(
+                matches!(signal_error_outcome(102, errno), Err(DaemonError::KillFailed { pid: 102, errno: actual }) if actual == errno)
+            );
+        }
     }
 
     #[test]
