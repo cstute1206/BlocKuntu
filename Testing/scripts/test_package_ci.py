@@ -299,6 +299,30 @@ class PackageTests(unittest.TestCase):
         hooks = {'install': (ROOT / 'packaging/arch/blockuntu.install').read_text()}
         results = inspect_package(entries, meta, hooks, 'arch')
         self.assertFalse([row for row in results if row['status'] == 'fail'], results)
+        guard_path = 'usr/share/libalpm/hooks/00-blockuntu-removal.hook'
+        for old, new in [(b'AbortOnFail', b''), (b'PreTransaction', b'PostTransaction'),
+                         (b'Operation = Remove', b'Operation = Upgrade')]:
+            broken = copy.deepcopy(entries)
+            broken[guard_path]['data'] = broken[guard_path]['data'].replace(old, new)
+            inspected = inspect_package(broken, meta, hooks, 'arch')
+            self.assertEqual(next(row['status'] for row in inspected if row['id'] == 'PKG-HARD-001'), 'fail')
+        broken = copy.deepcopy(entries)
+        del broken['usr/lib/blockuntu/check-package-removal-lease.sh']
+        inspected = inspect_package(broken, meta, hooks, 'arch')
+        self.assertEqual(next(row['status'] for row in inspected if row['id'] == 'PKG-HARD-001'), 'fail')
+
+        # Exercise the RPM guard contract with the production action file.
+        rpm_entries = copy.deepcopy(entries)
+        rpm_entries['usr/libexec/blockuntu/check-package-removal-lease.sh'] = copy.deepcopy(
+            entries['usr/lib/blockuntu/check-package-removal-lease.sh'])
+        action_path = 'etc/dnf/libdnf5-plugins/actions.d/blockuntu-removal.actions'
+        rpm_entries[action_path] = {**entries[guard_path], 'data': (ROOT / 'packaging/rpm/blockuntu-removal.actions').read_bytes()}
+        def guard_status():
+            rows = inspect_package(rpm_entries, meta, hooks, 'rpm')
+            return next(row['status'] for row in rows if row['id'] == 'PKG-HARD-001')
+        self.assertEqual(guard_status(), 'pass')
+        rpm_entries[action_path]['data'] = rpm_entries[action_path]['data'].replace(b'raise_error=1', b'raise_error=0')
+        self.assertEqual(guard_status(), 'fail')
 
     def test_rpm_reader(self):
         top = self.root / 'rpm'
@@ -324,7 +348,7 @@ printf fixture > %{buildroot}/usr/share/blockuntu/fixture
 %files
 /usr/share/blockuntu/fixture
 ''')
-        subprocess.run(['rpmbuild', '-bb', '--define', f'_topdir {top}', '--define', f'_tmppath {top}', str(spec)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        subprocess.run(['rpmbuild', '-bb', '--define', '_rpmformat 4', '--define', f'_topdir {top}', '--define', f'_tmppath {top}', str(spec)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         package = next((top / 'RPMS').rglob('*.rpm'))
         entries, meta, hooks = read_package(package, 'rpm')
         self.assertEqual(meta['version'], '0.2.0-1')

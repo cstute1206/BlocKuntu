@@ -238,6 +238,22 @@ def inspect_package(entries, meta, hooks, kind):
     def removal_contract():
         for fragment in ['reject_package_uninstall', 'package-removal-lease', 'BLOCKUNTU_PACKAGE_REMOVAL_LEASE', 'expires_at']:
             require(fragment in all_hooks, f'Missing removal contract: {fragment}')
+        if kind in ('arch', 'rpm'):
+            helper = target['helper_dir'] + '/check-package-removal-lease.sh'
+            body = text(helper, 0o755)
+            for fragment in ['package-removal-lease', 'BLOCKUNTU_PACKAGE_REMOVAL_LEASE', 'expires_at']:
+                require(fragment in body, f'Missing transaction lease check: {fragment}')
+            syntax = subprocess.run(['sh', '-n'], input=body.encode(), capture_output=True)
+            require(syntax.returncode == 0, 'Invalid transaction guard syntax')
+            if kind == 'arch':
+                hook = text('usr/share/libalpm/hooks/00-blockuntu-removal.hook', 0o644)
+                for line in ['Operation = Remove', 'Type = Package', 'Target = blockuntu',
+                             'When = PreTransaction', 'Exec = /' + helper, 'AbortOnFail']:
+                    require(line in hook.splitlines(), f'Missing ALPM transaction protection: {line}')
+            else:
+                action = text('etc/dnf/libdnf5-plugins/actions.d/blockuntu-removal.actions', 0o644)
+                require('pre_transaction:blockuntu:out:raise_error=1:/' + helper + ' --dnf-action ${pkg.action}'
+                        in action.splitlines(), 'Missing DNF5 transaction protection')
     case('PKG-HARD-001', removal_contract)
 
     def recovery_units():

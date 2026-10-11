@@ -29,6 +29,7 @@ BuildRequires:  pkgconfig(webkit2gtk-4.1)
 
 Requires:       e2fsprogs
 Requires:       libayatana-appindicator-gtk3
+Requires:       libdnf5-plugin-actions >= 5.2.17.0
 Requires:       polkit
 Requires:       shadow-utils
 Requires:       systemd
@@ -83,6 +84,10 @@ install -Dpm 0644 packaging/deb/blockuntu.toml \
   %{buildroot}%{_sysconfdir}/blockuntu/config.toml
 install -Dpm 0755 scripts/remove-user-native-hosts.sh \
   %{buildroot}%{_libexecdir}/blockuntu/remove-user-native-hosts.sh
+install -Dpm 0755 scripts/check-package-removal-lease.sh \
+  %{buildroot}%{_libexecdir}/blockuntu/check-package-removal-lease.sh
+install -Dpm 0644 packaging/rpm/blockuntu-removal.actions \
+  %{buildroot}%{_sysconfdir}/dnf/libdnf5-plugins/actions.d/blockuntu-removal.actions
 
 for size in 32 64 128; do
   install -Dpm 0644 focus-gui/src-tauri/icons/${size}x${size}.png \
@@ -424,6 +429,8 @@ fi
 %{_libexecdir}/blockuntu/setup-confined-chromium-native-host.sh
 %{_libexecdir}/blockuntu/setup-confined-firefox-native-host.sh
 %{_libexecdir}/blockuntu/remove-user-native-hosts.sh
+%{_libexecdir}/blockuntu/check-package-removal-lease.sh
+%{_sysconfdir}/dnf/libdnf5-plugins/actions.d/blockuntu-removal.actions
 %config(noreplace) %{_sysconfdir}/blockuntu/config.toml
 %config(noreplace) %{_sysconfdir}/opt/chrome/native-messaging-hosts/blockuntu_native.json
 %config(noreplace) %{_sysconfdir}/chromium/native-messaging-hosts/blockuntu_native.json

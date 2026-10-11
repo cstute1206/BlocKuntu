@@ -84,6 +84,10 @@ package() {
     "${pkgdir}/usr/lib/blockuntu/setup-confined-chromium-native-host.sh"
   install -Dm755 scripts/remove-user-native-hosts.sh \
     "${pkgdir}/usr/lib/blockuntu/remove-user-native-hosts.sh"
+  install -Dm755 scripts/check-package-removal-lease.sh \
+    "${pkgdir}/usr/lib/blockuntu/check-package-removal-lease.sh"
+  install -Dm644 packaging/arch/00-blockuntu-removal.hook \
+    "${pkgdir}/usr/share/libalpm/hooks/00-blockuntu-removal.hook"
 
   install -d "${pkgdir}/usr/bin"
   cat >"${pkgdir}/usr/bin/blockuntu-setup-confined-firefox" <<'EOF'
