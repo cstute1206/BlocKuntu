@@ -57,7 +57,21 @@ class FixtureHandler(BaseHTTPRequestHandler):
             "/spa",
             "/spa/target",
         }
-        if route not in known_routes and route != "/contains":
+        browser_routes = ("firefox", "chrome", "chromium")
+        route_parts = route.strip("/").split("/")
+        browser_route = (
+            len(route_parts) >= 2
+            and route_parts[0] in browser_routes
+            and (
+                route_parts[1:] in (["contains"], ["longrunning"], ["spa"], ["spa", "target"])
+                or route_parts[1:] == ["exact", "blocked"]
+                or route_parts[1:] in (["prefix", "blocked", "child"],
+                                       ["prefix", "blockedish"],
+                                       ["path", "blocked", "child"],
+                                       ["path", "blockedish"])
+            )
+        )
+        if route not in known_routes and route != "/contains" and not browser_route:
             self._send(
                 HTTPStatus.NOT_FOUND,
                 "text/plain; charset=utf-8",
@@ -82,18 +96,19 @@ class FixtureHandler(BaseHTTPRequestHandler):
         host = self.headers.get("Host", "")
         marker_text = marker.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         spa_controls = ""
-        if route == "/spa":
+        if route == "/spa" or route.endswith("/spa"):
+            target = route + "/target"
             spa_controls = """
               <button id="spa-target" type="button">Navigate with pushState</button>
               <script>
                 document.querySelector('#spa-target').addEventListener('click', () => {
-                  history.pushState({}, '', '/spa/target');
-                  document.querySelector('#route').textContent = '/spa/target';
+                  history.pushState({}, '', 'TARGET');
+                  document.querySelector('#route').textContent = 'TARGET';
                 });
               </script>
-            """
+            """.replace('TARGET', target)
         timer = ""
-        if route == "/long-running":
+        if route == "/long-running" or route.endswith("/longrunning"):
             timer = """
               <p>Elapsed seconds: <output id="elapsed">0</output></p>
               <script>

@@ -68,3 +68,17 @@ Docs/Old
 # Package CI retains large artifacts and reports locally; CI uploads them.
 /Testing/results/package-ci/
 **/__pycache__/
+
+# Local VM inventory and operator notes
+/Testing/VM-Info.md
+
+# Python environments and tool caches
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+
+# TypeScript incremental build cache
+*.tsbuildinfo

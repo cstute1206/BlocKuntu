@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Remove
+Type = Package
+Target = blockuntu
+
+[Action]
+Description = Checking BlocKuntu Settings uninstall authorization...
+When = PreTransaction
+Exec = /usr/lib/blockuntu/check-package-removal-lease.sh
+AbortOnFail

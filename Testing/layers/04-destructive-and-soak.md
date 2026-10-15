@@ -70,6 +70,17 @@ package-manager, browser, and journal behavior.
 
 ## Protected-setting and Tier 1 edit cases
 
+The focused Ubuntu [edit-key journey](../phase-3.md#ubuntu-tier-1-edit-key-journey)
+implements `DES-PROTECT-004–007` plus an initial no-key check. It uses native GUI
+input and ordinary-user RPC with real five-minute expiry, separately from browser
+onboarding and broad destructive recovery. A passing selected bundle does not
+establish the remaining cases in this catalog.
+The same runner accepts Fedora/CachyOS package reports and guest selection.
+Both guests passed the five selected observations and the
+[portability audit](../results/desktop-port-20261003/audit.json), including their
+GNOME/KDE setup, exact installed packages and guarded cleanup. Application
+edit-key and other protected-window variants remain unverified.
+
 | ID | Actions | Expected result |
 | --- | --- | --- |
 | DES-PROTECT-001 | Configure protected access to require no active schedule or Detox, then activate a schedule. | Protected settings and GUI uninstall remain closed. |
@@ -95,6 +106,11 @@ package-manager, browser, and journal behavior.
 
 These cases deliberately test the failure mode of an incomplete process list.
 Keep host-side access and evidence collection available throughout.
+
+Layer 3's focused `VM-AAL-005/019` journey checks independent fixture helpers and
+availability of the existing control path with curated ordinary session services.
+It does not replace the deliberately incomplete lists, desktop degradation,
+Native Messaging outage/repair or SQLite recovery specified here.
 
 | ID | Actions | Expected result |
 | --- | --- | --- |

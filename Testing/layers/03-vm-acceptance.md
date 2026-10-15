@@ -9,12 +9,34 @@ user.
 
 ## Agreed implementation scope
 
-Implement an Ubuntu smoke suite first, then extend it to Fedora and CachyOS,
-then the remaining cases and browser-package matrix. Initial browser coverage
-is native Firefox and native Google Chrome on Ubuntu/Fedora, with native
-Chromium on CachyOS, using their published store extensions.
-Snap and Flatpak coverage belongs to the later matrix expansion.
-A passing smoke suite is not completion of all Layer 3 cases.
+The [Phase 3 roadmap](../phase-3-roadmap.md) defines the current execution policy:
+a small three-guest release smoke gate, with focused Ubuntu integration tests
+for relevant changes. The case tables below are a scenario catalog, not a
+mandatory full-matrix release checklist. Broader browser/guest combinations
+are selected for affected features or release candidates. Unselected cases
+remain unverified; they do not invalidate a passing selected gate.
+
+Native Firefox and Chrome are used on Ubuntu/Fedora; native Firefox and Chromium
+on CachyOS. The representative GUI-editing and helper/two-account groups now
+have accepted evidence on all three guests; exact completed runs are recorded
+in the [validation report](../reports/phase-3-validation.md).
+Broader matcher/lifecycle groups remain Ubuntu-only.
+The published Chrome 0.2.6 private-window group passed on Ubuntu on 2026-10-05:
+12 selected observations plus 21 smoke prerequisites, with consent/restart,
+disabled incognito and active-allowlist settings locks verified. Its
+[audit](../results/ubuntu-private-20261005/audit-e.json) closes the bounded Ubuntu queue.
+The same private-window group also passed on Fedora and CachyOS: 12 selected
+observations plus 21 smoke prerequisites each. The
+[portability audit](../results/private-port-20261005/audit-final.json) verifies
+24 selected observations plus 42 smoke prerequisites, published Chrome/Chromium
+0.2.6 split mode, exact archived sources, base integrity and clone cleanup.
+Manual incognito protection requires browser-owned consent, which users can
+withdraw; disabling private browsing remains recommended for full allowlist
+protection. The agreed Layer 3 development milestone is complete for now.
+Keep focused tests when affected and
+the small release gate on actual candidate artifacts; destructive recovery
+remains separate Layer 4 work.
+Upgrade remains deferred.
 
 Use the existing immutable guest templates and record the actual OS release,
 kernel and desktop session on each run. The last Phase 0 evidence identifies
@@ -22,15 +44,19 @@ Ubuntu 26.04 LTS, Fedora 44 Workstation and rolling CachyOS; these are not a
 claim of runtime acceptance on the Layer 2 build distributions. No additional
 OS-version guests are required for this milestone.
 
-Run with the host VPN disabled. VPN-enabled operation is outside this test
-scope. The operator reports that disabling the VPN resolved the prior network
-issue; confirm DHCP, SSH and reboot connectivity on fresh clones before claiming
-repeatability. Do not change host VPN/firewall settings automatically.
+The operator reports the earlier VPN issue resolved; no further VPN
+investigation or recurring confirmation is required for this roadmap. Confirm
+DHCP, SSH and reboot connectivity on fresh clones before claiming repeatability.
+Do not change host VPN/firewall settings automatically.
 
 Consume the exact Layer 2 artifacts and verify their checksums; do not rebuild
 the application for acceptance. Record package source commit and test-harness
-commit separately. The validated Ubuntu milestone uses run `35539295807`,
-commit `d4814ac8c538dce0c3dac184a540163d99e5306c`.
+commit separately. The historical development baseline uses run `36269349435`, commit
+`605d707b92cc5fa007674169f0e74ce6fc879c33`; its smoke subset has two comparable
+fresh-clone passes per guest. The selected GUI/helper portability expansion
+also passed on Fedora/CachyOS, with a separate cleanup/source audit. Broader
+unselected catalog cases remain unverified.
+Historical accepted package runs remain in the validation report.
 
 ## VM and package matrix
 
@@ -201,8 +227,9 @@ package/store-extension combination, not an assumed common source commit.
 
 ### Supported browser-package coverage
 
-The release matrix must eventually include each combination documented in
-`Docs/supportedBrowsers.md`:
+The optional compatibility inventory includes the variants documented in
+`Docs/supportedBrowsers.md`. Select affected variants or explicit release-candidate
+checks; routine release smoke does not require this whole inventory:
 
 - Firefox native, Snap, and Flatpak;
 - LibreWolf native layout;
@@ -269,9 +296,10 @@ collect evidence without relying on the graphical session.
 ## Upgrade smoke case (deferred)
 
 `VM-UPGRADE-001` remains specified below but is explicitly skipped for this
-milestone: no previously accepted baseline exists and upgrade implementation
-is deferred. Report that reason and do not count the case as passed or as a
-current milestone gate. Before the next release, establish an accepted baseline
+milestone by the user's 2026-09-27 scope decision. Report that deferral and do
+not count the case as passed or as a current milestone gate. Historical smoke
+baselines now exist; a baseline/target upgrade pair is not selected for this
+milestone. Before the next release, select an accepted upgrade baseline
 and re-enable Layers 2–4 upgrade checks, including the known Debian `prerm`
 cleanup concern documented in `02-package-ci.md`.
 
@@ -281,20 +309,15 @@ cleanup concern documented in `02-package-ci.md`.
 
 ## Completion criteria
 
-For the initial milestone, require the Ubuntu smoke path (installation/reboot,
-service/socket/RPC health, actual GUI startup and import/export, native Firefox
-and Chrome store integration, website/application blocking and both allowlist
-types) to pass on two consecutive fresh clones without manual state cleanup.
-Record onboarding interactions separately. Enumerate the exact case IDs run,
-and mark remaining cases as planned or skipped with reasons.
+The release gate requires one complete fresh-clone smoke pass per selected
+release package on Ubuntu, Fedora and CachyOS. Record exact package checksums,
+browser/store-extension versions, harness hashes, onboarding interactions and
+case dimensions. Collect evidence before guarded clone cleanup and verify bases.
+Two-pass comparisons are optional repeatability checks, not a routine release rule.
 
-Full Layer 3 acceptance, after the subsequent distribution and browser phases,
-requires the following, with the explicit upgrade deferral above:
-
-- Every pass references the exact package checksum.
-- Core acceptance passes on Ubuntu, Fedora, and CachyOS.
-- Every supported browser package has an explicit result rather than a generic
-  browser-family assumption.
-- Application allowlist results show individual process identities; they do not
-  infer permission from parentage or application grouping.
-- Logs and screenshots are collected before the VM is reverted.
+Relevant changes require their explicitly selected integration observations to
+pass. Missing/failed required observations remain failures; unselected catalog
+cases remain unverified. A browser-family pass never proves an untested package
+variant. Process assertions require actual identities and exits, not inferred
+parent/child permissions. A green gate is scoped release-smoke/selected acceptance,
+not completion of this catalog. See the [current roadmap](../phase-3-roadmap.md).

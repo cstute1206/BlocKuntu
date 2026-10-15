@@ -29,9 +29,11 @@ BuildRequires:  pkgconfig(webkit2gtk-4.1)
 
 Requires:       e2fsprogs
 Requires:       libayatana-appindicator-gtk3
+Requires:       libdnf5-plugin-actions >= 5.2.17.0
 Requires:       polkit
 Requires:       shadow-utils
 Requires:       systemd
+Requires:       util-linux
 Requires:       xdg-utils
 Recommends:     wmctrl
 
@@ -80,6 +82,12 @@ chmod 0755 %{buildroot}%{_bindir}/blockuntu-setup-confined-chromium
 
 install -Dpm 0644 packaging/deb/blockuntu.toml \
   %{buildroot}%{_sysconfdir}/blockuntu/config.toml
+install -Dpm 0755 scripts/remove-user-native-hosts.sh \
+  %{buildroot}%{_libexecdir}/blockuntu/remove-user-native-hosts.sh
+install -Dpm 0755 scripts/check-package-removal-lease.sh \
+  %{buildroot}%{_libexecdir}/blockuntu/check-package-removal-lease.sh
+install -Dpm 0644 packaging/rpm/blockuntu-removal.actions \
+  %{buildroot}%{_sysconfdir}/dnf/libdnf5-plugins/actions.d/blockuntu-removal.actions
 
 for size in 32 64 128; do
   install -Dpm 0644 focus-gui/src-tauri/icons/${size}x${size}.png \
@@ -122,6 +130,7 @@ chmod 0644 %{buildroot}%{_unitdir}/blockuntu.service \
 
 install -d \
   %{buildroot}%{_libdir}/mozilla/native-messaging-hosts \
+  %{buildroot}%{_prefix}/lib/mozilla/native-messaging-hosts \
   %{buildroot}%{_libdir}/librewolf/native-messaging-hosts \
   %{buildroot}%{_libdir}/waterfox/native-messaging-hosts \
   %{buildroot}%{_sysconfdir}/opt/chrome/native-messaging-hosts \
@@ -133,6 +142,11 @@ sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
   packaging/native-messaging/blockuntu_native.json \
   >%{buildroot}%{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json
 chmod 0644 %{buildroot}%{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json
+# Mozilla's native Firefox archive searches /usr/lib/mozilla on Fedora x86-64,
+# while the Fedora RPM macro above resolves to /usr/lib64/mozilla.
+install -pm 0644 \
+  %{buildroot}%{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json \
+  %{buildroot}%{_prefix}/lib/mozilla/native-messaging-hosts/blockuntu_native.json
 sed 's#/usr/local/bin/blockuntu-native#/usr/bin/blockuntu-native#g' \
   packaging/native-messaging/blockuntu_native.json \
   >%{buildroot}%{_libdir}/librewolf/native-messaging-hosts/blockuntu_native.json
@@ -317,8 +331,8 @@ remove_hosts_block() {
 }
 
 remove_browser_policies() {
+  # Firefox's shared policy is restored by GUI prepare_uninstall; preserve it.
   for policy in \
-    /etc/firefox/policies/policies.json \
     /etc/opt/chrome/policies/managed/blockuntu.json \
     /etc/chromium/policies/managed/blockuntu.json \
     /etc/brave/policies/managed/blockuntu.json \
@@ -366,6 +380,10 @@ if [ -d /run/systemd/system ]; then
   fi
 fi
 
+if [ "$1" -eq 0 ]; then
+  %{_libexecdir}/blockuntu/remove-user-native-hosts.sh
+fi
+
 %postun
 if [ "$1" -eq 0 ]; then
   rm -f /run/systemd/system/blockuntu.service.d/99-rpm-transaction.conf
@@ -410,6 +428,9 @@ fi
 %{_bindir}/blockuntu-setup-confined-chromium
 %{_libexecdir}/blockuntu/setup-confined-chromium-native-host.sh
 %{_libexecdir}/blockuntu/setup-confined-firefox-native-host.sh
+%{_libexecdir}/blockuntu/remove-user-native-hosts.sh
+%{_libexecdir}/blockuntu/check-package-removal-lease.sh
+%{_sysconfdir}/dnf/libdnf5-plugins/actions.d/blockuntu-removal.actions
 %config(noreplace) %{_sysconfdir}/blockuntu/config.toml
 %config(noreplace) %{_sysconfdir}/opt/chrome/native-messaging-hosts/blockuntu_native.json
 %config(noreplace) %{_sysconfdir}/chromium/native-messaging-hosts/blockuntu_native.json
@@ -417,6 +438,7 @@ fi
 %config(noreplace) %{_sysconfdir}/opt/vivaldi/native-messaging-hosts/blockuntu_native.json
 %config(noreplace) %{_sysconfdir}/vivaldi/native-messaging-hosts/blockuntu_native.json
 %{_libdir}/mozilla/native-messaging-hosts/blockuntu_native.json
+%{_prefix}/lib/mozilla/native-messaging-hosts/blockuntu_native.json
 %{_libdir}/librewolf/native-messaging-hosts/blockuntu_native.json
 %{_libdir}/waterfox/native-messaging-hosts/blockuntu_native.json
 %{_unitdir}/blockuntu.socket

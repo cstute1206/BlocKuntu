@@ -150,8 +150,8 @@ remove_hosts_block() {
 }
 
 remove_browser_policies() {
+  # Firefox's shared policy is restored by GUI prepare_uninstall; preserve it.
   for policy in \
-    /etc/firefox/policies/policies.json \
     /etc/opt/chrome/policies/managed/blockuntu.json \
     /etc/chromium/policies/managed/blockuntu.json \
     /etc/brave/policies/managed/blockuntu.json \
@@ -186,17 +186,17 @@ authorize_settings_uninstall() {
   lease_path='/run/blockuntu/package-removal-lease'
   lease_token="${BLOCKUNTU_PACKAGE_REMOVAL_LEASE:-}"
 
-  [ -n "${lease_token}" ] || reject_package_uninstall
-  [ -r "${lease_path}" ] || reject_package_uninstall
+  [ -n "${lease_token}" ] || { reject_package_uninstall; return 1; }
+  [ -r "${lease_path}" ] || { reject_package_uninstall; return 1; }
 
-  IFS=' ' read -r expected_token expires_at <"${lease_path}" || reject_package_uninstall
+  IFS=' ' read -r expected_token expires_at <"${lease_path}" || { reject_package_uninstall; return 1; }
   case "${expires_at}" in
-    ''|*[!0-9]*) reject_package_uninstall ;;
+    ''|*[!0-9]*) reject_package_uninstall; return 1 ;;
   esac
 
   now="$(date -u +%s)"
-  [ "${now}" -le "${expires_at}" ] || reject_package_uninstall
-  [ "${lease_token}" = "${expected_token}" ] || reject_package_uninstall
+  [ "${now}" -le "${expires_at}" ] || { reject_package_uninstall; return 1; }
+  [ "${lease_token}" = "${expected_token}" ] || { reject_package_uninstall; return 1; }
 
   rm -f "${lease_path}"
 }
@@ -229,6 +229,7 @@ pre_remove() {
   if [ -d /run/systemd/system ]; then
     systemctl disable ${unit_names} >/dev/null 2>&1 || true
   fi
+  /usr/lib/blockuntu/remove-user-native-hosts.sh || return 1
 }
 
 post_remove() {

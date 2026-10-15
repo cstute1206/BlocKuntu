@@ -170,7 +170,8 @@ patterns = [{{kind = "domain", value = "allowed.blockuntu.test"}}]
         click('Health')
         return evidence
 
-    case('VM-INSTALL-004', welcome)
+    if not case('VM-INSTALL-004', welcome):
+        raise RuntimeError('Welcome setup failed; dependent GUI cases were not executed')
 
     def gui_health():
         click('Health')
@@ -183,10 +184,19 @@ patterns = [{{kind = "domain", value = "allowed.blockuntu.test"}}]
                 'health_text': health_text}
 
     healthy = case('VM-INSTALL-003', gui_health)
+    if not healthy:
+        raise RuntimeError('GUI health failed; dependent policy cases were not executed')
     # Host has already rebooted, verified new boot ID and refreshed group membership.
     if healthy:
-        case('VM-INSTALL-005', lambda: {'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-                                      'gui_and_rpc_after_reboot': True})
+        def recovered():
+            evidence = {'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                        'gui_and_rpc_after_reboot': True}
+            if guest == 'ubuntu':
+                from reboot_policy import check_process
+                evidence.update(check_process())
+            return evidence
+        if not case('VM-INSTALL-005', recovered):
+            raise RuntimeError('Post-reboot GUI/RPC failed; dependent policy cases were not executed')
     click('Rules and logging')
 
     def choose_import(expected='Policy appended from'):
@@ -220,14 +230,16 @@ patterns = [{{kind = "domain", value = "allowed.blockuntu.test"}}]
         return {'imported_ids': [prefix + '-exact', prefix + '-allow'], 'existing_ids_preserved': True,
                 'imported_rules_visible_in_gui': True}
 
-    case('VM-DATA-001', imported)
+    if not case('VM-DATA-001', imported):
+        raise RuntimeError('Policy import failed; dependent policy cases were not executed')
 
     def duplicate():
         before = rpc('config_snapshot')
         choose_import()
         assert rpc('config_snapshot') == before, 'Identical import changed the configuration'
         return {'unchanged_snapshot': True}
-    case('VM-DATA-002', duplicate)
+    if not case('VM-DATA-002', duplicate):
+        raise RuntimeError('Duplicate import failed; dependent policy cases were not executed')
 
     def conflict():
         before = rpc('config_snapshot')
@@ -237,7 +249,8 @@ patterns = [{{kind = "domain", value = "allowed.blockuntu.test"}}]
         assert rpc('config_snapshot') == before, 'Conflict partially changed configuration'
         policy.write_text(contents)
         return {'conflict_rejected': True, 'unchanged_snapshot': True}
-    case('VM-DATA-003', conflict)
+    if not case('VM-DATA-003', conflict):
+        raise RuntimeError('Conflict import failed; dependent policy cases were not executed')
 
     def exported():
         basename = prefix + '-export.toml'

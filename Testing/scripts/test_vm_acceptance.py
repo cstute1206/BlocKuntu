@@ -89,7 +89,118 @@ class ArtifactTests(unittest.TestCase):
         return suite.artifact(self.path, guest)
 
 
+class HostActionTests(unittest.TestCase):
+    def test_only_exact_fixture_actions_are_accepted(self):
+        base = {'id': 'a' * 32}
+        accepted = [
+            {**base, 'action': 'keys', 'keys': ['KEY_ESC']},
+            {**base, 'action': 'keys', 'keys': ['KEY_LEFTCTRL', 'KEY_2']},
+            {**base, 'action': 'screenshot', 'name': 'firefox-onboarded'},
+            {**base, 'action': 'type_url', 'url': 'http://web.blockuntu.test:18080/free'},
+            {**base, 'action': 'type_url', 'url': 'http://web.blockuntu.test:18080/firefox/contains?marker=blockuntu-marker-firefox'},
+            {**base, 'action': 'type_url', 'url': 'http://www.firefox.web.blockuntu.test:18080/free'},
+            {**base, 'action': 'type_url', 'url': 'http://near-chrome.web.blockuntu.test:18080/free'},
+        ]
+        for request in accepted:
+            with self.subTest(request=request):
+                self.assertEqual(suite.validate_host_action(request), request)
+        rejected = [
+            {**base, 'action': 'keys', 'keys': ['KEY_LEFTCTRL', 'KEY_D']},
+            {**base, 'action': 'keys', 'keys': [['KEY_ESC']]},
+            {**base, 'action': 'screenshot', 'name': '../escape'},
+            {**base, 'action': 'type_url', 'url': 'https://example.com'},
+            {**base, 'action': 'type_url', 'url': 'http://web.blockuntu.test:18080/contains?next=https://example.com'},
+            {**base, 'action': 'type_url', 'url': 'http://other.web.blockuntu.test:18080/free'},
+            {**base, 'action': 'keys', 'keys': ['KEY_ESC'], 'extra': True},
+            {'id': 'bad', 'action': 'keys', 'keys': ['KEY_ESC']},
+        ]
+        for request in rejected:
+            with self.subTest(request=request), self.assertRaises(ValueError):
+                suite.validate_host_action(request)
+
+    def test_query_url_is_encoded_as_native_keys(self):
+        keys = suite.url_keys('http://web.blockuntu.test:18080/firefox/contains?marker=safe')
+        self.assertIn(('KEY_LEFTSHIFT', 'KEY_SLASH'), keys)
+        self.assertIn(('KEY_EQUAL',), keys)
+
+
 class CachyOSBaselineTests(unittest.TestCase):
+    def test_keyboard_preparation_rejects_other_guests_without_mutation(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(suite.vm, 'guarded') as guard, patch.object(suite.vm, 'ssh') as ssh:
+            with self.assertRaisesRegex(ValueError, 'CachyOS clone'):
+                suite.prepare_cachyos_keyboard({'template':'fedora'},Path(directory))
+            guard.assert_not_called()
+            ssh.assert_not_called()
+
+    def test_keyboard_preparation_guards_each_write_and_records_clone_identity(self):
+        events=[]
+        def guard(record):events.append('guard')
+        def ssh(record,command):
+            self.assertEqual(events[-1],'guard');events.append(command)
+            return types.SimpleNamespace(returncode=0,stdout='',stderr='')
+        record={'template':'cachyos','run_id':'fixture-layout','uuid':'owned-layout-clone'}
+        with tempfile.TemporaryDirectory() as directory, patch.object(suite.vm,'guarded',side_effect=guard), patch.object(suite.vm,'ssh',side_effect=ssh):
+            suite.prepare_cachyos_keyboard(record,Path(directory))
+            proof=json.loads((Path(directory)/'cachyos-keyboard-preparation.json').read_text())
+        self.assertEqual(proof['clone_uuid'],record['uuid'])
+        self.assertEqual(proof['run_id'],record['run_id'])
+        self.assertEqual(len(events),4)
+        self.assertEqual([row['returncode'] for row in proof['commands']],[0,0])
+        self.assertTrue(proof['commands'][0]['command'].endswith('Use true'))
+        self.assertTrue(proof['commands'][1]['command'].endswith('LayoutList us'))
+
+    def test_staging_cleanup_preserves_packages_and_unrelated_directories(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / 'cache'
+            cache.mkdir()
+            (cache / 'download-Ab12Cd').mkdir()
+            (cache / 'download-Ab12Cd' / 'partial').write_text('incomplete package')
+            (cache / 'unrelated').mkdir()
+            package = cache / 'keep.pkg.tar.zst'
+            package.write_text('cached package')
+            with patch.object(subprocess, 'run', return_value=types.SimpleNamespace(returncode=1)):
+                proof = suite.clean_pacman_staging(cache, Path(directory) / 'db.lck')
+            self.assertEqual(proof['removed'], ['download-Ab12Cd'])
+            self.assertTrue(package.is_file())
+            self.assertTrue((cache / 'unrelated').is_dir())
+
+    def test_staging_cleanup_rejects_symlinks_before_any_deletion(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = root / 'cache'
+            cache.mkdir()
+            safe = cache / 'download-Aa12Cd'
+            safe.mkdir()
+            outside = root / 'outside'
+            outside.mkdir()
+            (outside / 'preserve').write_text('unrelated data')
+            (cache / 'download-Zz12Cd').symlink_to(outside, target_is_directory=True)
+            with patch.object(subprocess, 'run', return_value=types.SimpleNamespace(returncode=1)):
+                with self.assertRaisesRegex(ValueError, 'staging entry'):
+                    suite.clean_pacman_staging(cache, root / 'db.lck')
+            self.assertTrue(safe.is_dir())
+            self.assertEqual((outside / 'preserve').read_text(), 'unrelated data')
+
+    def test_staging_cleanup_refuses_lock_or_running_pacman(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = root / 'cache'
+            cache.mkdir()
+            staging = cache / 'download-Ab12Cd'
+            staging.mkdir()
+            lock = root / 'db.lck'
+            lock.touch()
+            with self.assertRaisesRegex(ValueError, 'Pacman is active'):
+                suite.clean_pacman_staging(cache, lock)
+            lock.unlink()
+            with patch.object(subprocess, 'run', return_value=types.SimpleNamespace(returncode=0)):
+                with self.assertRaisesRegex(ValueError, 'Pacman is active'):
+                    suite.clean_pacman_staging(cache, lock)
+            self.assertTrue(staging.is_dir())
+
     def test_supplied_baseline_is_inspected_without_update_or_reboot(self):
         answer = types.SimpleNamespace(returncode=0, stdout='baseline packages', stderr='')
         with tempfile.TemporaryDirectory() as directory, patch.object(suite.vm, 'ssh', return_value=answer) as ssh:
@@ -97,6 +208,16 @@ class CachyOSBaselineTests(unittest.TestCase):
             self.assertEqual(ssh.call_count, 1)
             self.assertNotIn('sudo', ssh.call_args.args[1])
             self.assertEqual((Path(directory) / 'cachyos-baseline.log').read_text(), 'baseline packages')
+
+    def test_refresh_rechecks_clone_guard_before_first_package_mutation(self):
+        answer = types.SimpleNamespace(returncode=0, stdout='baseline packages', stderr='')
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(suite.vm, 'ssh', return_value=answer) as ssh, \
+                patch.object(suite.vm, 'guarded', side_effect=ValueError('base alias or changed clone')):
+            with self.assertRaisesRegex(ValueError, 'changed clone'):
+                suite.prepare_cachyos({}, Path(directory), refresh=True)
+            self.assertEqual(ssh.call_count, 1)
+            self.assertNotIn('sudo', ssh.call_args.args[1])
 
 
 class ChooserEvidenceTests(unittest.TestCase):
@@ -268,12 +389,15 @@ class BrowserEvidenceTests(unittest.TestCase):
 
 
 class KeyInputTests(unittest.TestCase):
-    def test_accepts_only_fixture_and_policy_urls(self):
-        for url in ('about:policies', 'chrome://policy', 'http://web.blockuntu.test:18080/exact/blocked'):
+    def test_accepts_only_fixture_policy_and_exact_owned_store_urls(self):
+        for url in ('about:policies', 'chrome://policy', 'http://web.blockuntu.test:18080/exact/blocked',
+                    'https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc'):
             keys = suite.url_keys(url)
             self.assertIn(('KEY_LEFTSHIFT', 'KEY_SEMICOLON'), keys)
         for url in ('https://example.com', 'file:///etc/passwd', 'javascript:alert(1)',
-                    'http://web.blockuntu.test:18080/free\n', 'http://web.blockuntu.test:18080/;exit'):
+                    'http://web.blockuntu.test:18080/free\n', 'http://web.blockuntu.test:18080/;exit',
+                    'https://chromewebstore.google.com/detail/other/opfljaancedgklbpnbpjfhdbbhbfpnoc',
+                    'https://chromewebstore.google.com/detail/blockuntu/opfljaancedgklbpnbpjfhdbbhbfpnoc?other=1'):
             with self.assertRaises(ValueError):
                 suite.url_keys(url)
 

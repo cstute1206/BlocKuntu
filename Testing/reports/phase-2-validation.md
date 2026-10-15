@@ -1,10 +1,33 @@
 # Phase 2 validation
 
-Status as of 2026-09-19: implementation and local validation are complete.
-Ubuntu 24.04, Debian 13, Fedora 43, Arch, and both extension archives passed.
-All builds use uncommitted development inputs and explicitly report
-`build_provenance_verified: false`. GitHub Actions has not been executed for
-these changes. No installed-package or VM acceptance is claimed.
+Status as of 2026-09-19: implementation, local validation, and the first clean
+GitHub Actions package run are complete. Ubuntu 24.04, Debian 13, Fedora 43,
+Arch, and both extension archives passed. No installed-package or VM acceptance
+is claimed.
+
+## First successful GitHub Actions run
+
+[Package validation run 35437630033](https://github.com/cstute1206/BlocKuntu/actions/runs/35437630033)
+was triggered by a push to `main` at commit
+`a18a1f5ad5c957bf16f94dca7d0589e30a39345f`. All seven jobs passed:
+inspector regression tests, four distribution builds, and two extension builds.
+
+All six uploaded artifact reports were downloaded and checked. Each records
+`passed: true`, `build_provenance_verified: true`, and the commit above.
+All artifact SHA-256 checksums matched. Distribution reports skip only
+`PKG-UPGRADE-001` and `PKG-UPGRADE-002`, as agreed for the initial release;
+extension reports have no skipped cases.
+
+Downloaded evidence is retained locally under
+`Testing/results/package-ci/github-35437630033/`. The six workflow annotations
+are action-runtime deprecation warnings for `actions/upload-artifact@v4`, not
+test failures.
+
+## Earlier local validation
+
+The local builds below used uncommitted development inputs and explicitly
+report `build_provenance_verified: false`. They are retained separately from
+the clean CI evidence.
 
 | Check | Result | Evidence under `Testing/results/package-ci/` |
 | --- | --- | --- |

@@ -1,7 +1,8 @@
 # Phase 1: PR source validation
 
-The workflow `.github/workflows/ci.yml` runs seven independent jobs: core,
-daemon, native host, Tauri Rust, GUI, Firefox extension, and Chrome extension.
+The workflow `.github/workflows/ci.yml` runs eight independent jobs: core,
+daemon, native host, Tauri Rust, GUI, Firefox extension, Chrome extension, and
+test-harness regressions.
 It runs on pull requests, pushes to main, and manual dispatch. Matrix failures
 do not cancel sibling jobs. Only the Tauri job installs desktop compile libraries.
 
@@ -21,6 +22,7 @@ python3 Testing/scripts/pr-ci.py tauri
 python3 Testing/scripts/pr-ci.py gui --install
 python3 Testing/scripts/pr-ci.py firefox --install
 python3 Testing/scripts/pr-ci.py chrome --install
+python3 Testing/scripts/pr-ci.py harness
 ```
 
 `--install` runs `npm ci`; omit it for local runs with dependencies already
@@ -29,6 +31,14 @@ installed from the current lockfile. Cargo dependency resolution always uses
 targets, and doctests. Frontend jobs run tests, production compilation, and
 Svelte or manifest checks. These commands do not build distributable packages,
 install BlocKuntu, launch its daemon, or operate VMs.
+
+The harness job uses Python 3.12 and Node 22, with `build-essential`, `dpkg-dev`,
+`rpm`, and `libarchive-tools` for temporary package fixtures. It discovers all
+`Testing/scripts/test_*.py` tests and retains the command log and result JSON in
+`Testing/results/pr-ci/harness/`. It requires loopback sockets for the local HTTP
+fixtures, but no libvirt, VM images, local credentials or historical results.
+Group-runner tests generate synthetic packages and evidence in temporary
+directories; those fixtures establish validator behavior, not VM acceptance.
 
 Tests use temporary databases/files, synthetic process snapshots and explicit
 clock values. Extension tests execute the actual compiled scripts in a Node VM

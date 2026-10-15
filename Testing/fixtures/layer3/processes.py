@@ -8,7 +8,11 @@ import pwd
 import signal
 import subprocess
 import time
-from guest import WORK, rpc, wait
+from guest import WORK, wait
+
+
+class DependentCaseFailure(Exception):
+    """Stop subsequent process cases after an earlier fixture case failed."""
 
 
 def main():
@@ -22,10 +26,30 @@ def main():
     results = []
     prefix = args.run_id + '-process'
 
+    def checkpoint():
+        temporary = WORK / 'process-results.tmp'
+        temporary.write_text(json.dumps(results, indent=2))
+        temporary.replace(WORK / 'process-results.json')
+
+    checkpoint()
+
     def drop_user():
         os.initgroups(account.pw_name, account.pw_gid)
         os.setgid(account.pw_gid)
         os.setuid(account.pw_uid)
+
+    def user_rpc(method, params):
+        # The root supervisor watches process identities, but authorization
+        # assertions must reach the daemon as the ordinary desktop user.
+        client = ('import json, os, sys; from guest import rpc; '
+                  'assert os.geteuid() != 0; '
+                  'print(json.dumps(rpc(sys.argv[1], json.loads(sys.argv[2]))))')
+        answer = subprocess.run(['/usr/bin/python3', '-c', client, method, json.dumps(params)],
+                                cwd=WORK, preexec_fn=drop_user, text=True,
+                                capture_output=True, timeout=15)
+        if answer.returncode:
+            raise RuntimeError(f'Ordinary-user RPC {method} failed: {answer.stderr[-1500:]}')
+        return json.loads(answer.stdout)
 
     def launch(name):
         process = subprocess.Popen([str(WORK / name), '--lifetime', '600'], preexec_fn=drop_user,
@@ -58,14 +82,17 @@ def main():
             results.append({'id': case_id, 'status': 'pass', 'evidence': evidence,
                             'seconds': round(time.monotonic() - start, 3)})
         except Exception as error:
-            results.append({'id': case_id, 'status': 'fail', 'error': f'{type(error).__name__}: {error}'})
-        (WORK / 'process-results.json').write_text(json.dumps(results, indent=2))
+            results.append({'id': case_id, 'status': 'fail', 'error': f'{type(error).__name__}: {error}',
+                            'seconds': round(time.monotonic() - start, 3)})
+        checkpoint()
         print(case_id, results[-1]['status'], flush=True)
+        if results[-1]['status'] != 'pass':
+            raise DependentCaseFailure(case_id)
 
     def block_existing():
         process = launch('bk-test-block')
         info = identity(process)
-        rpc('upsert_app_rule', {'rule': {'id': prefix + '-block', 'name': 'Acceptance block fixture',
+        user_rpc('upsert_app_rule', {'rule': {'id': prefix + '-block', 'name': 'Acceptance block fixture',
             'tier': 'hard', 'matchers': [{'kind': 'command_name', 'value': 'bk-test-block'}]}})
         terminated(process)
         return info
@@ -92,23 +119,16 @@ def main():
         # permission is never inherited from a parent or a directory prefix.
         excluded = {str(WORK / 'bk-test-app-b'), str(WORK / 'bk-test-helper')}
         paths = set()
-        for entry in Path('/proc').iterdir():
-            if not entry.name.isdigit():
-                continue
-            try:
-                if entry.stat().st_uid == account.pw_uid:
-                    target = str((entry / 'exe').readlink())
-                    if target not in excluded:
-                        paths.add(target)
-            except (FileNotFoundError, PermissionError, ProcessLookupError):
-                pass
+        from session_inventory import collect_processes
+        paths.update(row['exe'] for row in collect_processes().values()
+                     if row['uid']==account.pw_uid and row['exe'] not in excluded)
         evidence['safety_paths'] = sorted(paths)
-        rpc('upsert_app_rule', {'rule': {'id': prefix + '-allow', 'name': 'Acceptance allowlist fixture',
+        user_rpc('upsert_app_rule', {'rule': {'id': prefix + '-allow', 'name': 'Acceptance allowlist fixture',
             'tier': 'scheduled_block', 'mode': 'allowlist',
             'matchers': [{'kind': 'executable_path', 'value': p} for p in sorted(paths)]}})
         # Inactive lists must not kill either fixture.
         alive(a, 15); alive(b, 15)
-        session = rpc('start_detox', {'name': 'Acceptance process allowlist', 'duration_minutes': 3,
+        session = user_rpc('start_detox', {'name': 'Acceptance process allowlist', 'duration_minutes': 3,
                                      'app_rule_ids': [prefix + '-allow']})
         evidence['detox'] = session
         terminated(b)
@@ -120,6 +140,8 @@ def main():
         case('VM-APP-002', block_new)
         case('VM-APP-003', near_miss)
         case('VM-AAL-004', allowlist)
+    except DependentCaseFailure:
+        pass
     finally:
         for process in children:
             if process.poll() is None:

@@ -10,7 +10,7 @@ pyatspi.Atspi.set_timeout(1000, 1000)
 
 
 def walk(node, depth=0):
-    if depth > 30:
+    if node is None or depth > 30:
         return
     yield node
     try:

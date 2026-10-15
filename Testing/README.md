@@ -17,8 +17,29 @@ implementation order, the test layers, and the expected results for each case.
 | [phase-2.md](phase-2.md) | Package build/inspection implementation, commands, and limitations |
 | [layers/02-package-ci.md](layers/02-package-ci.md) | Package builds and static artifact inspection |
 | [phase-3.md](phase-3.md) | Installed-package smoke runner, automation stack, commands and current boundaries |
+| [phase-3-roadmap.md](phase-3-roadmap.md) | Small release gate, feature coverage, Ubuntu priorities and change-triggered tests |
+| [layer3/README.md](layer3/README.md) | Machine-readable case contract, browser matrix, coverage planner, and serialized smoke groups |
 | [layers/03-vm-acceptance.md](layers/03-vm-acceptance.md) | Installed-package, GUI, browser, blocking, and allowlist acceptance |
+| [phase-4.md](phase-4.md) | Ubuntu acceptance and Fedora/CachyOS native adapters for uninstall, hosts and browser recovery, destructive-suite plan, existing Tier 1 evidence, safety guards, operator inputs, and acceptance criteria |
+| [reports/phase-4-native-ports.md](reports/phase-4-native-ports.md) | Native validation: Fedora/CachyOS P4.3 qualified; Fedora P4.2 qualified; CachyOS P4.2 schedule-assertion failure and native uninstall defects documented |
+| [reports/phase-4-native-uninstall-fixes.md](reports/phase-4-native-uninstall-fixes.md) | Fedora/Pacman transaction guards, corrected schedule timing evidence, candidate build and fresh validation |
 | [layers/04-destructive-and-soak.md](layers/04-destructive-and-soak.md) | Hardening, recovery, uninstall, failure, and long-duration tests |
+
+## Execution policy
+
+Run fast source checks for every code change; focused integration for relevant
+changes; package validation and three-guest smoke for releases. Broader cases
+are selected by affected feature or release-candidate risk. See the
+[Phase 3 roadmap](phase-3-roadmap.md). Case catalogs are not mandatory full matrices.
+
+Run all local harness regressions without starting VMs:
+
+```bash
+python3 Testing/scripts/pr-ci.py harness
+```
+
+The same command runs in PR CI. Required fixture tools and the evidence boundary
+are documented in [Phase 1](phase-1.md).
 
 ## Original checklist coverage
 

@@ -15,7 +15,7 @@ NODE = {"gui": "focus-gui", "firefox": "browser-extension-firefox", "chrome": "b
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("component", choices=[*RUST, *NODE])
+    parser.add_argument("component", choices=[*RUST, *NODE, "harness"])
     parser.add_argument("--install", action="store_true", help="Install locked npm dependencies first")
     args = parser.parse_args()
     report_dir = ROOT / "Testing/results/pr-ci" / args.component
@@ -29,6 +29,10 @@ def main():
             ["cargo", "test", "--locked", "--all-targets"],
             ["cargo", "test", "--locked", "--doc"],
         ]
+    elif args.component == "harness":
+        cwd = ROOT
+        commands = [[sys.executable, "-m", "unittest", "discover", "-s",
+                     str(ROOT / "Testing/scripts"), "-p", "test_*.py"]]
     else:
         cwd = ROOT / NODE[args.component]
         commands = ([["npm", "ci"]] if args.install else [])

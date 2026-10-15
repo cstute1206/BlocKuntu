@@ -128,6 +128,8 @@ install -Dm755 scripts/setup-confined-firefox-native-host.sh \
   "${PKG_ROOT}/usr/lib/blockuntu/setup-confined-firefox-native-host.sh"
 install -Dm755 scripts/setup-confined-chromium-native-host.sh \
   "${PKG_ROOT}/usr/lib/blockuntu/setup-confined-chromium-native-host.sh"
+install -Dm755 scripts/remove-user-native-hosts.sh \
+  "${PKG_ROOT}/usr/lib/blockuntu/remove-user-native-hosts.sh"
 cat >"${PKG_ROOT}/usr/bin/blockuntu-setup-confined-firefox" <<'SH'
 #!/bin/sh
 exec /usr/lib/blockuntu/setup-confined-firefox-native-host.sh "$@"
@@ -219,7 +221,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${ARCHITECTURE}
-Depends: systemd, passwd, e2fsprogs, pkexec, xdg-utils, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, librsvg2-2
+Depends: systemd, passwd, e2fsprogs, util-linux, pkexec, xdg-utils, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, librsvg2-2
 Recommends: wmctrl
 Maintainer: BlocKuntu <local@blockuntu.invalid>
 Description: Local Linux focus blocker
@@ -421,7 +423,6 @@ remove_hosts_block() {
 }
 
 remove_browser_policies() {
-  firefox_policy="/etc/firefox/policies/policies.json"
   chrome_policy="/etc/opt/chrome/policies/managed/blockuntu.json"
   chromium_policy="/etc/chromium/policies/managed/blockuntu.json"
   brave_policy="/etc/brave/policies/managed/blockuntu.json"
@@ -431,11 +432,10 @@ remove_browser_policies() {
   legacy_vivaldi_policy="/etc/opt/vivaldi/policies/managed/blockuntu.json"
   chrome_update_manifest="/usr/local/share/blockuntu/chrome-extension-updates.xml"
 
-  if [ -f "${firefox_policy}" ] && grep -qi "blockuntu" "${firefox_policy}" 2>/dev/null; then
-    rm -f "${firefox_policy}"
-    remove_empty_dir "/etc/firefox/policies"
-    remove_empty_dir "/etc/firefox"
-  fi
+  # GUI prepare_uninstall restores the merged Firefox policy before granting
+  # the removal lease. This shared document may still contain unrelated data.
+  remove_empty_dir "/etc/firefox/policies"
+  remove_empty_dir "/etc/firefox"
 
   rm -f "${chrome_policy}" "${chromium_policy}" "${brave_policy}" "${opera_policy}" "${edge_policy}" "${vivaldi_policy}" "${legacy_vivaldi_policy}"
   for chromium_snap_policy in /var/snap/chromium/*/policies/managed/blockuntu.json; do
@@ -483,6 +483,9 @@ fi
 
 remove_hosts_block
 remove_browser_policies
+if [ "$1" = 'remove' ]; then
+  /usr/lib/blockuntu/remove-user-native-hosts.sh
+fi
 rm -rf /run/blockuntu
 PRERM
 

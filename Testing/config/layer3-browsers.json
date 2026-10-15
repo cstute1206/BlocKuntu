@@ -1,0 +1,917 @@
+{
+  "schema_version": 1,
+  "core_browsers": {
+    "ubuntu": [
+      "firefox-native",
+      "chrome-native"
+    ],
+    "fedora": [
+      "firefox-native",
+      "chrome-native"
+    ],
+    "cachyos": [
+      "firefox-native",
+      "chromium-native"
+    ]
+  },
+  "note": "Variant-level null fields are deliberate; browser layouts differ by guest. cells records 6 observed native smoke layouts and 36 unresolved matrix cells. Observed versions are evidence from run 36269349435, not fixed future requirements; each run must capture its actual version.",
+  "variants": [
+    {
+      "id": "firefox-native",
+      "browser": "firefox",
+      "family": "firefox",
+      "package_type": "native",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "firefox-snap",
+      "browser": "firefox",
+      "family": "firefox",
+      "package_type": "snap",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu"
+      ],
+      "confined": true,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "firefox-flatpak",
+      "browser": "firefox",
+      "family": "firefox",
+      "package_type": "flatpak",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": true,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "librewolf-native",
+      "browser": "librewolf",
+      "family": "firefox",
+      "package_type": "native",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "waterfox-native",
+      "browser": "waterfox",
+      "family": "firefox",
+      "package_type": "native",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "chrome-native",
+      "browser": "chrome",
+      "family": "chromium",
+      "package_type": "native",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu",
+        "fedora"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "chromium-native",
+      "browser": "chromium",
+      "family": "chromium",
+      "package_type": "native",
+      "expected_supported": true,
+      "required_guests": [
+        "fedora",
+        "cachyos"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "chromium-snap",
+      "browser": "chromium",
+      "family": "chromium",
+      "package_type": "snap",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu"
+      ],
+      "confined": true,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "brave-native",
+      "browser": "brave",
+      "family": "chromium",
+      "package_type": "native",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "opera-native",
+      "browser": "opera",
+      "family": "chromium",
+      "package_type": "native",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "edge-native",
+      "browser": "edge",
+      "family": "chromium",
+      "package_type": "native",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "vivaldi-native",
+      "browser": "vivaldi",
+      "family": "chromium",
+      "package_type": "native",
+      "expected_supported": true,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "chromium-flatpak",
+      "browser": "chromium",
+      "family": "chromium",
+      "package_type": "flatpak",
+      "expected_supported": false,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": true,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "brave-snap",
+      "browser": "brave",
+      "family": "chromium",
+      "package_type": "snap",
+      "expected_supported": false,
+      "required_guests": [
+        "ubuntu"
+      ],
+      "confined": true,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "opera-snap",
+      "browser": "opera",
+      "family": "chromium",
+      "package_type": "snap",
+      "expected_supported": false,
+      "required_guests": [
+        "ubuntu"
+      ],
+      "confined": true,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "vivaldi-snap",
+      "browser": "vivaldi",
+      "family": "chromium",
+      "package_type": "snap",
+      "expected_supported": false,
+      "required_guests": [
+        "ubuntu"
+      ],
+      "confined": true,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "vivaldi-flatpak",
+      "browser": "vivaldi",
+      "family": "chromium",
+      "package_type": "flatpak",
+      "expected_supported": false,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": true,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    },
+    {
+      "id": "firefox-unknown-unknown",
+      "browser": "firefox-unknown",
+      "family": "firefox",
+      "package_type": "unknown",
+      "expected_supported": false,
+      "required_guests": [
+        "ubuntu",
+        "fedora",
+        "cachyos"
+      ],
+      "confined": false,
+      "adapter_status": "planned",
+      "source": null,
+      "version": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout before implementing this adapter; null fields are not installation instructions."
+    }
+  ],
+  "cells": {
+    "ubuntu/firefox-native": {
+      "status": "smoke-baseline",
+      "source": "Mozilla native release archive",
+      "observed_version": "Mozilla Firefox 156.0.1",
+      "version_evidence": "results/p31-36269349435-ubuntu-b/ubuntu/acceptance/browser-metadata.json",
+      "install_method": "download Mozilla release archive into clone",
+      "executable": "/opt/firefox/firefox",
+      "profile_root": "/home/akhi/Testing/layer3/firefox-profile",
+      "policy_paths": [
+        "/etc/firefox/policies/policies.json"
+      ],
+      "native_messaging_paths": [
+        "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json"
+      ],
+      "pending_reason": null
+    },
+    "fedora/firefox-native": {
+      "status": "smoke-baseline",
+      "source": "Mozilla native release archive",
+      "observed_version": "Mozilla Firefox 156.0.1",
+      "version_evidence": "results/p31-36269349435-fedora-a/fedora/acceptance/browser-metadata.json",
+      "install_method": "download Mozilla release archive into clone",
+      "executable": "/opt/firefox/firefox",
+      "profile_root": "/home/akhi/Testing/layer3/firefox-profile",
+      "policy_paths": [
+        "/etc/firefox/policies/policies.json"
+      ],
+      "native_messaging_paths": [
+        "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json",
+        "/usr/lib64/mozilla/native-messaging-hosts/blockuntu_native.json"
+      ],
+      "pending_reason": null
+    },
+    "cachyos/firefox-native": {
+      "status": "smoke-baseline",
+      "source": "CachyOS native package: firefox 156.0.1-1.1",
+      "observed_version": "Mozilla Firefox 156.0.1",
+      "version_evidence": "results/p31-36269349435-cachyos-a/cachyos/acceptance/browser-metadata.json",
+      "install_method": "use native Firefox package from immutable guest template",
+      "executable": "/usr/bin/firefox",
+      "profile_root": "/home/akhi/Testing/layer3/firefox-profile",
+      "policy_paths": [
+        "/etc/firefox/policies/policies.json"
+      ],
+      "native_messaging_paths": [
+        "/usr/lib/mozilla/native-messaging-hosts/blockuntu_native.json"
+      ],
+      "pending_reason": null
+    },
+    "ubuntu/firefox-snap": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/firefox-flatpak": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/firefox-flatpak": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/firefox-flatpak": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/librewolf-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/librewolf-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/librewolf-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/waterfox-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/waterfox-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/waterfox-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/chrome-native": {
+      "status": "smoke-baseline",
+      "source": "google-chrome-stable native package",
+      "observed_version": "Google Chrome 150.0.7871.186",
+      "version_evidence": "results/p31-36269349435-ubuntu-b/ubuntu/acceptance/browser-metadata.json",
+      "install_method": "use native Google Chrome package in immutable guest template",
+      "executable": "google-chrome",
+      "profile_root": "/home/akhi/Testing/layer3/chrome-profile",
+      "policy_paths": [
+        "/etc/opt/chrome/policies/managed/blockuntu.json"
+      ],
+      "native_messaging_paths": [
+        "/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json"
+      ],
+      "pending_reason": null
+    },
+    "fedora/chrome-native": {
+      "status": "smoke-baseline",
+      "source": "google-chrome-stable native package",
+      "observed_version": "Google Chrome 151.0.7922.71",
+      "version_evidence": "results/p31-36269349435-fedora-a/fedora/acceptance/browser-metadata.json",
+      "install_method": "download Google Chrome RPM into clone and install with dnf",
+      "executable": "google-chrome",
+      "profile_root": "/home/akhi/Testing/layer3/chrome-profile",
+      "policy_paths": [
+        "/etc/opt/chrome/policies/managed/blockuntu.json"
+      ],
+      "native_messaging_paths": [
+        "/etc/opt/chrome/native-messaging-hosts/blockuntu_native.json"
+      ],
+      "pending_reason": null
+    },
+    "fedora/chromium-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/chromium-native": {
+      "status": "smoke-baseline",
+      "source": "CachyOS native Chromium package",
+      "observed_version": "Chromium 153.0.8010.52 Arch Linux",
+      "version_evidence": "results/p31-36269349435-cachyos-a/cachyos/acceptance/browser-metadata.json",
+      "install_method": "install native Chromium package in clone with pacman",
+      "executable": "chromium",
+      "profile_root": "/home/akhi/Testing/layer3/chromium-profile",
+      "policy_paths": [
+        "/etc/chromium/policies/managed/blockuntu.json"
+      ],
+      "native_messaging_paths": [
+        "/etc/chromium/native-messaging-hosts/blockuntu_native.json"
+      ],
+      "pending_reason": null
+    },
+    "ubuntu/chromium-snap": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/brave-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/brave-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/brave-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/opera-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/opera-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/opera-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/edge-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/edge-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/edge-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/vivaldi-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/vivaldi-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/vivaldi-native": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/chromium-flatpak": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/chromium-flatpak": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/chromium-flatpak": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/brave-snap": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/opera-snap": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/vivaldi-snap": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/vivaldi-flatpak": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/vivaldi-flatpak": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/vivaldi-flatpak": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "ubuntu/firefox-unknown-unknown": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "fedora/firefox-unknown-unknown": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    },
+    "cachyos/firefox-unknown-unknown": {
+      "status": "planned",
+      "source": null,
+      "observed_version": null,
+      "version_evidence": null,
+      "install_method": null,
+      "executable": null,
+      "profile_root": null,
+      "policy_paths": null,
+      "native_messaging_paths": null,
+      "pending_reason": "Verify source and package layout in a disposable guest before implementing this cell."
+    }
+  }
+}
