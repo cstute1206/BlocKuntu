@@ -13,6 +13,7 @@ implementation order, the test layers, and the expected results for each case.
 | [phase-0.md](phase-0.md) | Implemented fixture, run-directory, and VM-template contract |
 | [reports/phase-0-acceptance.md](reports/phase-0-acceptance.md) | Executed Phase 0 results and outstanding acceptance issue |
 | [phase-1.md](phase-1.md) | Implemented PR jobs, local commands, reports, and case-to-test mapping |
+| [release-status.md](release-status.md) | One-candidate JSON/Markdown report from CI, package, smoke and selected recovery evidence |
 | [layers/01-pr-ci.md](layers/01-pr-ci.md) | Fast source, policy, GUI, and extension checks for every pull request |
 | [phase-2.md](phase-2.md) | Package build/inspection implementation, commands, and limitations |
 | [layers/02-package-ci.md](layers/02-package-ci.md) | Package builds and static artifact inspection |
