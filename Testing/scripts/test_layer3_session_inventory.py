@@ -19,10 +19,13 @@ class SessionInventoryTests(unittest.TestCase):
     def test_real_uid_is_independent_of_directory_owner_and_effective_uid(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
-            p=self.fixture(root,123,1001,0,'/usr/lib/systemd/systemd')
-            self.assertNotEqual(p.stat().st_uid,1001)
+            # GitHub's runner owns its files as UID 1001. The simulated real UID
+            # must differ from the actual owner on every host.
+            real_uid=1002 if root.stat().st_uid==1001 else 1001
+            p=self.fixture(root,123,real_uid,0,'/usr/lib/systemd/systemd')
+            self.assertNotEqual(p.stat().st_uid,real_uid)
             row=inventory.collect_processes(root)[123]
-            self.assertEqual(row['uid'],1001)
+            self.assertEqual(row['uid'],real_uid)
             self.assertEqual(row['exe'],'/usr/lib/systemd/systemd')
 
     def test_correlated_pid_parent_and_start_identity_survive_comm_spaces(self):
