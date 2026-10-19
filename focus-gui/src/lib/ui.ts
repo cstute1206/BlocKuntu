@@ -241,7 +241,7 @@ export function addAllDetectedAppMatchers(
 }
 
 export function mergeAppMatchers(existing: AppMatcher[], incoming: AppMatcher[]): AppMatcher[] {
-  const merged = existing.map((matcher) => ({ ...matcher }));
+  const merged = existing.filter((matcher) => matcher.value.trim()).map((matcher) => ({ ...matcher }));
   const seen = new Set(
     existing
       .map(normalizeAppMatcherDraft)
@@ -250,7 +250,7 @@ export function mergeAppMatchers(existing: AppMatcher[], incoming: AppMatcher[])
 
   for (const matcher of incoming.map(normalizeAppMatcherDraft)) {
     const key = `${matcher.kind}:${matcher.value}`;
-    if (!seen.has(key)) {
+    if (matcher.value && !seen.has(key)) {
       merged.push(matcher);
       seen.add(key);
     }

@@ -97,7 +97,15 @@ def base_records():
 
 
 def unchanged(record):
-    if base_records() != record["bases"]:
+    current = base_records()
+    expected = record["bases"]
+    # st_dev can change when the host remounts storage across a reboot. The
+    # libvirt definition, path, inode, size and timestamps must still match.
+    def stable(records):
+        return {key: {**base, "storage": {path: signature[1:]
+                for path, signature in base["storage"].items()}}
+                for key, base in records.items()}
+    if stable(current) != stable(expected):
         raise ValueError("Base VM definition or disk metadata changed during this run")
 
 
@@ -164,16 +172,22 @@ def guestfs_setup():
         ENV[var] = str(path)
 
 
-def mounts(template):
+def mounts(template, disk):
     if template != "cachyos":
         return ["-i"]
     # This template has Snapper snapshots which auto-inspection mistakes for OSes.
     # Match its actual fstab and mount only the live @ tree and its home subvolume.
-    return ["-m", "/dev/sda2:/:subvol=@", "-m", "/dev/sda2:/home:subvol=@home"]
+    filesystems = run(["guestfish", "--ro", "--format=qcow2", "-a", disk],
+                      input="run\nlist-filesystems\n").stdout
+    candidates = re.findall(r"^(/dev/sd[a-z][0-9]+): btrfs$", filesystems, re.M)
+    if len(candidates) != 1:
+        raise ValueError("CachyOS requires exactly one Btrfs partition")
+    root = candidates[0]
+    return ["-m", f"{root}:/:subvol=@", "-m", f"{root}:/home:subvol=@home"]
 
 
 def fish(disk, commands, log, template):
-    return run(["guestfish", "--ro", "--format=qcow2", "-a", disk, *mounts(template)],
+    return run(["guestfish", "--ro", "--format=qcow2", "-a", disk, *mounts(template, disk)],
                input=commands, log=log).stdout
 
 
@@ -278,7 +292,7 @@ def prepare_identity(record):
             'sh "/bin/sh /tmp/blockuntu-phase0-bootstrap.sh"',
             'rm /tmp/blockuntu-phase0-bootstrap.sh',
         ]) + '\n'
-        run(["guestfish", "--rw", "--format=qcow2", "-a", disk, *mounts("cachyos")], input=commands, log=log)
+        run(["guestfish", "--rw", "--format=qcow2", "-a", disk, *mounts("cachyos", disk)], input=commands, log=log)
     else:
         run(["virt-sysprep", "--format", "qcow2", "-a", disk,
              "--operations", "machine-id,ssh-hostkeys"], log=log)

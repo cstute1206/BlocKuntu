@@ -1,0 +1,4471 @@
+{
+  "schema_version": 1,
+  "specification": "layers/03-vm-acceptance.md",
+  "guests": [
+    "ubuntu",
+    "fedora",
+    "cachyos"
+  ],
+  "implementation_note": "Bindings identify exact executable smoke or isolated coverage. Unbound observations are planned. This registry is not execution evidence; browser adapter migration remains separate.",
+  "deadlines_seconds": {
+    "dhcp": 180,
+    "ssh": 180,
+    "desktop": 240,
+    "rpc": 60,
+    "gui": 60,
+    "heartbeat": 30,
+    "process": 30,
+    "browser": 45,
+    "hosts": 45,
+    "usage_positive": 30,
+    "usage_exhausted": 120
+  },
+  "prerequisites": [
+    "installed-package",
+    "daemon-rpc",
+    "gui",
+    "browser-profile",
+    "local-site",
+    "root-supervisor",
+    "process-fixtures",
+    "graphical-process-fixture"
+  ],
+  "cases": [
+    {
+      "id": "VM-INSTALL-001",
+      "action": "Install the native package for the guest distribution.",
+      "expected": "The package manager exits successfully and reports the expected installed version.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 60
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-INSTALL-002",
+      "action": "Inspect the socket, daemon, watchdog, and hosts-repair units after installation.",
+      "expected": "Required units are enabled or active according to their unit type; no startup loop or fatal journal error exists.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 60
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-INSTALL-003",
+      "action": "Log in as the configured desktop user and open BlocKuntu from its desktop entry.",
+      "expected": "The GUI opens, reaches the daemon, and reports healthy core enforcement.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 90
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-INSTALL-004",
+      "action": "Open the first-run recovery modal.",
+      "expected": "Installation ID and locally generated recovery credentials are presented according to the product workflow and have restricted filesystem permissions.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 90
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-INSTALL-005",
+      "action": "Reboot the guest and log in again.",
+      "expected": "Enforcement and GUI connectivity recover without a manual daemon start.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 60
+        },
+        {
+          "id": "active-policy-reboot",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-DATA-001",
+      "action": "Import the generated policy through the GUI.",
+      "expected": "New objects append, the GUI displays them, and the daemon uses them.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 120
+        },
+        {
+          "id": "application-blocklist-and-allowlist",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-DATA-002",
+      "action": "Import the same policy again.",
+      "expected": "Identical IDs do not create duplicates.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 60
+        },
+        {
+          "id": "application-blocklist-and-allowlist",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-DATA-003",
+      "action": "Import a changed object under an existing ID.",
+      "expected": "The conflict is rejected without partially modifying the current policy.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 60
+        },
+        {
+          "id": "application-blocklist-and-allowlist",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-DATA-004",
+      "action": "Export policy TOML through the GUI and parse the saved file.",
+      "expected": "The file is valid, contains the expected blocklists and allowlists, and omits protected service state.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 90
+        },
+        {
+          "id": "application-blocklist-and-allowlist",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-EDIT-001",
+      "action": "Append a blocked website or application identity to an active blocklist.",
+      "expected": "The stricter change succeeds and the newly listed target becomes blocked.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "website",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        },
+        {
+          "id": "application",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-EDIT-002",
+      "action": "Attempt to remove a blocked entry from an active blocklist.",
+      "expected": "The weakening change is rejected.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "website",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        },
+        {
+          "id": "application",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-EDIT-003",
+      "action": "Remove an allowed website or process identity from an active allowlist.",
+      "expected": "The stricter change succeeds and that target becomes rejected.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "website",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        },
+        {
+          "id": "application",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-EDIT-004",
+      "action": "Attempt to add an allowed target to an active allowlist.",
+      "expected": "The weakening change is rejected.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "website",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        },
+        {
+          "id": "application",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-EDIT-005",
+      "action": "Attempt to change mode, tier, schedules, allowance, enabled state, or other protected settings of an active list.",
+      "expected": "The GUI and daemon reject the change.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "website-blocklist-mode",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        },
+        {
+          "id": "website-blocklist-tier",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "website-blocklist-schedules",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "website-blocklist-allowance",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "website-blocklist-enabled",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "website-blocklist-other-protected-settings",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "website-allowlist-mode",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        },
+        {
+          "id": "website-allowlist-tier",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "website-allowlist-schedules",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "website-allowlist-allowance",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "website-allowlist-enabled",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "website-allowlist-other-protected-settings",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-blocklist-mode",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        },
+        {
+          "id": "application-blocklist-tier",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-blocklist-schedules",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-blocklist-allowance",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-blocklist-enabled",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-blocklist-other-protected-settings",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-allowlist-mode",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        },
+        {
+          "id": "application-allowlist-tier",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-allowlist-schedules",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-allowlist-allowance",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-allowlist-enabled",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "application-allowlist-other-protected-settings",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-WEB-001",
+      "action": "Navigate to the configured domain and a covered subdomain, then to a near-miss domain.",
+      "expected": "Intended domains are blocked and the near miss is allowed.",
+      "milestone": "P3.2",
+      "implementation_status": "automated",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 180
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WEB-002",
+      "action": "Navigate to exact-URL positive and negative paths.",
+      "expected": "Only the exact normalized URL is blocked.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 60
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WEB-003",
+      "action": "Navigate to URL-prefix positive and near-miss URLs.",
+      "expected": "Only URLs under the configured prefix are blocked.",
+      "milestone": "P3.2",
+      "implementation_status": "automated",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 180
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WEB-004",
+      "action": "Navigate to URLs with and without the configured URL-containing token.",
+      "expected": "Only the containing URLs are blocked.",
+      "milestone": "P3.2",
+      "implementation_status": "automated",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 180
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WEB-005",
+      "action": "Navigate to path-prefix positive and near-miss paths.",
+      "expected": "Only paths within the configured prefix are blocked.",
+      "milestone": "P3.2",
+      "implementation_status": "automated",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 180
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WEB-006",
+      "action": "Keep a matching page open, activate its rule, and wait for tab revalidation.",
+      "expected": "The already-open HTTP(S) tab is replaced by the BlocKuntu blocked page.",
+      "milestone": "P3.2",
+      "implementation_status": "automated",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 120
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WEB-007",
+      "action": "Perform an in-page history navigation to a newly matching URL.",
+      "expected": "The SPA-style navigation is re-evaluated and blocked.",
+      "milestone": "P3.2",
+      "implementation_status": "automated",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 120
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WEB-008",
+      "action": "Activate a one-minute Controlled Access allowance and keep the page active with visit heartbeats.",
+      "expected": "Access works before exhaustion and is blocked after confirmed usage reaches the allowance.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-APP-001",
+      "action": "Start an application before activating its matching rule.",
+      "expected": "The running matching process is terminated on a subsequent daemon scan.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 45
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-APP-002",
+      "action": "Start the same application while its matching rule is already active.",
+      "expected": "It may start, but it is detected and terminated within the 30-second process-enforcement deadline.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 45
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-APP-003",
+      "action": "Start a near-miss process whose identity resembles but does not equal the matcher.",
+      "expected": "It remains running.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 60
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-APP-004",
+      "action": "Run a one-minute Controlled Access application block.",
+      "expected": "The process remains before exhaustion, consumes eligible runtime, and is terminated after exhaustion.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures",
+        "graphical-process-fixture"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "foreground",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-APP-005",
+      "action": "Minimize or background the metered application.",
+      "expected": "Runtime continues to count because application metering is process-based.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures",
+        "graphical-process-fixture"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "background",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "minimized",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-ACT-001",
+      "action": "Observe a website and application immediately before, during, and after a schedule window.",
+      "expected": "They are allowed before, blocked during, and allowed after the active window.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 480
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-ACT-002",
+      "action": "Start a short Detox containing website and application rules and let it finish naturally.",
+      "expected": "Selected rules activate during Detox and deactivate after its absolute end.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 330
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-ACT-003",
+      "action": "Evaluate a Tier 1 list without any attached schedule.",
+      "expected": "Matching targets remain blocked while the list is enabled.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-ACT-004",
+      "action": "Evaluate Tier 2 inside and outside its schedule and try Manual Unlock.",
+      "expected": "It blocks only while activated and cannot be manually unlocked. Domain patterns appear in the managed hosts block only while Tier 2 is active.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-ACT-005",
+      "action": "Evaluate Tier 3 inside and outside its schedule and request a valid unlock.",
+      "expected": "It is active only through schedule or Detox, supports its valid temporary unlock, and is not represented in `/etc/hosts`.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-ACT-006",
+      "action": "Apply overlapping Hard, Scheduled Block, and Controlled Access rules.",
+      "expected": "Hard wins, then active Scheduled Block, then Controlled Access.",
+      "milestone": "P3.3",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-ACT-007",
+      "action": "Apply two Controlled Access rules with different allowances.",
+      "expected": "The strictest applicable allowance determines access.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-BR-001",
+      "action": "With a clean onboarding profile, install the signed extension from its store after BlocKuntu installation, either through its prompt or the installed package's verified managed store policy.",
+      "expected": "The first verified heartbeat arrives without replacing an ordinary allowed page.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 180
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-BR-002",
+      "action": "Restart the browser after the first verified heartbeat.",
+      "expected": "Managed policy is loaded and the extension remains enabled according to that browser's supported policy mechanism.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 90
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-BR-003",
+      "action": "Try to disable or remove the managed extension.",
+      "expected": "The supported browser prevents the protected action.",
+      "milestone": "P3.6",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-BR-004",
+      "action": "Test a normal window and the configured private-browsing mode.",
+      "expected": "Firefox private browsing or the selected Chromium incognito strategy matches the GUI setting; the result is not generalized across browser families.",
+      "milestone": "P3.6",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "regular",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 300
+        },
+        {
+          "id": "private",
+          "browser_families": [
+            "firefox"
+          ],
+          "budget_seconds": 300
+        },
+        {
+          "id": "incognito-disabled",
+          "browser_families": [
+            "chromium"
+          ],
+          "budget_seconds": 300
+        },
+        {
+          "id": "incognito-extension-permitted",
+          "browser_families": [
+            "chromium"
+          ],
+          "budget_seconds": 300
+        },
+        {
+          "id": "incognito-configured-unprotected",
+          "browser_families": [
+            "chromium"
+          ],
+          "budget_seconds": 300
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-BR-005",
+      "action": "Close the browser, wait, and reopen it.",
+      "expected": "A new browser session receives startup grace and then a current heartbeat; an old-session heartbeat is not reused.",
+      "milestone": "P3.6",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-BR-006",
+      "action": "Close and restart the BlocKuntu GUI while leaving the daemon and browser running.",
+      "expected": "Browser enforcement and heartbeat continue independently of the GUI window.",
+      "milestone": "P3.6",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-BR-007",
+      "action": "Exercise a supported confined Firefox or Chromium package.",
+      "expected": "Per-user Native Messaging integration and managed policy work after the documented setup/restart.",
+      "milestone": "P3.6",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "confined",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-BR-008",
+      "action": "Exercise an unsupported browser package variant.",
+      "expected": "It is reported as unsupported or handled by the configured unsupported-browser rule; a heartbeat alone does not turn it into supported coverage.",
+      "milestone": "P3.6",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "unsupported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-001",
+      "action": "Save a Tier 1 website allowlist.",
+      "expected": "The GUI prevents the unsupported combination or the daemon rejects it.",
+      "milestone": "P3.2",
+      "implementation_status": "automated",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 90
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-WAL-002",
+      "action": "Attach a Tier 2 website allowlist to an inactive schedule.",
+      "expected": "Both the allowed site and outside site remain accessible before activation.",
+      "milestone": "P3.2",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-003",
+      "action": "Enter the schedule window for that Tier 2 allowlist.",
+      "expected": "The listed site remains accessible and the outside site is blocked.",
+      "milestone": "P3.2",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-004",
+      "action": "Activate the Tier 2 allowlist through Detox instead of its schedule.",
+      "expected": "The same allow-only behavior applies for the Detox duration.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 260
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-005",
+      "action": "Inspect `/etc/hosts` while the website allowlist is active.",
+      "expected": "BlocKuntu does not attempt to express the allowlist as a catch-all hosts rule.",
+      "milestone": "P3.2",
+      "implementation_status": "automated",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 120
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-WAL-006",
+      "action": "Keep an outside-site tab open and then activate the allowlist.",
+      "expected": "Existing-tab revalidation replaces it with the allowlist-specific blocked page.",
+      "milestone": "P3.2",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-007",
+      "action": "Activate two website allowlists whose permitted sets differ.",
+      "expected": "Only a URL matching both lists remains accessible.",
+      "milestone": "P3.2",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-008",
+      "action": "Allow a URL in the allowlist while also matching it with a blocklist.",
+      "expected": "The matching blocklist wins.",
+      "milestone": "P3.2",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-009",
+      "action": "Use a Tier 3 allowlist with a one-minute allowance and visit only its listed site.",
+      "expected": "The listed site stays accessible and does not consume the allowlist allowance.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-010",
+      "action": "Visit an outside site under the same Tier 3 allowlist.",
+      "expected": "Usage is charged and the outside site is blocked after exhaustion.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-011",
+      "action": "Request a valid Tier 3 unlock for the rejecting allowlist.",
+      "expected": "The outside site is temporarily accessible, subject to all other active rules.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-012",
+      "action": "Exhaust the Tier 3 website-allowlist allowance during targeted Detox, then request a valid Manual Unlock.",
+      "expected": "The normal two-minute unlock succeeds under the usual reason/quota preconditions. The outside site is temporarily accessible unless another rule rejects it; after unlock expiry it is blocked again while Detox remains active, without refilling the allowance.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 450
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-WAL-013",
+      "action": "Test regular and private windows.",
+      "expected": "Regular windows are protected; private-window behavior matches the explicit Firefox or Chromium setting.",
+      "milestone": "P3.6",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "regular",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 300
+        },
+        {
+          "id": "private",
+          "browser_families": [
+            "firefox"
+          ],
+          "budget_seconds": 300
+        },
+        {
+          "id": "incognito-disabled",
+          "browser_families": [
+            "chromium"
+          ],
+          "budget_seconds": 300
+        },
+        {
+          "id": "incognito-extension-permitted",
+          "browser_families": [
+            "chromium"
+          ],
+          "budget_seconds": 300
+        },
+        {
+          "id": "incognito-configured-unprotected",
+          "browser_families": [
+            "chromium"
+          ],
+          "budget_seconds": 300
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot"
+      ]
+    },
+    {
+      "id": "VM-AAL-001",
+      "action": "Save a Tier 1 application allowlist.",
+      "expected": "The GUI prevents the unsupported combination or the daemon rejects it.",
+      "milestone": "P3.5",
+      "implementation_status": "automated",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 90
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    },
+    {
+      "id": "VM-AAL-002",
+      "action": "Attach a Tier 2 application allowlist containing only test app A to an inactive schedule; run A and B.",
+      "expected": "Both remain running while the list is inactive.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-003",
+      "action": "Activate that schedule.",
+      "expected": "A remains running and independently evaluated test app B is terminated.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-004",
+      "action": "Activate the same Tier 2 allowlist through Detox.",
+      "expected": "The same per-process allow-only behavior applies.",
+      "milestone": "P3.0",
+      "implementation_status": "automated",
+      "smoke": true,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 260
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-005",
+      "action": "Allow the parent fixture and let it start the differently identified helper.",
+      "expected": "The parent remains; permission does not transfer and the helper is terminated.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-006",
+      "action": "Allow a browser main process without listing its renderer, GPU, utility, or crash-handler identities.",
+      "expected": "Every non-matching eligible helper is independently rejected; the result demonstrates why all required identities must be explicit.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "supported",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "browser-profile",
+        "local-site",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "visible-page",
+        "browser-metadata",
+        "screenshot",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-007",
+      "action": "Use Add all detected, then start a helper that did not exist during the snapshot.",
+      "expected": "The later helper is not implicitly allowed. Add all detected is confirmed as a point-in-time snapshot.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "gui",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-008",
+      "action": "Activate two application allowlists whose permitted identities differ.",
+      "expected": "A process must match both active lists to remain running.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-009",
+      "action": "Allow test app A but also match A with an active blocklist.",
+      "expected": "The blocklist wins and A is terminated.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-010",
+      "action": "Run only allowed processes under a Tier 3 application allowlist.",
+      "expected": "The allowlist allowance remains unused.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 510
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-011",
+      "action": "Start a rejected process in the foreground, background, and minimized states under a one-minute Tier 3 allowance.",
+      "expected": "Each state consumes process-based runtime and is terminated after exhaustion.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures",
+        "graphical-process-fixture"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "foreground",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "background",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "minimized",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-012",
+      "action": "Run two rejected processes simultaneously for one Tier 3 allowlist.",
+      "expected": "Elapsed time is charged once to the rule, not multiplied by process count.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-013",
+      "action": "Request Manual Unlock using the allowlist ID and relaunch a rejected process, both during schedule activation and targeted Detox.",
+      "expected": "The process remains during the fixed two-minute unlock if no other rule rejects it.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "schedule",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "targeted-detox",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-014",
+      "action": "Request Manual Unlock using a rejected process identity.",
+      "expected": "It resolves to the rejecting allowlist and follows the same preconditions, duration, and quota.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "schedule",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "targeted-detox",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-015",
+      "action": "Leave another allowlist or blocklist rejecting the process while one rule is unlocked.",
+      "expected": "The process is still terminated by the other restriction.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "other-blocklist",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "other-allowlist",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-016",
+      "action": "Let the unlock expire while the rejected process is running.",
+      "expected": "The process is terminated on a subsequent scan and exhausted allowance remains exhausted.",
+      "milestone": "P3.4",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "schedule",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "targeted-detox",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-017",
+      "action": "Remove A from an active allowlist.",
+      "expected": "The stricter edit succeeds and A becomes eligible for termination.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-018",
+      "action": "Try to add B to an active allowlist.",
+      "expected": "The weakening edit is rejected until the protected setting becomes editable.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-019",
+      "action": "Observe daemon, GUI, and Native Messaging processes during restrictive allowlist enforcement.",
+      "expected": "BlocKuntu recovery components and required descendants remain available.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ],
+          "budget_seconds": 240
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-020",
+      "action": "Observe PID 1, root-owned services, and non-desktop system accounts.",
+      "expected": "They remain outside normal application-allowlist termination.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-AAL-021",
+      "action": "With an explicitly curated safety list, verify user D-Bus, portals/authentication, audio, clipboard, terminal children, IDE language servers, and browser helpers.",
+      "expected": "Every required regular-user process has its own matching identity and the desktop remains healthy.",
+      "milestone": "P3.5",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": false,
+      "deferral_reason": null,
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc",
+        "root-supervisor",
+        "process-fixtures"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "dbus",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "portals-authentication",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "audio",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "clipboard",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "terminal-child",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "ide-language-server",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        },
+        {
+          "id": "browser-helpers",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations",
+        "process-identities",
+        "process-exits"
+      ]
+    },
+    {
+      "id": "VM-UPGRADE-001",
+      "action": "Install a previously accepted package, create blocklists and allowlists, use them, then install the newer package with the native package manager.",
+      "expected": "Upgrade succeeds; configuration, policy modes, installation identity, intended credentials, and enforcement survive; services and browser heartbeat recover.",
+      "milestone": "deferred",
+      "implementation_status": "planned",
+      "smoke": false,
+      "browser_scope": "guest",
+      "deferred": true,
+      "deferral_reason": "User scope decision 2026-09-27; upgrade pair not selected",
+      "prerequisites": [
+        "installed-package",
+        "daemon-rpc"
+      ],
+      "isolation": "fresh-clone-or-verified-clean-checkpoint",
+      "scenarios": [
+        {
+          "id": "baseline",
+          "browser_families": [
+            "firefox",
+            "chromium"
+          ]
+        }
+      ],
+      "evidence": [
+        "package-sha256",
+        "harness-manifest",
+        "timing",
+        "assertion-observations"
+      ]
+    }
+  ],
+  "implementation_bindings": [
+    {
+      "id": "VM-WEB-007",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-007",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-006",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-006",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-005",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-005",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-004",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-004",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-003",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-003",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-005",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-AAL-001",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-001",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-001",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-001",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-001",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-002",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-002",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-002",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-003",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-003",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-003",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-004",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-004",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-004",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-005",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-005",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-INSTALL-005",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-001",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-001",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-001",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-002",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-002",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-002",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-003",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-003",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-003",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-004",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-004",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-DATA-004",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-002",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-002",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-002",
+      "guest": "fedora",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-002",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-002",
+      "guest": "cachyos",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-002",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-APP-001",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-APP-001",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-APP-001",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-APP-002",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-APP-002",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-APP-002",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-APP-003",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-APP-003",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-APP-003",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-001",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-001",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-001",
+      "guest": "fedora",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-001",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-001",
+      "guest": "cachyos",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-001",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-002",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-002",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-002",
+      "guest": "fedora",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-002",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-002",
+      "guest": "cachyos",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-BR-002",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-004",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-004",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-004",
+      "guest": "fedora",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-004",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-004",
+      "guest": "cachyos",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-004",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-AAL-004",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-AAL-004",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-AAL-004",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-001",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-001",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-008",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WEB-008",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-ACT-001",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-ACT-001",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-ACT-002",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-ACT-002",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-AAL-010",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-012",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-WAL-012",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "scripts/vm-acceptance.py"
+    },
+    {
+      "id": "VM-EDIT-001",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-001",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-002",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-002",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-003",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-003",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-004",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-004",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "website-blocklist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "website-allowlist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "application-blocklist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "application-allowlist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "private",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-disabled",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-extension-permitted",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-configured-unprotected",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "ubuntu",
+      "browser_package": "firefox-native",
+      "scenario": "private",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-disabled",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-extension-permitted",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "ubuntu",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-configured-unprotected",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-AAL-005",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/helpers.py"
+    },
+    {
+      "id": "VM-AAL-019",
+      "guest": "ubuntu",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/helpers.py"
+    },
+    {
+      "id": "VM-EDIT-001",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-001",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-002",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-002",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-003",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-003",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-004",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-004",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "website-blocklist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "website-allowlist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "application-blocklist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "application-allowlist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-AAL-005",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/helpers.py"
+    },
+    {
+      "id": "VM-AAL-019",
+      "guest": "fedora",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/helpers.py"
+    },
+    {
+      "id": "VM-EDIT-001",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-001",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-002",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-002",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-003",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-003",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-004",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "website",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-004",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "application",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "website-blocklist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "website-allowlist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "application-blocklist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-EDIT-005",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "application-allowlist-mode",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/gui_edits.py"
+    },
+    {
+      "id": "VM-AAL-005",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/helpers.py"
+    },
+    {
+      "id": "VM-AAL-019",
+      "guest": "cachyos",
+      "browser_package": null,
+      "scenario": "baseline",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/helpers.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "fedora",
+      "browser_package": "firefox-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "fedora",
+      "browser_package": "firefox-native",
+      "scenario": "private",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-disabled",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-extension-permitted",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-configured-unprotected",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "fedora",
+      "browser_package": "firefox-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "fedora",
+      "browser_package": "firefox-native",
+      "scenario": "private",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-disabled",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-extension-permitted",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "fedora",
+      "browser_package": "chrome-native",
+      "scenario": "incognito-configured-unprotected",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "cachyos",
+      "browser_package": "firefox-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "cachyos",
+      "browser_package": "firefox-native",
+      "scenario": "private",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "incognito-disabled",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "incognito-extension-permitted",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-BR-004",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "incognito-configured-unprotected",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "cachyos",
+      "browser_package": "firefox-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "regular",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "cachyos",
+      "browser_package": "firefox-native",
+      "scenario": "private",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "incognito-disabled",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "incognito-extension-permitted",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    },
+    {
+      "id": "VM-WAL-013",
+      "guest": "cachyos",
+      "browser_package": "chromium-native",
+      "scenario": "incognito-configured-unprotected",
+      "status": "automated",
+      "entrypoint": "fixtures/layer3/private_browsing.py"
+    }
+  ],
+  "observation_windows_seconds": {
+    "allowed": 30,
+    "schedule_baseline": 30
+  },
+  "scenario_durations_seconds": {
+    "manual_unlock": 120,
+    "schedule_active": 180,
+    "detox": 180,
+    "detox_with_unlock": 300
+  }
+}

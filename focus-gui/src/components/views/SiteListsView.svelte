@@ -1,4 +1,6 @@
 <script lang="ts">
+  import DeleteConfirmation from "../DeleteConfirmation.svelte";
+  let deleteConfirmationOpen = $state(false);
   import {
     AlertTriangle,
     ListChecks,
@@ -58,11 +60,11 @@
     Boolean(
       savedRule &&
         (ruleDraftDetoxLocked ||
-          (ruleDraftActive && !(savedRule.tier === "hard" && tier1EditUnlocked)))
+          (ruleDraftActive && !tier1EditUnlocked))
     )
   );
   let savedPatternCount = $derived(savedRule?.patterns.length ?? 0);
-  let patternValueInputs: HTMLInputElement[] = [];
+  let patternValueInputs = $state<HTMLInputElement[]>([]);
   let ruleSaveWarningOpen = $state(false);
 
   function ruleSaveNeedsWarning(): boolean {
@@ -110,7 +112,7 @@
     if (!patternIsSaved(index)) return false;
     if (savedRule?.mode === "allowlist") return false;
     if (ruleDraftDetoxLocked) return true;
-    return ruleDraftActive && !(savedRule?.tier === "hard" && tier1EditUnlocked);
+    return ruleDraftActive && !tier1EditUnlocked;
   }
 
   function patternAddLocked(): boolean {
@@ -118,7 +120,7 @@
       savedRule &&
         savedRule.mode === "allowlist" &&
         (ruleDraftDetoxLocked ||
-          (ruleDraftActive && !(savedRule.tier === "hard" && tier1EditUnlocked)))
+          (ruleDraftActive && !tier1EditUnlocked))
     );
   }
 
@@ -217,7 +219,8 @@
       <h2>{ruleDraft?.name || "Website"}</h2>
     </div>
     {#if ruleDraft}
-      {#if ruleDraftDetoxLocked || ruleDraftActive}
+      <p class="policy-note">List ID: <code>{ruleDraft.id}</code>. Manual Unlock requires a matching website URL; website list IDs and display names are not supported.</p>
+      {#if ruleDraftEditLocked}
         <section class="inline-warning">
           <AlertTriangle size={17} aria-hidden="true" />
           <span>
@@ -385,9 +388,9 @@
           <span>Pattern</span>
         </button>
         <button
-          class="secondary"
-          onclick={onRemoveRuleDraft}
-          disabled={ruleSaving || ruleDraftDetoxLocked || ruleDraftActive || !ruleDraftIsExisting}
+          class="secondary danger-action"
+          onclick={() => (deleteConfirmationOpen = true)}
+          disabled={ruleSaving || ruleDraftDetoxLocked || (ruleDraftActive && !tier1EditUnlocked) || !ruleDraftIsExisting}
         >
           <Trash2 size={17} aria-hidden="true" />
           <span>Delete</span>
@@ -471,4 +474,11 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if deleteConfirmationOpen && savedRule}
+  <DeleteConfirmation name={savedRule.name || savedRule.id}
+    consequences="Its schedule attachments and unused allowance will be removed. Schedules and other lists remain."
+    onCancel={() => (deleteConfirmationOpen = false)}
+    onDelete={() => { deleteConfirmationOpen = false; void onRemoveRuleDraft(); }} />
 {/if}

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import DeleteConfirmation from "../DeleteConfirmation.svelte";
+  let deleteConfirmationOpen = $state(false);
   import {
     AlertTriangle,
     ChevronDown,
@@ -24,6 +26,7 @@
     appRuleSaving: boolean;
     appRuleMessage: string | null;
     activeDetoxAppRuleIds?: string[];
+    tier1EditUnlocked?: boolean;
     onSelectAppRule: (rule: AppRule) => void;
     onStartNewAppRule: () => void;
     onAddDetectedMatchers: (app: RunningApp) => void;
@@ -43,6 +46,7 @@
     appRuleSaving,
     appRuleMessage,
     activeDetoxAppRuleIds = [],
+    tier1EditUnlocked = false,
     onSelectAppRule,
     onStartNewAppRule,
     onAddDetectedMatchers,
@@ -63,14 +67,14 @@
     Boolean(savedAppRule && appRuleIsActive(savedAppRule, config?.schedules ?? []))
   );
   let appRuleDraftEditLocked = $derived(
-    Boolean(savedAppRule && (appRuleDraftDetoxLocked || appRuleDraftActive))
+    Boolean(savedAppRule && (appRuleDraftDetoxLocked || (appRuleDraftActive && !tier1EditUnlocked)))
   );
   let savedMatcherCount = $derived(savedAppRule?.matchers.length ?? 0);
   let detectedAppSearch = $state("");
   let filteredRunningApps = $derived(
     runningApps.filter((app) => detectedAppMatchesSearch(app, detectedAppSearch))
   );
-  let matcherValueInputs: HTMLInputElement[] = [];
+  let matcherValueInputs = $state<HTMLInputElement[]>([]);
   let matcherListExpanded = $state(false);
   let detectedAppsExpanded = $state(false);
   let appRuleSaveWarningOpen = $state(false);
@@ -100,13 +104,13 @@
 
   function matcherRemoveLocked(index: number): boolean {
     if (savedAppRule?.mode === "allowlist") return false;
-    return (appRuleDraftDetoxLocked || appRuleDraftActive) && matcherIsSaved(index);
+    return (appRuleDraftDetoxLocked || (appRuleDraftActive && !tier1EditUnlocked)) && matcherIsSaved(index);
   }
 
   function matcherAddLocked(): boolean {
     return Boolean(
       savedAppRule?.mode === "allowlist" &&
-        (appRuleDraftDetoxLocked || appRuleDraftActive)
+        (appRuleDraftDetoxLocked || (appRuleDraftActive && !tier1EditUnlocked))
     );
   }
 
@@ -239,14 +243,15 @@
       <h2>{appRuleDraft?.name || "Application"}</h2>
     </div>
     {#if appRuleDraft}
-      {#if appRuleDraftDetoxLocked || appRuleDraftActive}
+      <p class="policy-note">List ID: <code>{appRuleDraft.id}</code>. Use this ID, not the display name, for Manual Unlock of an active Tier 3 list.</p>
+      {#if appRuleDraftEditLocked}
         <section class="inline-warning">
           <AlertTriangle size={17} aria-hidden="true" />
           <span>
             {appRuleDraftDetoxLocked
               ? appRuleDraft.mode === "allowlist"
                 ? "This application allowlist is covered by an active Detox. Allowed identities can be removed, but new applications cannot be added."
-                : "This application is covered by an active Detox. Existing settings are locked, but you can append matchers."
+                : "This application is covered by an active Detox. The edit key cannot weaken it. Existing settings stay locked; you can append matchers."
               : appRuleDraft.mode === "allowlist"
                 ? "This application allowlist is active right now. Allowed identities can be removed, but new applications cannot be added."
                 : "This application is active right now. Existing settings are locked, but you can append matchers."}
@@ -407,12 +412,12 @@
           <span>{appRuleDraft.mode === "allowlist" ? "Identity" : "Matcher"}</span>
         </button>
         <button
-          class="secondary"
-          onclick={onRemoveAppRuleDraft}
+          class="secondary danger-action"
+          onclick={() => (deleteConfirmationOpen = true)}
           disabled={
             appRuleSaving ||
             appRuleDraftDetoxLocked ||
-            appRuleDraftActive ||
+            (appRuleDraftActive && !tier1EditUnlocked) ||
             !appRuleDraftIsExisting
           }
         >
@@ -547,4 +552,11 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if deleteConfirmationOpen && savedAppRule}
+  <DeleteConfirmation name={savedAppRule.name || savedAppRule.id}
+    consequences="Its schedule attachments and unused allowance will be removed. Schedules and other lists remain."
+    onCancel={() => (deleteConfirmationOpen = false)}
+    onDelete={() => { deleteConfirmationOpen = false; void onRemoveAppRuleDraft(); }} />
 {/if}

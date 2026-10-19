@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 
 
 def ready(path):
@@ -24,8 +25,9 @@ def identity(pid, comm, executable):
     assert Path(f"/proc/{pid}/exe").readlink().name == executable
 
 
+invocation = uuid.uuid4().hex
 for iteration in range(2):
-    directory = Path(f"fixture-run-{iteration}")
+    directory = Path(f"fixture-run-{invocation}-{iteration}")
     directory.mkdir()
     processes = []
     helper = None

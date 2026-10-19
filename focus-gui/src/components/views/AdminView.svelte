@@ -37,6 +37,11 @@
     | "notifications";
 
   interface Props {
+    loginStartup: boolean | null;
+    loginStartupSaving: boolean;
+    loginStartupError: string | null;
+    onUpdateLoginStartup: (enabled: boolean) => void | Promise<void>;
+    detoxActive: boolean;
     health: SystemHealth | null;
     healthRefreshing: boolean;
     enforcement: EnforcementStatus | null;
@@ -107,6 +112,7 @@
   const latestReleaseUrl = "https://github.com/cstute1206/BlocKuntu/releases/latest";
 
   let {
+    loginStartup, loginStartupSaving, loginStartupError, onUpdateLoginStartup, detoxActive,
     health,
     healthRefreshing,
     enforcement,
@@ -294,7 +300,7 @@
     if (mode === protectedAccessMode) return;
     if (
       window.confirm(
-        `Set protected settings access to ${protectedAccessModeLabel(mode)}?\n\nThis applies to Tier 1 edits and uninstall, Tier 1 blocked browsers and changes to Chromium private-browsing settings.`
+        `Set protected settings access to ${protectedAccessModeLabel(mode)}?\n\nThis applies to protected list edits and uninstall, Tier 1 blocked browsers and changes to Chromium private-browsing settings.`
       )
     ) {
       void onUpdateProtectedAccessMode(mode);
@@ -408,14 +414,14 @@
           </section>
         {:else if activeSection === "protected"}
           <section class="settings-panel">
-            <div class="settings-panel-header"><div><h3>Protected changes and uninstall</h3><p>Manage Tier 1 editing, maintenance and the protected uninstall flow.</p></div></div>
+            <div class="settings-panel-header"><div><h3>Protected changes and uninstall</h3><p>Manage protected editing across all tiers, maintenance and the protected uninstall flow.</p></div></div>
             <div class="protected-changes-stack">
               <div class="status-list">
                 <div class="status-row"><span>Protected actions</span><strong data-state={protectedAccessOpen ? "active" : "stopped"}>{protectedAccessOpen ? "available" : "unavailable"}</strong></div>
                 <div class="status-row"><span>Available</span><small>{protectedAccessLabel}</small></div>
                 <div class="status-row"><span>Edit unlock</span><small>{protectionState}</small></div>
               </div>
-              <label class="preference-row"><span><strong>Protected settings access</strong><small>This one setting controls when Tier 1 edits and uninstall can be authorized, Tier 1 blocked browsers are active and Chromium private-browsing settings can be changed. Chromium settings are additionally locked while a website allowlist is active. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={requestProtectedAccessModeChange}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
+              <label class="preference-row"><span><strong>Protected settings access</strong><small>This one setting controls when protected list edits and uninstall can be authorized, Tier 1 blocked browsers are active and Chromium private-browsing settings can be changed. Chromium settings are additionally locked while a website allowlist is active. A restrictive choice can only be changed while it currently allows protected actions.</small></span><select value={protectedAccessMode} disabled={!protectedAccessOpen && protectedAccessMode !== "all_time"} onchange={requestProtectedAccessModeChange}><option value="all_time">All the time</option><option value="no_active_schedule_or_detox">Only when no schedule or Detox is active</option><option value="sunday">Sunday restriction (20:00-23:59)</option></select></label>
               <p class="settings-note">Tier 1 blocked browsers are currently {unsupportedBrowserBlockActive ? "active" : "inactive"}. Chromium private-browsing settings are currently {chromiumIncognitoLockedByActiveAllowlist ? "locked because a website allowlist is active" : chromiumIncognitoSettingsChangeAllowed ? "available to change" : "locked by the protected settings access window"}.</p>
               <label class="preference-row"><span><strong>Chromium private browsing</strong><small>Choose how Chrome, Chromium, Brave, Opera, Edge and Vivaldi handle private windows. Allowlist activation is not restricted by this setting, but private windows need extension access for allowlist enforcement.</small></span><select value={chromiumIncognitoMode} disabled={!chromiumIncognitoSettingsChangeAllowed} onchange={(event) => onUpdateChromiumIncognitoMode((event.currentTarget as HTMLSelectElement).value as ChromiumIncognitoMode)}><option value="disabled">Disable private browsing (recommended for full allowlist protection)</option><option value="manual_consent">Allow with manual extension consent</option><option value="policy_url_blocking">Block URLs by browser policy</option></select></label>
               {#if chromiumIncognitoMode === "disabled"}
@@ -428,6 +434,7 @@
               {:else}
                 <p class="settings-note">{chromiumIncognitoUrlBlockCount} active Hard, Scheduled Block, or Controlled Access blocklist pattern(s) are written to the browser policy. Allowlist activation remains available, but this policy cannot enforce allowlists in private windows. Controlled Access rules are blocked here even while an allowance still has time. Full URL prefixes are included. URL contains and path-only patterns are not represented ({chromiumIncognitoUnsupportedPatternCount} omitted). This requires a browser version that supports the private URL-blocklist policy. Verify it in the VM.</p>
               {/if}
+              <p class="settings-note">The Tier 1 edit key unlocks website and application list edits across all three tiers for five minutes, including scheduled lists. Detox-attached lists can only be tightened: append to blocklists or remove from allowlists. Their settings and allowances stay locked, even with the key.</p>
               <div class="tier1-edit-form admin-action-form">
                 <label><span>Tier 1 edit key</span><input type="password" bind:value={tier1EditPhraseInput} autocomplete="current-password" placeholder="Enter the Tier 1 edit key" spellcheck="false" /></label>
                 <button class="primary" onclick={onUnlockTier1Edit} disabled={tier1EditUnlocking || !canUnlockTier1Edit}><KeyRound size={17} aria-hidden="true" /><span>{tier1EditUnlocking ? "Unlocking" : "Unlock 5 min"}</span></button>
@@ -436,9 +443,10 @@
               {#if tier1EditError}<p class="result-text danger-text">{tier1EditError}</p>{/if}
               <div class="button-row compact-row settings-action-row"><button class="secondary" onclick={onShowFirstRunOverview}>Show welcome modal</button></div>
               {#if recoveryCredentialsVisible}<div class="button-row compact-row settings-action-row"><button class="secondary danger-action" onclick={onHideRecoveryCredentials}>Hide and remove displayed credentials</button></div>{/if}
+              {#if detoxActive}<p class="settings-note">Uninstall is unavailable until all active Detox sessions end.</p>{/if}
               <div class="uninstall-form admin-action-form">
                 <label><span>Uninstall phrase</span><input type="password" bind:value={uninstallPhraseInput} autocomplete="current-password" placeholder="Enter the uninstall phrase" spellcheck="false" /></label>
-                <button class="secondary danger-action" onclick={onRunUninstallBlockuntu} disabled={uninstallRunning || !canRunUninstall}><Trash2 size={17} aria-hidden="true" /><span>{uninstallRunning ? "Removing" : "Uninstall BlocKuntu"}</span></button>
+                <button class="secondary danger-action" onclick={onRunUninstallBlockuntu} disabled={uninstallRunning || !canRunUninstall || detoxActive}><Trash2 size={17} aria-hidden="true" /><span>{uninstallRunning ? "Removing" : "Uninstall BlocKuntu"}</span></button>
               </div>
               <p class="settings-note">Uninstalling BlocKuntu can take a little while. Please wait for the process to finish.</p>
               {#if uninstallPhraseError}<p class="result-text danger-text">{uninstallPhraseError}</p>{/if}
@@ -480,13 +488,15 @@
                   </div>
                 </section>
               </div>
-              <p class="settings-note">Notifications are delivered only while the BlocKuntu GUI or tray process is running. Repeated block events are automatically deduplicated.</p>
+              <p class="settings-note">Notifications are delivered only while the BlocKuntu GUI or tray process is running. Historical block notifications are discarded when the GUI or tray starts and block notifications expire after one minute. Repeated events are deduplicated. Event history remains in statistics and logs.</p>
             {:else}
               <p class="empty-state">Notification settings are unavailable while the daemon is offline.</p>
             {/if}
             {#if notificationPreferencesError}<p class="result-text danger-text">{notificationPreferencesError}</p>{/if}
             <section class="settings-subsection settings-runtime-meta">
               <div class="settings-subsection-header"><h4>Application</h4><p>Choose how schedule times are shown and review the installed build.</p></div>
+              <label class="preference-row"><span><strong>Start BlocKuntu in the system tray when I log in</strong><small>Launch at desktop login. Open the GUI from the tray; manual launches open it normally. If a tray host is unavailable, the window opens instead.</small></span><input type="checkbox" checked={loginStartup === true} disabled={loginStartup === null || loginStartupSaving} onchange={(event) => void onUpdateLoginStartup(event.currentTarget.checked)} /></label>
+              {#if loginStartupError}<p class="danger-text">{loginStartupError}</p>{/if}
               <label class="preference-row"><span><strong>Time format</strong><small>Choose how schedule times are entered and displayed.</small></span><select value={timeFormat} onchange={(event) => onUpdateTimeFormat((event.currentTarget as HTMLSelectElement).value as "12h" | "24h")}><option value="24h">24-hour (21:30)</option><option value="12h">AM/PM (9:30 PM)</option></select></label>
               <div class="status-list installation-info">
                 <div class="status-row"><span>Build</span><small>{buildNumber ?? "Unavailable"}</small></div>

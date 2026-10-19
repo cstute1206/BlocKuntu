@@ -35,6 +35,8 @@ pub enum DaemonError {
     SocketActivationUnavailable(PathBuf),
     #[error("process {pid} could not be killed: errno {errno}")]
     KillFailed { pid: u32, errno: i32 },
+    #[error("process kill batch had failures: {failures}")]
+    KillBatchFailed { failures: String },
 }
 
 pub type Result<T> = std::result::Result<T, DaemonError>;

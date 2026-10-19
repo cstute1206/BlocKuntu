@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Ban, CheckCircle2, Play, Timer, XCircle } from "@lucide/svelte";
+  import { Ban, CheckCircle2, Play, Timer } from "@lucide/svelte";
   import type {
     AppRule,
     ConfigSnapshot,
@@ -25,12 +25,9 @@
     selectedSiteRuleIds?: string[];
     selectedAppRuleIds?: string[];
     detoxStarting: boolean;
-    detoxCancellingId: string | null;
     detoxMessage: string | null;
-    tier1EditUnlocked: boolean;
     nowMs: number;
     onStartDetox: () => void | Promise<void>;
-    onCancelDetox: (id: string) => void | Promise<void>;
   }
 
   let {
@@ -42,12 +39,9 @@
     selectedSiteRuleIds = $bindable<string[]>([]),
     selectedAppRuleIds = $bindable<string[]>([]),
     detoxStarting,
-    detoxCancellingId,
     detoxMessage,
-    tier1EditUnlocked,
     nowMs,
-    onStartDetox,
-    onCancelDetox
+    onStartDetox
   }: Props = $props();
 
   const durationPresets = [
@@ -161,6 +155,7 @@
       <h2>Start Detox</h2>
     </div>
 
+    <p class="policy-note">Once started, Detox cannot be cancelled, even with the edit key. Selected lists can only be made more restrictive until it ends. Tier 3 allowances and manual unlocks remain available.</p>
     <div class="form-grid detox-form">
       <label>
         <span>Name</span>
@@ -270,14 +265,7 @@
             <strong>{formatRemaining(session)}</strong>
             <small>until {formatDateTime(session.ends_at)}</small>
           </div>
-          <button
-            class="secondary danger-action"
-            onclick={() => onCancelDetox(session.id)}
-            disabled={!tier1EditUnlocked || detoxCancellingId === session.id}
-          >
-            <XCircle size={17} aria-hidden="true" />
-            <span>{detoxCancellingId === session.id ? "Cancelling" : "Cancel"}</span>
-          </button>
+
         </div>
       {:else}
         <p class="empty-state">No active detox sessions.</p>

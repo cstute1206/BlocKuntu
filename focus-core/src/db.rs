@@ -490,11 +490,28 @@ impl Database {
         Ok(Some(id))
     }
 
+    /// Retain outbox rows for deduplication and the independent event log for
+    /// statistics, but never deliver block events from before a client started.
+    pub fn discard_historical_block_notifications(
+        &self,
+        before: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<usize, Error> {
+        Ok(self.conn.execute(
+            "UPDATE notification_outbox SET delivered_at = ?1
+             WHERE delivered_at IS NULL AND kind IN ('website_blocked', 'application_blocked')
+             AND created_at < ?2",
+            params![format_time(now), format_time(before)],
+        )?)
+    }
+
     pub fn pending_notifications(
         &self,
         now: DateTime<Utc>,
         limit: u32,
     ) -> Result<Vec<NotificationEvent>, Error> {
+        // Also expires old outbox rows created by earlier daemon versions.
+        self.discard_historical_block_notifications(now - Duration::seconds(60), now)?;
         self.conn.execute(
             "DELETE FROM notification_outbox WHERE delivered_at IS NULL AND expires_at <= ?1",
             params![format_time(now)],
@@ -3248,6 +3265,113 @@ mod tests {
     }
 
     #[test]
+    fn historical_block_notifications_stay_suppressed_across_reopen_and_keep_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("notifications.sqlite3");
+        let now = Utc::now();
+        let database = Database::open(&path).unwrap();
+        for (kind, key, seconds) in [
+            ("website_blocked", "old-site", -10),
+            ("application_blocked", "old-app", -5),
+            ("website_blocked", "stale", -90),
+            ("website_blocked", "fresh", 1),
+            ("schedule_started", "schedule", -90),
+        ] {
+            database
+                .enqueue_notification(
+                    kind,
+                    "Title",
+                    "Body",
+                    key,
+                    now + Duration::seconds(seconds),
+                    Duration::minutes(2),
+                    Duration::minutes(5),
+                )
+                .unwrap();
+        }
+        let log_before = database.event_log_snapshot().unwrap();
+        assert_eq!(
+            database
+                .discard_historical_block_notifications(now, now)
+                .unwrap(),
+            3
+        );
+        let pending = database
+            .pending_notifications(now + Duration::seconds(2), 20)
+            .unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(pending.iter().any(|n| n.kind == "website_blocked"));
+        // Suppression keeps dedupe keys alive; an identical event cannot requeue.
+        assert!(database
+            .enqueue_notification(
+                "website_blocked",
+                "Title",
+                "Body",
+                "old-site",
+                now + Duration::seconds(3),
+                Duration::minutes(2),
+                Duration::minutes(5)
+            )
+            .unwrap()
+            .is_none());
+        database
+            .acknowledge_notifications(&pending.iter().map(|n| n.id).collect::<Vec<_>>(), now)
+            .unwrap();
+        assert_eq!(database.event_log_snapshot().unwrap(), log_before);
+        drop(database);
+        let reopened = Database::open(path).unwrap();
+        assert!(reopened
+            .pending_notifications(now + Duration::seconds(4), 20)
+            .unwrap()
+            .is_empty());
+        assert_eq!(reopened.event_log_snapshot().unwrap(), log_before);
+    }
+
+    #[test]
+    fn stale_block_delivery_failures_expire_but_fresh_events_are_available() {
+        let database = Database::in_memory().unwrap();
+        let now = Utc::now();
+        let id = database
+            .enqueue_notification(
+                "application_blocked",
+                "Title",
+                "Body",
+                "app",
+                now,
+                Duration::seconds(30),
+                Duration::minutes(5),
+            )
+            .unwrap()
+            .unwrap();
+        database
+            .record_notification_delivery_result(id, false, Some("offline"), now)
+            .unwrap();
+        assert!(database
+            .pending_notifications(now + Duration::seconds(61), 20)
+            .unwrap()
+            .is_empty());
+        database
+            .enqueue_notification(
+                "application_blocked",
+                "Title",
+                "Body",
+                "app",
+                now + Duration::seconds(62),
+                Duration::seconds(30),
+                Duration::minutes(5),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            database
+                .pending_notifications(now + Duration::seconds(62), 20)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn notification_outbox_deduplicates_acknowledges_and_expires() {
         let database = Database::in_memory().expect("in-memory database");
         let now = Utc
@@ -3324,9 +3448,9 @@ mod tests {
             .expect("timestamp");
         let id = database
             .enqueue_notification(
-                "website_blocked",
-                "Website blocked",
-                "example.com was blocked.",
+                "schedule_started",
+                "Schedule started",
+                "Work schedule started.",
                 "website:example.com",
                 now,
                 Duration::minutes(1),

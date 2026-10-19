@@ -18,7 +18,8 @@ UUIDs and MACs, and keeps the bases shut off. It uses the existing
 
 CachyOS contains guest-side Snapper snapshots. These are distinct from libvirt
 snapshots. The runner explicitly mounts the live `@` and `@home` Btrfs
-subvolumes and checks their layout against `/etc/fstab`.
+subvolumes on the discovered single Btrfs partition and checks their layout
+against `/etc/fstab`. Partition numbering may differ between refreshed bases.
 
 All three templates provide SSH as desktop user `akhi` on port 22. Clone
 addresses are assigned by DHCP on libvirt's `default` network and are therefore

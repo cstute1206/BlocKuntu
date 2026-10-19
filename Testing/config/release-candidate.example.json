@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "example-rc",
+  "commit": "0000000000000000000000000000000000000000",
+  "repository": "cstute1206/BlocKuntu",
+  "ci_runs": {"source": null, "package": null},
+  "ci_receipt": null,
+  "package_reports": {},
+  "smoke_summaries": [],
+  "recovery_checks": [],
+  "e2e_reports": []
+}

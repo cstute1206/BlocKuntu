@@ -1,0 +1,3 @@
+# Erase authorization must abort the whole transaction, before dependencies go.
+# The helper leaves upgrade/reinstall replacement (O) alone and checks erase (E).
+pre_transaction:blockuntu:out:raise_error=1:/usr/libexec/blockuntu/check-package-removal-lease.sh --dnf-action ${pkg.action}

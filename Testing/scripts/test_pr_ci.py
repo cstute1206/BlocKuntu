@@ -51,6 +51,22 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(report["passed"])
 
+    def test_harness_discovers_all_regressions_without_launching_vm_suites(self):
+        code, report, calls = self.run_job("harness", iter([0]))
+        self.assertEqual(code, 0)
+        self.assertTrue(report["passed"])
+        command = report["commands"][0]["command"]
+        self.assertEqual(command[1:5], ["-m", "unittest", "discover", "-s"])
+        self.assertEqual(Path(command[5]).parts[-2:], ("Testing", "scripts"))
+        self.assertEqual(command[6:], ["-p", "test_*.py"])
+        self.assertEqual(len(calls), 1)
+
+    def test_harness_failure_fails_the_ci_job_and_keeps_its_report(self):
+        code, report, _ = self.run_job("harness", iter([1]))
+        self.assertEqual(code, 1)
+        self.assertTrue(report["completed"])
+        self.assertFalse(report["passed"])
+
 
 if __name__ == "__main__":
     unittest.main()

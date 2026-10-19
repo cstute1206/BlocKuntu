@@ -162,13 +162,6 @@ export function startDetox(
   ) as Promise<DetoxMutationResponse>;
 }
 
-export function cancelDetox(id: string, socketPath?: string): Promise<DetoxMutationResponse> {
-  return daemonRpc(
-    "cancel_detox",
-    { id, now: clientNow() },
-    socketPath
-  ) as Promise<DetoxMutationResponse>;
-}
 
 export function logSummary(socketPath?: string): Promise<LogSummary> {
   return daemonRpc("log_summary", {}, socketPath) as Promise<LogSummary>;
@@ -325,4 +318,11 @@ function clientNow(date = new Date()): string {
 
 function padDatePart(value: number): string {
   return value.toString().padStart(2, "0");
+}
+
+export function loginStartupEnabled(): Promise<boolean> {
+  return invoke("login_startup_enabled");
+}
+export function setLoginStartup(enabled: boolean): Promise<void> {
+  return invoke("set_login_startup", { enabled });
 }

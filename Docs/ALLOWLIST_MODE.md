@@ -21,7 +21,7 @@ Entries in one allowlist are alternatives. Multiple active allowlists are inters
 | Tier 2 | Matching entries are blocked during an attached schedule or Detox  | Non-matching targets are blocked during an attached schedule or Detox  |
 | Tier 3 | Matching entries consume allowance and block after it is exhausted | Non-matching targets consume allowance and block after it is exhausted |
 
-Tier 3 keeps the existing two-minute manual unlock. The rejecting list can be unlocked by entering its list ID or a target that it rejects in **Overview → Manual Unlock**. Unlocking one allowlist does not override another active allowlist or a matching blocklist.
+Tier 3 keeps the existing two-minute manual unlock. An application list can be selected by its list ID (not its display name) or an application matcher value that it rejects. Website list IDs are not supported; enter a domain or URL rejected by the website list in **Overview → Manual Unlock**. Unlocking one allowlist does not override another active allowlist or a matching blocklist.
 
 ## Website allowlists
 

@@ -1,3 +1,5 @@
+mod login_startup;
+
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -5,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -2304,7 +2306,6 @@ fn refresh_tray_menu(menu: &TrayMenuState) {
                 format!("Enforcement: {}", tray_enforcement_label(enforcement_state)),
             );
             update_tray_detox_status(&socket, menu);
-            deliver_pending_notifications(&socket);
         }
         Err(_) => {
             set_menu_text(&menu.daemon_status, "Daemon: Offline");
@@ -2314,8 +2315,28 @@ fn refresh_tray_menu(menu: &TrayMenuState) {
     }
 }
 
+fn start_notification_delivery_loop() {
+    // Notifications remain available in the fallback GUI, even without a tray.
+    std::thread::spawn(|| loop {
+        deliver_pending_notifications(&resolve_socket_path(None));
+        std::thread::sleep(Duration::from_secs(TRAY_REFRESH_INTERVAL_SECONDS));
+    });
+}
+
+static NOTIFICATION_CLIENT_STARTED_AT: OnceLock<DateTime<Utc>> = OnceLock::new();
+static NOTIFICATION_DELIVERY_LOCK: Mutex<()> = Mutex::new(());
+
 fn deliver_pending_notifications(socket: &str) {
-    let Ok(value) = call_daemon(socket, "pending_notifications", json!({ "limit": 20 })) else {
+    // Serialize outbox delivery so concurrent requests cannot display the same batch.
+    let Ok(_delivery_guard) = NOTIFICATION_DELIVERY_LOCK.try_lock() else {
+        return;
+    };
+    let since = NOTIFICATION_CLIENT_STARTED_AT.get_or_init(Utc::now);
+    let Ok(value) = call_daemon(
+        socket,
+        "pending_notifications",
+        json!({ "limit": 20, "block_events_since": since }),
+    ) else {
         return;
     };
     let Some(notifications) = value.get("notifications").and_then(Value::as_array) else {
@@ -2422,20 +2443,45 @@ fn set_menu_text<S: AsRef<str>>(item: &MenuItem<Wry>, text: S) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = NOTIFICATION_CLIENT_STARTED_AT.set(Utc::now());
     let tray_available = Arc::new(AtomicBool::new(false));
     let tray_available_for_setup = Arc::clone(&tray_available);
     let tray_available_for_window = Arc::clone(&tray_available);
 
+    let start_in_tray = login_startup::tray_requested(std::env::args());
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            show_main_window(app);
-            emit_runtime_refresh(app);
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if !login_startup::tray_requested(argv) {
+                show_main_window(app);
+                emit_runtime_refresh(app);
+            }
         }))
         .setup(move |app| {
-            match setup_tray(app) {
-                Ok(_) => tray_available_for_setup.store(true, Ordering::SeqCst),
-                Err(err) => eprintln!("BlocKuntu tray setup failed: {err}"),
+            let tray_created = match setup_tray(app) {
+                Ok(_) => {
+                    let available = login_startup::tray_host_available();
+                    tray_available_for_setup.store(available, Ordering::SeqCst);
+                    true
+                }
+                Err(err) => {
+                    eprintln!("BlocKuntu tray setup failed: {err}");
+                    false
+                }
+            };
+            if !start_in_tray || !tray_available_for_setup.load(Ordering::SeqCst) {
+                show_main_window(app.handle());
             }
+            // A disappearing tray host must not strand a hidden application.
+            let handle = app.handle().clone();
+            let available = Arc::clone(&tray_available_for_setup);
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(10));
+                let current = tray_created && login_startup::tray_host_available();
+                if available.swap(current, Ordering::SeqCst) && !current {
+                    show_main_window(&handle);
+                }
+            });
+            start_notification_delivery_loop();
             start_confined_firefox_setup();
             start_confined_chromium_setup();
             Ok(())
@@ -2450,6 +2496,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            login_startup::login_startup_enabled,
+            login_startup::set_login_startup,
             daemon_rpc,
             daemon_status,
             enforcement_status,

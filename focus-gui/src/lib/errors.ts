@@ -138,35 +138,35 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
     /^site list '([^']+)' is currently active and cannot be edited$/
   );
   if (activeSiteList) {
-    return `Website "${activeSiteList[1]}" is active right now, so it cannot be edited. Wait until it is inactive, then try again.`;
+    return `Website "${activeSiteList[1]}" is active right now. Use the Tier 1 edit key in Settings for five minutes of protected list editing, or wait until it is inactive.`;
   }
 
   const activeAppRule = normalized.match(
     /^app rule '([^']+)' is currently active and cannot be edited$/
   );
   if (activeAppRule) {
-    return `Application "${activeAppRule[1]}" is active right now, so it cannot be edited. Wait until it is inactive, then try again.`;
+    return `Application "${activeAppRule[1]}" is active right now. Use the Tier 1 edit key in Settings for five minutes of protected list editing, or wait until it is inactive.`;
   }
 
   const detoxSiteList = normalized.match(
     /^site list '([^']+)' is covered by an active detox session and cannot be edited$/
   );
   if (detoxSiteList) {
-    return `Website "${detoxSiteList[1]}" is covered by an active detox session. Unlock protected changes in Settings, then cancel the Detox session before editing it.`;
+    return `Website "${detoxSiteList[1]}" is covered by an active detox session. Detox cannot be cancelled or weakened with the edit key. Append to blocklists or remove from allowlists; wait until Detox ends for broader edits.`;
   }
 
   const detoxAppRule = normalized.match(
     /^app rule '([^']+)' is covered by an active detox session and cannot be edited$/
   );
   if (detoxAppRule) {
-    return `Application "${detoxAppRule[1]}" is covered by an active detox session. Unlock protected changes in Settings, then cancel the Detox session before editing it.`;
+    return `Application "${detoxAppRule[1]}" is covered by an active detox session. Detox cannot be cancelled or weakened with the edit key. Append to blocklists or remove from allowlists; wait until Detox ends for broader edits.`;
   }
 
   const activeSchedule = normalized.match(
     /^schedule '([^']+)' is currently active and cannot be edited$/
   );
   if (activeSchedule) {
-    return `Schedule "${activeSchedule[1]}" is active right now, so it cannot be edited. Wait until it is inactive, then try again.`;
+    return `Schedule "${activeSchedule[1]}" is active right now. Use the Tier 1 edit key in Settings for five minutes of protected list editing, or wait until it is inactive.`;
   }
 
   const activeAllowance = normalized.match(
@@ -249,7 +249,7 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   }
 
   if (normalized === "unlock target is empty") {
-    return "Enter a website URL or application target before requesting an unlock.";
+    return "Enter a website URL, application matcher value, or application list ID before requesting an unlock.";
   }
 
   if (normalized === "unlock reason is required") {
@@ -272,11 +272,11 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   }
 
   if (normalized === "Tier 1 edit key is required") {
-    return "Enter the Tier 1 edit key before unlocking active Tier 1 edits.";
+    return "Enter the Tier 1 edit key before unlocking protected list edits.";
   }
 
   if (normalized === "Tier 1 edit unlock is required to cancel detox") {
-    return "Unlock protected changes in Settings before cancelling Detox.";
+    return "Detox cannot be cancelled. Wait until its configured end time.";
   }
 
   if (normalized === "detox duration must be at least one minute") {

@@ -2,6 +2,11 @@
 
 This roadmap introduces fast feedback first and adds expensive, stateful and destructive coverage only after the underlying fixtures are reliable.
 
+The [current Phase 3 policy](phase-3-roadmap.md) supersedes the broad expansion
+sequence below: three-guest smoke is implemented; new integration is Ubuntu-first
+and risk-selected. Later CI integration is optional follow-up, not a release prerequisite.
+[Phase 4](phase-4.md) implements selected Layer 4 destructive/recovery/soak coverage.
+
 ## Phase 0: Normalize the test specification and fixtures
 
 Repository-side status and commands: [phase-0.md](phase-0.md).
@@ -14,7 +19,7 @@ Create reusable fixtures before adding automation:
 4. Create two harmless test executables with distinct process identities. One fixture must be able to start a differently identified child/helper process.
 5. Define a result directory containing a machine-readable result file, logs, screenshots and package metadata.
 6. Define clean VM templates for Ubuntu, Fedora, and CachyOS. Verify SSH,
-   identities, fixtures and the desktop on independent disposable copies.
+  identities, fixtures and the desktop on independent disposable copies.
    The initial harness uses full disk/NVRAM copies; libvirt snapshots are optional.
 
 Exit criterion: fixtures can be started and stopped repeatedly without BlocKuntu, and each produces a deterministic identity or URL.
@@ -69,52 +74,22 @@ Start with one environment rather than the complete browser matrix:
    application blocking, and both allowlist types.
 6. Collect results before discarding the clone.
 
-Initially expose this as a local command such as:
+Implemented entry point (see [phase-3.md](phase-3.md) for exact artifact inputs):
 
 ```bash
-Testing/host/run-vm-suite.sh \
-  --vm ubuntu-clean \
-  --package target/debian/blockuntu_VERSION_amd64.deb \
-  --suite smoke
+python3 Testing/scripts/vm-acceptance.py --guest ubuntu \
+  --run-id ubuntu-smoke-new --package-report /path/to/layer2/ubuntu/result.json
 ```
 
-Exit criterion: a clean Ubuntu clone can run the core cases in  
-[Layer 3](layers/03-vm-acceptance.md) repeatedly without manual state cleanup.
+Exit criterion: a clean Ubuntu clone runs the smoke subset with retained evidence
+and guarded cleanup. This baseline is implemented; the current Ubuntu priority
+queue is in [phase-3-roadmap.md](phase-3-roadmap.md).
 
-## Phase 4: Add Fedora and CachyOS
+## Phase 4: Add destructive and long-running suites
 
-Reuse the guest test contract while changing only distribution-specific  
-operations:
-
-- Ubuntu installs a `.deb` with `apt install`;
-- Fedora installs an `.rpm` with `dnf install`;
-- CachyOS installs a `.pkg.tar.zst` with `pacman -U`.
-
-Do not treat a source `.tar.gz` as an installed Arch/CachyOS package.
-
-Exit criterion: installation, service health, import/export, one website rule,  
-one application rule, and one allowlist case pass on all three distributions.
-
-## Phase 5: Expand the supported-browser matrix
-
-Parameterize Layer 3 by browser and package provenance. Run only one browser of  
-a family at a time so browser identity and heartbeat attribution are  
-unambiguous.
-
-Use two browser-profile classes:
-
-- onboarding profiles: browsers installed but no BlocKuntu extension, used for  
-manual store-install and first-heartbeat acceptance;
-- regression profiles: the signed store extension already installed, used for  
-automated heartbeat, managed-policy, blocking, restart, and recovery tests.
-
-Unsupported package variants receive explicit negative tests. They must not be  
-reported as supported merely because a heartbeat happened to arrive.
-
-Exit criterion: every package variant listed as supported in  
-`Docs/supportedBrowsers.md` has a recorded acceptance result.
-
-## Phase 6: Add destructive and long-running suites
+Detailed scope, existing implementation, operator inputs, safety guards and staged
+acceptance criteria: [phase-4.md](phase-4.md). Start new suites on Ubuntu; upgrades
+and long-duration variants remain selected follow-up, not a mandatory full matrix.
 
 Implement [Layer 4](layers/04-destructive-and-soak.md) only on disposable clones:
 
@@ -130,7 +105,7 @@ Implement [Layer 4](layers/04-destructive-and-soak.md) only on disposable clones
 Exit criterion: destructive cases cannot damage the reusable base snapshots,  
 and failure evidence is collected even when the guest desktop becomes unusable.
 
-## Phase 7: Connect VM suites to CI
+## Phase 5: Connect VM suites to CI
 
 After the local harness is stable, add a manually triggered and release-gated  
 workflow using a dedicated self-hosted runner with libvirt access. Restrict it  
@@ -139,13 +114,13 @@ virtualization host.
 
 Recommended triggers:
 
-| Trigger               | Suites                                      |
-| --------------------- | ------------------------------------------- |
-| Pull request          | Layer 1 only                                |
-| Push to `main`        | Layers 1 and 2                              |
-| Nightly schedule      | Layer 3 smoke plus selected browser cases   |
-| Manual dispatch       | Any selected VM, browser, or suite          |
-| Release candidate/tag | Layers 1–4, with required acceptance review |
+| Trigger               | Suites                                                              |
+| --------------------- | ------------------------------------------------------------------- |
+| Pull request          | Layer 1 only                                                        |
+| Push to `main`        | Layers 1 and 2                                                      |
+| Nightly schedule      | Optional targeted checks only                                       |
+| Manual dispatch       | Any selected VM, browser, or suite                                  |
+| Release candidate/tag | Layers 1–2, three-guest smoke, selected integration/recovery checks |
 
 Use a concurrency group of one for the libvirt runner until the harness has  
 proven that VM names, networks, snapshots, and result directories are isolated  

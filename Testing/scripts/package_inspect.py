@@ -161,7 +161,7 @@ def inspect_package(entries, meta, hooks, kind):
         strict = config['strict_mode']
         for key in ['require_firefox_extension', 'require_chrome_extension', 'kill_supported_browser_if_extension_stale', 'block_unsupported_browsers']:
             require(strict[key] is True, f'Unsafe default: {key}')
-        require(strict['grace_seconds'] == 30, 'Unexpected grace period')
+        require(strict['grace_seconds'] == 60, 'Unexpected grace period')
     case('PKG-CONTENT-003', defaults)
 
     def manifests():
@@ -181,11 +181,17 @@ def inspect_package(entries, meta, hooks, kind):
     def policy_paths():
         # Policies are generated at runtime. Here verify packaged lifecycle references;
         # actual browser discovery and policy writing remain VM acceptance.
-        for base in ['etc/firefox/policies/policies.json', 'etc/opt/chrome', 'etc/chromium', 'etc/brave', 'etc/opt/opera', 'etc/opt/edge', 'etc/vivaldi']:
+        # GUI prepare_uninstall restores the shared Firefox document. Native
+        # hooks must never delete it after that restoration.
+        require('/etc/firefox/policies/policies.json' not in all_hooks and
+                'firefox_policy' not in all_hooks, 'Destructive shared Firefox policy cleanup')
+        for base in ['etc/opt/chrome', 'etc/chromium', 'etc/brave', 'etc/opt/opera', 'etc/opt/edge', 'etc/vivaldi']:
             require('/' + base in all_hooks, f'Missing browser policy lifecycle path: {base}')
     case('PKG-CONTENT-005', policy_paths)
 
     def helpers():
+        require(entry(target['helper_dir'] + '/remove-user-native-hosts.sh', 0o755).startswith(b'#!'),
+                'Missing per-user uninstall cleanup helper')
         for browser in ['firefox', 'chromium']:
             path = target['helper_dir'] + '/setup-confined-' + browser + '-native-host.sh'
             require(entry(path, 0o755).startswith(b'#!'), f'Invalid helper {path}')
@@ -204,6 +210,8 @@ def inspect_package(entries, meta, hooks, kind):
     def lifecycle():
         required = ['install'] if kind == 'arch' else ['postinst', 'prerm', 'postrm']
         require(all(hooks.get(key, '').strip() not in ['', '(none)'] for key in required), 'Missing lifecycle hooks')
+        require('/' + target['helper_dir'] + '/remove-user-native-hosts.sh' in all_hooks,
+                'Removal hook must invoke per-user Native Messaging cleanup')
         for fragment in ['systemctl daemon-reload', 'systemctl', 'remove_hosts_block', 'remove_browser_policies', 'recovery-credentials-hidden']:
             require(fragment in all_hooks, f'Missing hook contract: {fragment}')
         for name, body in hooks.items():
@@ -230,9 +238,27 @@ def inspect_package(entries, meta, hooks, kind):
     def removal_contract():
         for fragment in ['reject_package_uninstall', 'package-removal-lease', 'BLOCKUNTU_PACKAGE_REMOVAL_LEASE', 'expires_at']:
             require(fragment in all_hooks, f'Missing removal contract: {fragment}')
+        if kind in ('arch', 'rpm'):
+            helper = target['helper_dir'] + '/check-package-removal-lease.sh'
+            body = text(helper, 0o755)
+            for fragment in ['package-removal-lease', 'BLOCKUNTU_PACKAGE_REMOVAL_LEASE', 'expires_at']:
+                require(fragment in body, f'Missing transaction lease check: {fragment}')
+            syntax = subprocess.run(['sh', '-n'], input=body.encode(), capture_output=True)
+            require(syntax.returncode == 0, 'Invalid transaction guard syntax')
+            if kind == 'arch':
+                hook = text('usr/share/libalpm/hooks/00-blockuntu-removal.hook', 0o644)
+                for line in ['Operation = Remove', 'Type = Package', 'Target = blockuntu',
+                             'When = PreTransaction', 'Exec = /' + helper, 'AbortOnFail']:
+                    require(line in hook.splitlines(), f'Missing ALPM transaction protection: {line}')
+            else:
+                action = text('etc/dnf/libdnf5-plugins/actions.d/blockuntu-removal.actions', 0o644)
+                require('pre_transaction:blockuntu:out:raise_error=1:/' + helper + ' --dnf-action ${pkg.action}'
+                        in action.splitlines(), 'Missing DNF5 transaction protection')
     case('PKG-HARD-001', removal_contract)
 
     def recovery_units():
+        require(re.search(r'^RuntimeDirectoryPreserve=restart\s*$', text(units + '/blockuntu.service'), re.M),
+                'Daemon restarts must preserve the active socket pathname')
         require('systemctl enable --now blockuntu.socket blockuntu.service blockuntu-watchdog.service blockuntu-hosts.path' in all_hooks, 'Recovery units not enabled by hook contract')
         require('Restart=always' in text(units + '/blockuntu-watchdog.service'), 'Missing watchdog restart')
         require('PathChanged=/etc/hosts' in text(units + '/blockuntu-hosts.path'), 'Missing hosts watch')

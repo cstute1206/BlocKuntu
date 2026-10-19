@@ -1,5 +1,6 @@
 <script lang="ts">
   import { listen } from "@tauri-apps/api/event";
+  import { loginStartupEnabled, setLoginStartup } from "./lib/api";
   import { onMount } from "svelte";
   import {
     AlertTriangle,
@@ -24,7 +25,6 @@
   import StatisticsView from "./components/views/StatisticsView.svelte";
   import {
     installationInfo,
-    cancelDetox,
     configSnapshot,
     daemonStatus,
     deleteAppRule,
@@ -186,7 +186,6 @@
   let selectedDetoxSiteRuleIds = $state<string[]>([]);
   let selectedDetoxAppRuleIds = $state<string[]>([]);
   let detoxStarting = $state(false);
-  let detoxCancellingId: string | null = $state(null);
   let detoxMessage: string | null = $state(null);
 
   let installationSerial: string | null = $state(null);
@@ -252,7 +251,21 @@
     ...new Set(activeDetoxSessions.flatMap((session) => session.app_rule_ids))
   ]);
 
+  let loginStartup: boolean | null = $state(null);
+  let loginStartupSaving = $state(false);
+  let loginStartupError: string | null = $state(null);
+  async function updateLoginStartup(enabled: boolean): Promise<void> {
+    loginStartupSaving = true;
+    loginStartupError = null;
+    try { await setLoginStartup(enabled); loginStartup = enabled; }
+    catch (error) { loginStartupError = formatError(error); }
+    finally { loginStartupSaving = false; }
+  }
+
   onMount(() => {
+    void loginStartupEnabled().then(value => { loginStartup = value; }).catch(error => {
+      loginStartupError = formatError(error);
+    });
     uiPreferences = applicationUiPreferences();
     if (uiPreferences.restoreLastSelectedPage) {
       const savedView = lastSelectedView();
@@ -670,7 +683,7 @@
 
     return (
       ruleIsActive(savedRule, snapshot?.schedules ?? []) &&
-      !(savedRule.tier === "hard" && tier1EditUnlocked)
+      !tier1EditUnlocked
     );
   }
 
@@ -680,7 +693,7 @@
   ): boolean {
     return (
       activeDetoxAppRuleIds.includes(savedRule.id) ||
-      appRuleIsActive(savedRule, snapshot?.schedules ?? [])
+      (appRuleIsActive(savedRule, snapshot?.schedules ?? []) && !tier1EditUnlocked)
     );
   }
 
@@ -854,21 +867,6 @@
     }
   }
 
-  async function runCancelDetox(id: string): Promise<void> {
-    detoxCancellingId = id;
-    detoxMessage = null;
-    lastError = null;
-    try {
-      const response = await cancelDetox(id, socketArg());
-      detoxMessage = `Detox ${response.session.status}.`;
-      await refreshDetoxAndLogStatistics();
-    } catch (error) {
-      lastError = formatError(error);
-    } finally {
-      detoxCancellingId = null;
-    }
-  }
-
   async function refreshLogStatistics(): Promise<void> {
     try {
       logStatistics = await logSummary(socketArg());
@@ -951,8 +949,8 @@
       const result = await unlockTier1Edit(tier1EditPhraseInput, socketArg());
       tier1EditUnlockedUntil = result.active ? (result.expires_at ?? null) : null;
       tier1EditMessage = tier1EditUnlockedUntil
-        ? "Tier 1 edits unlocked for 5 minutes."
-        : "Tier 1 edits remain locked.";
+        ? "Protected list edits unlocked for 5 minutes. Detox restrictions remain in force."
+        : "Protected list edits remain locked.";
       tier1EditPhraseInput = "";
     } catch (error) {
       tier1EditError = formatError(error);
@@ -1154,6 +1152,7 @@
       config = response.config;
       selectedRuleId = response.config.rules[0]?.id ?? null;
       setRuleDraft(response.config.rules[0] ?? null, response.config);
+      scheduleSiteRuleIds = scheduleSiteRuleIds.filter(id => response.config.rules.some(rule => rule.id === id));
       ruleMessage = "Deleted.";
       await refreshLogStatistics();
     } catch (error) {
@@ -1290,6 +1289,7 @@
       config = response.config;
       selectedAppRuleId = response.config.app_rules[0]?.id ?? null;
       setAppRuleDraft(response.config.app_rules[0] ?? null, response.config);
+      scheduleAppRuleIds = scheduleAppRuleIds.filter(id => response.config.app_rules.some(rule => rule.id === id));
       appRuleMessage = "Deleted.";
       await refreshLogStatistics();
     } catch (error) {
@@ -1534,6 +1534,7 @@
       />
     {:else if activeView === "apps"}
       <AppRulesView
+        {tier1EditUnlocked}
         {config}
         {runningApps}
         {runningAppsError}
@@ -1561,15 +1562,15 @@
         bind:selectedSiteRuleIds={selectedDetoxSiteRuleIds}
         bind:selectedAppRuleIds={selectedDetoxAppRuleIds}
         {detoxStarting}
-        {detoxCancellingId}
         {detoxMessage}
-        {tier1EditUnlocked}
         {nowMs}
         onStartDetox={runStartDetox}
-        onCancelDetox={runCancelDetox}
       />
     {:else if activeView === "schedule"}
       <SchedulesView
+        {activeDetoxSiteRuleIds}
+        {activeDetoxAppRuleIds}
+        {tier1EditUnlocked}
         {config}
         bind:scheduleDraft
         bind:scheduleSiteRuleIds
@@ -1596,6 +1597,11 @@
 
   {#if settingsOpen}
     <AdminView
+        {loginStartup}
+        {loginStartupSaving}
+        {loginStartupError}
+        onUpdateLoginStartup={updateLoginStartup}
+        detoxActive={activeDetoxSessions.length > 0}
         {health}
         {healthRefreshing}
         {enforcement}
