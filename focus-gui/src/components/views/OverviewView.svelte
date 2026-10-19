@@ -157,7 +157,7 @@
           {#if uninstallPhrase && tier1EditKey}
             <p><strong>Uninstall phrase</strong> — store this somewhere secure.</p>
             <code class="phrase-code">{uninstallPhrase}</code>
-            <p><strong>Tier 1 edit key</strong> — required to unlock Tier 1 edits. Store it somewhere secure.</p>
+            <p><strong>Tier 1 edit key</strong> — authorizes five minutes of protected list editing across all tiers. Detox restrictions remain in force. Store it somewhere secure.</p>
             <code class="phrase-code">{tier1EditKey}</code>
           {:else}
             <p>The displayed credentials have been hidden and removed from this device.</p>
@@ -269,10 +269,19 @@
       Manual unlocks only apply to active Tier 3 rules, including Tier 3 activated by Detox. Tier 1
       and Tier 2 blocks cannot be bypassed.
     </p>
+    <p class="policy-note">
+      Enter a website domain or URL (example.com or https://example.com/path), an application
+      matcher value (editor, /usr/bin/editor, or editor.desktop), or an application list ID
+      (app-rule-1). IDs are identifiers, not display names. Website list IDs and display names
+      are not supported; use a matching website URL instead. An unlock applies to the entire
+      matching Tier 3 list, not just the entered website or application. For allowlists, enter an excluded URL or application identity, or the application list ID. Other lists still apply.
+      Each unlock lasts two minutes, with one unlock globally per rolling hour. Give a new reason
+      containing at least 20 letters.
+    </p>
     <div class="unlock-grid">
       <label>
         <span>Target</span>
-        <input bind:value={unlockTarget} placeholder="Website, application, or Tier 3 list ID" />
+        <input bind:value={unlockTarget} placeholder="example.com, /usr/bin/editor, or app-rule-1" />
       </label>
       <label class="reason-field">
         <span>Reason ({unlockReasonLetterCount}/20 letters)</span>

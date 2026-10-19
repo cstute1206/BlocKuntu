@@ -45,6 +45,11 @@ An example of populated input fields (replace every placeholder with real input)
   "smoke_summaries": ["../../rc1-smoke-group-run/summary.json"],
   "recovery_checks": [
     {"suite": "p41", "guest": "ubuntu", "summaries": ["../../rc1-p41/summary.json"]}
+  ],
+  "e2e_reports": [
+    "../../rc1-website-tests/summary.json",
+    "../../rc1-protected-edits/ubuntu/acceptance/result.json",
+    "../../rc1-p43-audit.json"
   ]
 }
 ```
@@ -61,6 +66,39 @@ repair/outage). Every selected entry is required. Unselected catalog cases do
 not block the gate and are not represented as passes. Add `"qualify": true` and
 two complete comparable batches when adapter qualification is needed. Historical
 qualification does not replace the selected candidate's own evidence.
+
+### Include existing E2E acceptance reports
+
+`e2e_reports` is an optional list of existing final host-side reports. Add the
+Layer 3 and Layer 4 runs selected for this candidate; each listed report becomes
+a required check. No new test catalog or runner output format is needed.
+
+Supported inputs are:
+
+- Layer 3 group-run `summary.json` files, for smoke or selected feature groups;
+- Layer 3 host `acceptance/result.json` files, saved group audits and smoke
+  repeatability reports;
+- Layer 4 uninstall, hosts and browser batch summaries, individual host results,
+  protected-edit host results, and saved P4.1/P4.2/P4.3 audit reports.
+
+The importer reads the runner's acceptance outcome and checks the candidate's
+full commit and selected package checksum for every reported guest. It also
+compares filenames and installed versions when those fields are available.
+A completed pass is included as `pass`; failure is `fail`; missing or unfinished
+reports keep the candidate incomplete. A `pass` envelope with unfinished groups
+or missing host completion fields cannot count as a completed pass. Use the host
+result, not guest checkpoints, coverage calculations or Phase 0 setup results.
+
+The E2E runners remain responsible for proving test acceptance. This importer
+does not rerun their evidence auditors or execute tests. JSON records the source
+report path and checksum; Markdown shows suite, environment, outcome and a link
+to that report. Include all selected attempts: a later pass does not hide a
+listed failure. Unlisted tests are not claimed as tested.
+
+Existing `smoke_summaries` and `recovery_checks` retain their audit behavior.
+For an already completed additional E2E run, simply list its final report in
+`e2e_reports`; it does not also need a `recovery_checks` entry. Imported E2E
+reports do not replace the required three-guest smoke or current VM safety checks.
 
 ## Commands
 
@@ -107,7 +145,7 @@ The initial `release-gate-v1` policy requires:
 - all six existing package outputs (Ubuntu, Debian, Fedora, Arch, Firefox, Chrome);
 - all 21 smoke observations per Ubuntu/Fedora/CachyOS guest;
 - current VM-host safety checks;
-- any explicitly selected recovery suites.
+- any explicitly selected recovery suites and E2E reports.
 
 The command checks complete package assertions, recorded clean-build provenance,
 and the hashes of all listed artifact files. It distinguishes the Ubuntu and
@@ -117,8 +155,8 @@ versions and harness manifests from smoke evidence appear in the report. Package
 origin remains the existing Layer 2 provenance process's responsibility; this
 command does not download or authenticate artifact archives on its own.
 
-The smoke and recovery adapters call existing evidence auditors, rather than
-accepting a summary's `pass` field. Evidence for another candidate is a mismatch;
+The `smoke_summaries` and `recovery_checks` adapters call existing evidence
+auditors, rather than accepting a summary's `pass` field. Evidence for another candidate is a mismatch;
 it never fills a missing current result. Missing artifacts/bundles, failed cases,
 retained clones, incomplete qualification or contradictory raw evidence cannot
 produce a ready result. Full catalog or full Layer 4 acceptance is never implied.
@@ -132,7 +170,7 @@ Overall statuses and exit codes:
 | `incomplete` | Required evidence/checks are missing, running or unverified | 1 |
 | Invalid invocation/configuration | Input cannot define a report, or output already exists | 2 |
 
-Per-check states retain `pass`, `fail`, `missing`, `running`, `unverified`,
+Per-check states retain `pass`, `fail`, `missing`, `running`, `incomplete`, `unverified`,
 `mismatch` and `not_selected` separately. JSON includes the candidate-manifest
 checksum, reporter checksum, blocking checks and evidence references. Re-run into
 a new output directory after evidence changes. Running VM batches stay incomplete;

@@ -83,7 +83,7 @@ const MAX_DIAGNOSTIC_COMPONENT_LENGTH: usize = 80;
 const MAX_DIAGNOSTIC_KIND_LENGTH: usize = 80;
 const MAX_DIAGNOSTIC_MESSAGE_LENGTH: usize = 4_000;
 const BLOCK_NOTIFICATION_COOLDOWN_SECONDS: i64 = 60;
-const BLOCK_NOTIFICATION_TTL_MINUTES: i64 = 2;
+const BLOCK_NOTIFICATION_TTL_MINUTES: i64 = 1;
 const LIFECYCLE_NOTIFICATION_TTL_MINUTES: i64 = 10;
 
 #[derive(Clone)]
@@ -582,6 +582,7 @@ struct SetNotificationPreferencesParams {
 
 #[derive(Debug, Deserialize)]
 struct PendingNotificationsParams {
+    block_events_since: Option<DateTime<Utc>>,
     #[serde(default = "default_pending_notifications_limit")]
     limit: u32,
 }
@@ -880,6 +881,15 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
     let hosts = context.hosts()?;
     let operator_now = guarded_now(context, params.now.as_deref())?;
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    if !core
+        .database()
+        .active_detox_sessions(operator_now.with_timezone(&Utc))?
+        .is_empty()
+    {
+        return Err(DaemonError::InvalidRequest(
+            "Uninstall is unavailable until all active Detox sessions end.".to_string(),
+        ));
+    }
     let protected_access_mode = protected_access_mode(&core)?;
     let protected_access_open = protected_access_is_open(&core, operator_now, false)?;
     drop(core);
@@ -898,11 +908,21 @@ fn prepare_uninstall(context: &RpcContext, params: PrepareUninstallParams) -> Re
     }
     let now = Utc::now();
     let uninstalling_until = now + Duration::seconds(UNINSTALL_HANDOFF_SECONDS);
-    let package_removal_lease =
-        write_package_removal_lease(&context.package_removal_lease_path, uninstalling_until)?;
-
+    let package_removal_lease;
     {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+        // Serialize the final check with Detox creation before handing off enforcement.
+        if !core
+            .database()
+            .active_detox_sessions(operator_now.with_timezone(&Utc))?
+            .is_empty()
+        {
+            return Err(DaemonError::InvalidRequest(
+                "Uninstall is unavailable until all active Detox sessions end.".to_string(),
+            ));
+        }
+        package_removal_lease =
+            write_package_removal_lease(&context.package_removal_lease_path, uninstalling_until)?;
         core.database().set_service_state(
             BROWSER_EXTENSION_MODE_KEY,
             BROWSER_EXTENSION_MODE_UNINSTALLING,
@@ -1319,6 +1339,10 @@ fn pending_notifications_method(
     params: PendingNotificationsParams,
 ) -> Result<Value> {
     let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    if let Some(since) = params.block_events_since {
+        core.database()
+            .discard_historical_block_notifications(since.min(Utc::now()), Utc::now())?;
+    }
     let notifications = core
         .database()
         .pending_notifications(Utc::now(), params.limit.clamp(1, MAX_PENDING_NOTIFICATIONS))?;
@@ -1735,7 +1759,7 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
             if current_rule != &params.rule
                 && rule_is_active_at(current_rule, core.config(), now)
                 && !site_list_edit_is_additive(current_rule, &params.rule)
-                && !active_tier1_site_list_edit_allowed(&core, current_rule, now)?
+                && !tier1_edit_window_active(&core, now)?
             {
                 return Err(active_site_list_edit_error(&current_rule.id));
             }
@@ -1792,7 +1816,8 @@ fn delete_site_list_method(context: &RpcContext, params: DeleteSiteListParams) -
     if site_rule_in_active_detox(&core, &current_rule.id, now)? {
         return Err(active_detox_site_list_edit_error(&current_rule.id));
     }
-    if rule_is_active_at(current_rule, core.config(), now) {
+    if rule_is_active_at(current_rule, core.config(), now) && !tier1_edit_window_active(&core, now)?
+    {
         return Err(active_site_list_edit_error(&current_rule.id));
     }
     let removed = next.rules.remove(index);
@@ -1835,6 +1860,8 @@ fn upsert_allowance_method(context: &RpcContext, params: UpsertAllowanceParams) 
             let current_allowance = &next.allowances[index];
             if current_allowance != &params.allowance
                 && allowance_is_active_at(&current_allowance.id, &core, now)?
+                && (!tier1_edit_window_active(&core, now)?
+                    || allowance_in_active_detox(&core, &current_allowance.id, now)?)
             {
                 return Err(active_allowance_edit_error(&current_allowance.id));
             }
@@ -1949,6 +1976,7 @@ fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> 
             if current_rule != &params.rule
                 && app_rule_is_active_at(current_rule, core.config(), now)
                 && !app_rule_edit_is_additive(current_rule, &params.rule)
+                && !tier1_edit_window_active(&core, now)?
             {
                 return Err(active_app_rule_edit_error(&current_rule.id));
             }
@@ -2001,7 +2029,9 @@ fn delete_app_rule_method(context: &RpcContext, params: DeleteAppRuleParams) -> 
     if app_rule_in_active_detox(&core, &current_rule.id, now)? {
         return Err(active_detox_app_rule_edit_error(&current_rule.id));
     }
-    if app_rule_is_active_at(current_rule, core.config(), now) {
+    if app_rule_is_active_at(current_rule, core.config(), now)
+        && !tier1_edit_window_active(&core, now)?
+    {
         return Err(active_app_rule_edit_error(&current_rule.id));
     }
     let removed = next.app_rules.remove(index);
@@ -2057,7 +2087,7 @@ fn upsert_schedule_method(context: &RpcContext, params: UpsertScheduleParams) ->
             if schedule_is_active_at(current_schedule, now)
                 && ((current_schedule != &params.schedule
                     && !schedule_edit_is_additive(current_schedule, &params.schedule))
-                    || target_updates_change)
+                    || (target_updates_change && !tier1_edit_window_active(&core, now)?))
             {
                 return Err(active_schedule_edit_error(&current_schedule.id));
             }
@@ -2113,6 +2143,14 @@ fn delete_schedule_method(context: &RpcContext, params: DeleteScheduleParams) ->
         return Err(active_schedule_edit_error(&current_schedule.id));
     }
     let removed = next.schedules.remove(index);
+    // Attachments live on lists. Remove only this schedule, tolerating lists
+    // which were already deleted and preserving all other attachments.
+    for rule in &mut next.rules {
+        rule.schedule_ids.retain(|id| id != &removed.id);
+    }
+    for rule in &mut next.app_rules {
+        rule.schedule_ids.retain(|id| id != &removed.id);
+    }
 
     focus_core::validate_config(&next)?;
     persist_policy_config(context, &mut core, next)?;
@@ -2161,6 +2199,11 @@ fn start_detox_method(context: &RpcContext, params: StartDetoxParams) -> Result<
     let (session, hosts_repair) = {
         let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
 
+        if uninstall_handoff_active(&core, Utc::now())? {
+            return Err(DaemonError::InvalidRequest(
+                "Detox cannot start while uninstall is in progress.".to_string(),
+            ));
+        }
         validate_detox_targets(core.config(), &site_rule_ids, &app_rule_ids)?;
         let session = DetoxSession {
             id: next_detox_session_id(&core, now_utc)?,
@@ -2203,64 +2246,18 @@ fn start_detox_method(context: &RpcContext, params: StartDetoxParams) -> Result<
 }
 
 fn cancel_detox_method(context: &RpcContext, params: CancelDetoxParams) -> Result<Value> {
-    let now = guarded_now(context, params.now.as_deref())?;
+    let _now = guarded_now(context, params.now.as_deref())?;
     reject_if_clock_tampered(context)?;
-    let now_utc = now.with_timezone(&Utc);
-    let (session, hosts_repair) = {
-        let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
-        let Some(session) = core.database().detox_session(&params.id)? else {
-            return Err(DaemonError::InvalidRequest(format!(
-                "detox session '{}' does not exist",
-                params.id
-            )));
-        };
-        if session.cancelled_at.is_some() {
-            return Err(DaemonError::InvalidRequest(format!(
-                "detox session '{}' is already cancelled",
-                params.id
-            )));
-        }
-        if session.ends_at <= now_utc {
-            return Err(DaemonError::InvalidRequest(format!(
-                "detox session '{}' has already ended",
-                params.id
-            )));
-        }
-        if !tier1_edit_window_active(&core, now)? {
-            return Err(DaemonError::InvalidRequest(
-                "Tier 1 edit unlock is required to cancel detox".to_string(),
-            ));
-        }
-
-        let Some(session) = core.database().cancel_detox_session(&params.id, now_utc)? else {
-            return Err(DaemonError::InvalidRequest(format!(
-                "detox session '{}' does not exist",
-                params.id
-            )));
-        };
-        core.database().record_event(
-            "detox_cancelled",
-            Some(&session.id),
-            Some("cancelled through privileged Tier 1 edit unlock"),
-            now_utc,
-        )?;
-        if let Err(error) = enqueue_detox_notification(&core, &session, false, true, now_utc) {
-            eprintln!("could not queue Detox end notification: {error}");
-        }
-        let hosts_repair = repair_hosts_after_policy_change(context, &core, now)?;
-        (session, hosts_repair)
-    };
-    let chromium_policy_repairs = repair_chromium_policies_for_current_settings(context)?;
-
-    Ok(json!({
-        "status": "ok",
-        "session": detox_session_to_json(&session, now_utc),
-        "hosts_repair": hosts_repair.map(|status| format!("{status:?}")),
-        "chromium_policy_repairs": chromium_policy_repairs
-            .into_iter()
-            .map(|(browser, status)| (browser, format!("{status:?}")))
-            .collect::<BTreeMap<_, _>>(),
-    }))
+    let core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
+    if core.database().detox_session(&params.id)?.is_none() {
+        return Err(DaemonError::InvalidRequest(format!(
+            "detox session '{}' does not exist",
+            params.id
+        )));
+    }
+    Err(DaemonError::InvalidRequest(
+        "Detox cannot be cancelled, even with a protected edit unlock. It continues until its configured end time.".to_string(),
+    ))
 }
 
 fn detox_sessions_method(context: &RpcContext, params: DetoxSessionsParams) -> Result<Value> {
@@ -2731,7 +2728,7 @@ fn unlock_tier1_edit_method(context: &RpcContext, params: Tier1EditUnlockParams)
     let protected_access_mode = protected_access_mode(&core)?;
     if !protected_access_is_open(&core, now, false)? {
         return Err(protected_access_closed_error(
-            "Tier 1 edits",
+            "Protected list edits",
             protected_access_mode,
         ));
     }
@@ -2745,7 +2742,7 @@ fn unlock_tier1_edit_method(context: &RpcContext, params: Tier1EditUnlockParams)
     core.database().record_event(
         "tier1_edit_unlocked",
         Some("site_lists"),
-        Some("Tier 1 site-list edits unlocked for 5 minutes"),
+        Some("Website and application list edits across all tiers unlocked for 5 minutes; Detox restrictions remain in force"),
         now_utc,
     )?;
 
@@ -2822,7 +2819,7 @@ fn set_protected_access_mode(context: &RpcContext, mode: ProtectedAccessMode) ->
         "protected_access_mode_updated",
         Some("protected_changes"),
         Some(&format!(
-            "Tier 1 edits, uninstall, unsupported-browser blocking and Chromium private-browsing settings are available {}",
+            "Protected list edits, uninstall, unsupported-browser blocking and Chromium private-browsing settings are available {}",
             protected_access_mode_description(mode)
         )),
         now,
@@ -3970,14 +3967,6 @@ fn uninstall_handoff_active(core: &FocusCore, now: DateTime<Utc>) -> Result<bool
         .unwrap_or(false))
 }
 
-fn active_tier1_site_list_edit_allowed(
-    core: &FocusCore,
-    current_rule: &RuleConfig,
-    now: DateTime<FixedOffset>,
-) -> Result<bool> {
-    Ok(current_rule.tier == RuleTier::Hard && tier1_edit_window_active(core, now)?)
-}
-
 fn tier1_edit_window_active(core: &FocusCore, now: DateTime<FixedOffset>) -> Result<bool> {
     Ok(tier1_edit_unlocked_until(core)?
         .map(|expires_at| expires_at > now.with_timezone(&Utc))
@@ -4567,6 +4556,28 @@ fn remove_unreferenced_allowance(config: &mut Config, allowance_id: Option<&str>
     }
 }
 
+fn allowance_in_active_detox(
+    core: &FocusCore,
+    allowance_id: &str,
+    now: DateTime<FixedOffset>,
+) -> Result<bool> {
+    for rule in &core.config().rules {
+        if rule.allowance_id.as_deref() == Some(allowance_id)
+            && site_rule_in_active_detox(core, &rule.id, now)?
+        {
+            return Ok(true);
+        }
+    }
+    for rule in &core.config().app_rules {
+        if rule.allowance_id.as_deref() == Some(allowance_id)
+            && app_rule_in_active_detox(core, &rule.id, now)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn allowance_is_active_at(
     allowance_id: &str,
     core: &FocusCore,
@@ -4738,7 +4749,7 @@ fn apply_schedule_target_updates(
             if site_rule_in_active_detox(core, &rule.id, now)? {
                 return Err(active_detox_site_list_edit_error(&rule.id));
             }
-            if rule_is_active_at(rule, current, now) {
+            if rule_is_active_at(rule, current, now) && !tier1_edit_window_active(core, now)? {
                 return Err(active_site_list_edit_error(&rule.id));
             }
         }
@@ -4778,7 +4789,7 @@ fn apply_schedule_target_updates(
             if app_rule_in_active_detox(core, &rule.id, now)? {
                 return Err(active_detox_app_rule_edit_error(&rule.id));
             }
-            if app_rule_is_active_at(rule, current, now) {
+            if app_rule_is_active_at(rule, current, now) && !tier1_edit_window_active(core, now)? {
                 return Err(active_app_rule_edit_error(&rule.id));
             }
         }
@@ -5378,10 +5389,11 @@ mod tests {
         let gecko_policies = vec![
             GeckoPolicyBinding::new(
                 SupportedBrowser::Firefox,
-                FirefoxPolicyManager::new(
+                FirefoxPolicyManager::merging_existing_policy(
                     temp.path().join("firefox/policies.json"),
                     "{a7c3f3c4-6b1e-4c6f-9f2a-8d4e5b7c1a90}",
                     "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi",
+                    temp.path().join("backups/firefox.json"),
                 ),
             ),
             GeckoPolicyBinding::new(
@@ -5626,6 +5638,43 @@ mod tests {
         assert!(pending_response["result"]["notifications"]
             .as_array()
             .expect("notifications should be an array")
+            .is_empty());
+    }
+
+    #[test]
+    fn pending_notification_rpc_discards_prelaunch_blocks_without_replaying_them() {
+        let context = rpc_context();
+        let started = Utc::now();
+        {
+            let core = context.core.lock().unwrap();
+            for (key, created) in [("old", started - Duration::seconds(5)), ("fresh", started)] {
+                core.database()
+                    .enqueue_notification(
+                        "website_blocked",
+                        "Title",
+                        "Body",
+                        key,
+                        created,
+                        Duration::minutes(1),
+                        Duration::minutes(2),
+                    )
+                    .unwrap();
+            }
+        }
+        let response = qos_rpc(
+            &context,
+            "pending_notifications",
+            json!({"block_events_since":started}),
+        );
+        let notifications = response["result"]["notifications"].as_array().unwrap();
+        assert_eq!(notifications.len(), 1);
+        let id = notifications[0]["id"].clone();
+        let ack = qos_rpc(&context, "acknowledge_notifications", json!({"ids":[id]}));
+        assert!(ack.get("error").is_none(), "{ack}");
+        let second = qos_rpc(&context, "pending_notifications", json!({}));
+        assert!(second["result"]["notifications"]
+            .as_array()
+            .unwrap()
             .is_empty());
     }
 
@@ -6861,6 +6910,317 @@ mod tests {
             .any(|allowance| allowance["id"] == "app-daily"));
     }
 
+    fn qos_rpc(context: &RpcContext, method: &str, params: Value) -> Value {
+        serde_json::from_slice(&handle_payload(
+            context,
+            &serde_json::to_vec(&json!({
+                "jsonrpc":"2.0", "id":1, "method":method, "params":params
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+    }
+
+    fn qos_context() -> RpcContext {
+        rpc_context_with_config_toml(
+            r#"
+            [[schedules]]
+            id = "work"
+            windows = [{ weekday = "fri", start = "09:00", end = "17:00" }]
+            [[schedules]]
+            id = "other"
+            windows = [{ weekday = "mon", start = "09:00", end = "17:00" }]
+            [[allowances]]
+            id = "daily"
+            daily_minutes = 0
+            [[allowances]]
+            id = "app-daily"
+            daily_minutes = 0
+            [[rules]]
+            id = "site"
+            name = "Website display name"
+            tier = "controlled_access"
+            schedule_ids = ["work", "other"]
+            allowance_id = "daily"
+            patterns = [{ kind = "domain", value = "blocked.example", match_subdomains = true }]
+            [[app_rules]]
+            id = "app"
+            name = "Application display name"
+            tier = "controlled_access"
+            schedule_ids = ["work", "other"]
+            allowance_id = "app-daily"
+            matchers = [{ kind = "command_name", value = "game" }]
+        "#,
+        )
+    }
+
+    #[test]
+    fn protected_list_edits_cover_all_tiers_and_expire_for_sites_and_apps() {
+        for tier in ["hard", "scheduled_block", "controlled_access"] {
+            for (collection, method, delete_method) in [
+                ("rules", "upsert_site_list", "delete_site_list"),
+                ("app_rules", "upsert_app_rule", "delete_app_rule"),
+            ] {
+                let context = qos_context();
+                let (_credentials, context) = rpc_context_with_tier1_edit_credential(context);
+                let now = "2026-05-22T10:00:00Z";
+                let unlock = qos_rpc(
+                    &context,
+                    "unlock_tier1_edit",
+                    json!({"phrase":"BLOCKUNTU-TIER1-EDIT-TEST", "now":now}),
+                );
+                assert!(unlock.get("error").is_none(), "{unlock}");
+                let mut rule = serde_json::to_value(context.core.lock().unwrap().config()).unwrap()
+                    [collection][0]
+                    .clone();
+                rule["tier"] = json!(tier);
+                if tier != "controlled_access" {
+                    rule["allowance_id"] = Value::Null;
+                }
+                rule["name"] = json!("Changed under edit key");
+                let response = qos_rpc(
+                    &context,
+                    method,
+                    json!({"rule":rule, "now":"2026-05-22T10:01:00Z"}),
+                );
+                assert!(response.get("error").is_none(), "{response}");
+                rule["name"] = json!("Must reject after expiry");
+                let response = qos_rpc(
+                    &context,
+                    method,
+                    json!({"rule":rule, "now":"2026-05-22T10:05:00Z"}),
+                );
+                assert!(response.get("error").is_some(), "{response}");
+                let before = serde_json::to_value(context.core.lock().unwrap().config()).unwrap();
+                let response = qos_rpc(
+                    &context,
+                    delete_method,
+                    json!({"id":rule["id"], "now":"2026-05-22T10:05:00Z"}),
+                );
+                assert!(response.get("error").is_some(), "{response}");
+                assert_eq!(
+                    serde_json::to_value(context.core.lock().unwrap().config()).unwrap(),
+                    before
+                );
+                let unlock = qos_rpc(
+                    &context,
+                    "unlock_tier1_edit",
+                    json!({"phrase":"BLOCKUNTU-TIER1-EDIT-TEST", "now":"2026-05-22T10:06:00Z"}),
+                );
+                assert!(unlock.get("error").is_none(), "{unlock}");
+                let response = qos_rpc(
+                    &context,
+                    delete_method,
+                    json!({"id":rule["id"], "now":"2026-05-22T10:07:00Z"}),
+                );
+                assert!(response.get("error").is_none(), "{response}");
+            }
+        }
+    }
+
+    #[test]
+    fn protected_key_can_edit_scheduled_allowlists_but_not_detox_allowlists() {
+        for (context, collection, method, field, target_field) in [
+            (
+                active_scheduled_allowlist_rpc_context(),
+                "rules",
+                "upsert_site_list",
+                "patterns",
+                "site_rule_ids",
+            ),
+            (
+                active_scheduled_application_allowlist_rpc_context(),
+                "app_rules",
+                "upsert_app_rule",
+                "matchers",
+                "app_rule_ids",
+            ),
+        ] {
+            let (_credentials, context) = rpc_context_with_tier1_edit_credential(context);
+            let now = "2026-05-22T10:00:00Z";
+            let response = qos_rpc(
+                &context,
+                "unlock_tier1_edit",
+                json!({"phrase":"BLOCKUNTU-TIER1-EDIT-TEST", "now":now}),
+            );
+            assert!(response.get("error").is_none(), "{response}");
+            let mut rule = serde_json::to_value(context.core.lock().unwrap().config()).unwrap()
+                [collection][0]
+                .clone();
+            rule[field][0]["value"] = json!("newly-allowed.example");
+            let response = qos_rpc(&context, method, json!({"rule":rule, "now":now}));
+            assert!(response.get("error").is_none(), "{response}");
+            let mut params = json!({"now":now, "duration_minutes":60});
+            params[target_field] = json!([rule["id"]]);
+            let response = qos_rpc(&context, "start_detox", params);
+            assert!(response.get("error").is_none(), "{response}");
+            rule[field][0]["value"] = json!("another-allowed.example");
+            let response = qos_rpc(&context, method, json!({"rule":rule, "now":now}));
+            assert!(response.get("error").is_some(), "{response}");
+        }
+    }
+
+    #[test]
+    fn deleting_schedules_cleans_both_list_types_after_website_deletion() {
+        for delete_site_first in [true, false] {
+            let context = qos_context();
+            let now = "2026-05-24T10:00:00Z";
+            if delete_site_first {
+                let response = qos_rpc(
+                    &context,
+                    "delete_site_list",
+                    json!({"id":"site", "now":now}),
+                );
+                assert!(response.get("error").is_none(), "{response}");
+            }
+            let response = qos_rpc(&context, "delete_schedule", json!({"id":"work", "now":now}));
+            assert!(response.get("error").is_none(), "{response}");
+            let core = context.core.lock().unwrap();
+            focus_core::validate_config(core.config()).unwrap();
+            assert_eq!(core.config().app_rules[0].schedule_ids, ["other"]);
+            if !delete_site_first {
+                assert_eq!(core.config().rules[0].schedule_ids, ["other"]);
+            }
+            let mut persisted = core.database().load_policy_config().unwrap();
+            let mut current = core.config().clone();
+            persisted.allowances.sort_by(|a, b| a.id.cmp(&b.id));
+            current.allowances.sort_by(|a, b| a.id.cmp(&b.id));
+            assert_eq!(persisted, current);
+        }
+    }
+
+    #[test]
+    fn failed_schedule_deletion_preserves_memory_and_persisted_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = qos_context();
+        let before = context.core.lock().unwrap().config().clone();
+        context
+            .core
+            .lock()
+            .unwrap()
+            .database()
+            .replace_policy_config(&before)
+            .unwrap();
+        let file = temp.path().join("not-a-directory");
+        fs::write(&file, "occupied").unwrap();
+        let context = context
+            .with_policy_recovery(PolicyRecoveryManager::new(file.join("policy.toml"), false));
+        let response = qos_rpc(
+            &context,
+            "delete_schedule",
+            json!({"id":"work", "now":"2026-05-24T10:00:00Z"}),
+        );
+        assert!(response.get("error").is_some(), "{response}");
+        let core = context.core.lock().unwrap();
+        assert_eq!(*core.config(), before);
+        let persisted = core.database().load_policy_config().unwrap();
+        assert_eq!(persisted.schedules.len(), before.schedules.len());
+        for schedule in &before.schedules {
+            assert!(persisted.schedules.contains(schedule));
+        }
+    }
+
+    #[test]
+    fn detox_key_cannot_weaken_lists_allowances_or_uninstall() {
+        let (_files, context) = rpc_context_with_enforcement_managers_for(qos_context(), false);
+        let (_credentials, context) = rpc_context_with_tier1_edit_credential(context);
+        let now = "2026-05-22T10:00:00Z";
+        let start = qos_rpc(
+            &context,
+            "start_detox",
+            json!({"site_rule_ids":["site"],"app_rule_ids":["app"],"duration_minutes":60,"now":now}),
+        );
+        assert!(start.get("error").is_none(), "{start}");
+        let unlock = qos_rpc(
+            &context,
+            "unlock_tier1_edit",
+            json!({"phrase":"BLOCKUNTU-TIER1-EDIT-TEST", "now":now}),
+        );
+        assert!(unlock.get("error").is_none(), "{unlock}");
+        let before = serde_json::to_value(context.core.lock().unwrap().config()).unwrap();
+        for (collection, upsert, delete) in [
+            ("rules", "upsert_site_list", "delete_site_list"),
+            ("app_rules", "upsert_app_rule", "delete_app_rule"),
+        ] {
+            let rule = before[collection][0].clone();
+            for (field, value) in [
+                ("enabled", json!(false)),
+                ("tier", json!("controlled_access")),
+                ("mode", json!("allowlist")),
+                ("schedule_ids", json!([])),
+                ("allowance_id", Value::Null),
+            ] {
+                let mut changed = rule.clone();
+                changed[field] = value;
+                if changed == rule {
+                    continue;
+                }
+                let response = qos_rpc(&context, upsert, json!({"rule":changed, "now":now}));
+                assert!(response.get("error").is_some(), "{response}");
+            }
+            let response = qos_rpc(&context, delete, json!({"id":rule["id"], "now":now}));
+            assert!(response.get("error").is_some(), "{response}");
+        }
+        let response = qos_rpc(
+            &context,
+            "upsert_allowance",
+            json!({"allowance":{"id":"daily","daily_minutes":1440}, "now":now}),
+        );
+        assert!(response.get("error").is_some(), "{response}");
+        let response = qos_rpc(&context, "prepare_uninstall", json!({"now":now}));
+        assert!(
+            response["error"]["data"]
+                .as_str()
+                .unwrap()
+                .contains("Detox sessions end"),
+            "{response}"
+        );
+        assert_eq!(
+            serde_json::to_value(context.core.lock().unwrap().config()).unwrap(),
+            before
+        );
+        // Ordinary Tier 3 manual unlock remains available during Detox.
+        let response = qos_rpc(
+            &context,
+            "request_unlock",
+            json!({"target":"app", "reason":"I need this application for an urgent work task", "now":now}),
+        );
+        assert!(response.get("error").is_none(), "{response}");
+        let response = qos_rpc(
+            &context,
+            "upsert_schedule",
+            json!({"schedule":before["schedules"][0], "site_rule_ids":[], "app_rule_ids":[], "now":now}),
+        );
+        assert!(response.get("error").is_some(), "{response}");
+    }
+
+    #[test]
+    fn manual_unlock_targets_include_app_ids_but_not_website_list_ids_or_names() {
+        for target in [
+            "app",
+            "game",
+            "blocked.example",
+            "https://blocked.example/path",
+        ] {
+            let context = qos_context();
+            let response = qos_rpc(
+                &context,
+                "request_unlock",
+                json!({"target":target,"reason":"I need access for this urgent work requirement", "now":"2026-05-22T10:00:00Z"}),
+            );
+            assert!(response.get("error").is_none(), "{target}: {response}");
+        }
+        for target in ["site", "Website display name", "Application display name"] {
+            let context = qos_context();
+            let response = qos_rpc(
+                &context,
+                "request_unlock",
+                json!({"target":target,"reason":"I need access for this urgent work requirement", "now":"2026-05-22T10:00:00Z"}),
+            );
+            assert!(response.get("error").is_some(), "{target}: {response}");
+        }
+    }
+
     #[test]
     fn rejects_active_site_list_edits() {
         let context = active_scheduled_rpc_context();
@@ -7717,7 +8077,7 @@ mod tests {
     }
 
     #[test]
-    fn tier1_edit_unlock_does_not_allow_active_tier2_site_list_edits() {
+    fn tier1_edit_unlock_allows_active_tier3_site_list_edits() {
         let (_temp, context) =
             rpc_context_with_tier1_edit_credential(active_sunday_scheduled_rpc_context());
         let unlock_request = json!({
@@ -7760,15 +8120,15 @@ mod tests {
         ))
         .expect("response should parse");
 
-        assert_eq!(edit_response["error"]["code"], -32602);
-        assert!(edit_response["error"]["data"]
-            .as_str()
-            .expect("error data should be a string")
-            .contains("site list 'controlled' is currently active"));
+        assert!(edit_response.get("error").is_none(), "{edit_response}");
+        assert_eq!(
+            edit_response["result"]["config"]["rules"][0]["name"],
+            "Controlled edited"
+        );
     }
 
     #[test]
-    fn detox_session_blocks_until_privileged_cancel() {
+    fn detox_session_cannot_be_cancelled_even_with_edit_unlock() {
         let (_temp, context) = rpc_context_with_tier1_edit_credential(editable_rpc_context());
         let start_request = json!({
             "jsonrpc": "2.0",
@@ -7865,7 +8225,7 @@ mod tests {
         assert!(cancel_response["error"]["data"]
             .as_str()
             .expect("error data should be a string")
-            .contains("Tier 1 edit unlock is required"));
+            .contains("Detox cannot be cancelled"));
 
         let unlock_request = json!({
             "jsonrpc": "2.0",
@@ -7897,15 +8257,35 @@ mod tests {
             &serde_json::to_vec(&cancel_request).unwrap(),
         ))
         .expect("response should parse");
-        assert!(cancel_response.get("error").is_none(), "{cancel_response}");
-        assert_eq!(cancel_response["result"]["session"]["status"], "cancelled");
+        assert!(cancel_response["error"]["data"]
+            .as_str()
+            .unwrap()
+            .contains("Detox cannot be cancelled"));
+        assert!(context
+            .core
+            .lock()
+            .unwrap()
+            .database()
+            .detox_session(&session_id)
+            .unwrap()
+            .unwrap()
+            .cancelled_at
+            .is_none());
 
         let eval_after_cancel: Value = serde_json::from_slice(&handle_payload(
             &context,
             &serde_json::to_vec(&eval_request).unwrap(),
         ))
         .expect("response should parse");
-        assert_eq!(eval_after_cancel["result"]["decision"], "allow");
+        assert_eq!(eval_after_cancel["result"]["decision"], "block");
+        let ended = json!({"jsonrpc":"2.0", "id":127, "method":"evaluate_url", "params":{
+            "url":"https://controlled.example/", "now":"2026-05-24T21:30:00+02:00"}});
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&ended).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(response["result"]["decision"], "allow");
     }
 
     #[test]
@@ -8031,7 +8411,7 @@ mod tests {
     }
 
     #[test]
-    fn start_and_cancel_detox_repairs_hosts_file_domains() {
+    fn rejected_detox_cancel_preserves_hosts_file_domains() {
         let strict_context = rpc_context_with_config_toml(
             r#"
             [[rules]]
@@ -8101,11 +8481,13 @@ mod tests {
             &serde_json::to_vec(&cancel_request).unwrap(),
         ))
         .expect("response should parse");
-        assert!(cancel_response.get("error").is_none(), "{cancel_response}");
-        assert_eq!(cancel_response["result"]["hosts_repair"], "Repaired");
+        assert!(cancel_response["error"]["data"]
+            .as_str()
+            .unwrap()
+            .contains("Detox cannot be cancelled"));
 
         let hosts_contents = std::fs::read_to_string(&hosts_path).expect("hosts should exist");
-        assert!(!hosts_contents.contains("controlled.example"));
+        assert!(hosts_contents.contains("0.0.0.0 controlled.example"));
     }
 
     #[test]
@@ -8447,6 +8829,17 @@ mod tests {
     #[test]
     fn prepare_uninstall_marks_browser_extension_mode() {
         let (temp, context) = rpc_context_with_enforcement_managers(true);
+        let firefox_path = temp.path().join("firefox/policies.json");
+        fs::create_dir_all(firefox_path.parent().unwrap()).unwrap();
+        let original = json!({"policies": {"DisableTelemetry": true,
+            "DisableDeveloperTools": false,
+            "ExtensionSettings": {"other@example.local": {"installation_mode": "normal_installed"}}}});
+        fs::write(&firefox_path, serde_json::to_vec(&original).unwrap()).unwrap();
+        context
+            .gecko_policy(SupportedBrowser::Firefox)
+            .unwrap()
+            .verify_and_repair()
+            .unwrap();
         let lease_path = temp.path().join("package-removal-lease");
         let context = context.with_package_removal_lease_path(&lease_path);
         let prepare = json!({
@@ -8466,6 +8859,9 @@ mod tests {
         assert!(response.get("error").is_none(), "{response}");
         assert_eq!(response["result"]["status"], "ok");
         assert_eq!(response["result"]["browser_extension_mode"], "uninstalling");
+        let restored: Value = serde_json::from_slice(&fs::read(&firefox_path).unwrap()).unwrap();
+        assert_eq!(restored, original);
+        assert!(!temp.path().join("backups/firefox.json").exists());
         let lease = fs::read_to_string(&lease_path).expect("package removal lease should exist");
         let lease_token = response["result"]["package_removal_lease"]
             .as_str()

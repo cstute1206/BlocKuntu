@@ -1,10 +1,15 @@
 <script lang="ts">
+  import DeleteConfirmation from "../DeleteConfirmation.svelte";
+  let deleteConfirmationOpen = $state(false);
   import { AlertTriangle, CalendarDays, Plus, Save, Trash2 } from "@lucide/svelte";
   import { scheduleDayChoices, scheduleIsActive, weekdays, windowsFor } from "../../lib/ui";
   import type { AppRule, ConfigSnapshot, Rule, Schedule } from "../../lib/types";
 
   interface Props {
     config: ConfigSnapshot | null;
+    tier1EditUnlocked?: boolean;
+    activeDetoxSiteRuleIds?: string[];
+    activeDetoxAppRuleIds?: string[];
     scheduleDraft?: Schedule | null;
     scheduleSiteRuleIds?: string[];
     scheduleAppRuleIds?: string[];
@@ -19,6 +24,9 @@
 
   let {
     config,
+    tier1EditUnlocked = false,
+    activeDetoxSiteRuleIds = [],
+    activeDetoxAppRuleIds = [],
     scheduleDraft = $bindable<Schedule | null>(null),
     scheduleSiteRuleIds = $bindable<string[]>([]),
     scheduleAppRuleIds = $bindable<string[]>([]),
@@ -167,7 +175,7 @@
       {#if scheduleDraftLocked}
         <section class="inline-warning">
           <AlertTriangle size={17} aria-hidden="true" />
-          <span>This schedule is active right now. Existing windows and attachments are locked, but you can append new windows.</span>
+          <span>This schedule is active right now. Existing windows stay locked; you can append windows. The edit key authorizes attachment changes except for Detox-attached lists.</span>
         </section>
       {/if}
       <div class="form-grid schedule-form">
@@ -253,7 +261,7 @@
             <input
               type="checkbox"
               checked={scheduleSiteRuleIds.includes(rule.id)}
-              disabled={scheduleDraftLocked}
+              disabled={(scheduleDraftLocked && !tier1EditUnlocked) || activeDetoxSiteRuleIds.includes(rule.id)}
               onchange={() => toggleScheduleSiteRule(rule)}
             />
             <span>{ruleAttachmentLabel(rule)}</span>
@@ -270,7 +278,7 @@
             <input
               type="checkbox"
               checked={scheduleAppRuleIds.includes(rule.id)}
-              disabled={scheduleDraftLocked}
+              disabled={(scheduleDraftLocked && !tier1EditUnlocked) || activeDetoxAppRuleIds.includes(rule.id)}
               onchange={() => toggleScheduleAppRule(rule)}
             />
             <span>{ruleAttachmentLabel(rule)}</span>
@@ -286,8 +294,8 @@
           <span>Window</span>
         </button>
         <button
-          class="secondary"
-          onclick={onRemoveScheduleDraft}
+          class="secondary danger-action"
+          onclick={() => (deleteConfirmationOpen = true)}
           disabled={scheduleSaving || scheduleDraftLocked || !scheduleDraftIsExisting}
         >
           <Trash2 size={17} aria-hidden="true" />
@@ -331,3 +339,10 @@
     </div>
   </article>
 </section>
+
+{#if deleteConfirmationOpen && savedSchedule}
+  <DeleteConfirmation name={savedSchedule.name || savedSchedule.id}
+    consequences="It will be detached from all website and application lists. Those lists remain; Tier 2 and Tier 3 lists without another active schedule or Detox become inactive."
+    onCancel={() => (deleteConfirmationOpen = false)}
+    onDelete={() => { deleteConfirmationOpen = false; void onRemoveScheduleDraft(); }} />
+{/if}

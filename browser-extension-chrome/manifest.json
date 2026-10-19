@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "BlocKuntu",
-  "version": "0.2.5",
+  "version": "0.2.6",
+  "incognito": "split",
   "description": "Browser companion for BlocKuntu, the local Linux focus blocker.",
   "homepage_url": "https://github.com/cstute1206/BlocKuntu",
   "icons": {

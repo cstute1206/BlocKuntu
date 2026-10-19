@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 import release_status as release
 from harness_fixtures import Layer3Fixture, write_json
 from layer3_group_audit import audit_summaries
-from layer3_group_runner import preflight
+from layer3_group_runner import execute, preflight
 
 
 class ReleaseStatusTests(unittest.TestCase):
@@ -297,6 +297,144 @@ class ReleaseStatusTests(unittest.TestCase):
         rows = release.smoke_checks(self.spec(), packages,
                                    auditor=functools.partial(audit_summaries, root=fixture.root))
         self.assertEqual([row['status'] for row in rows], ['pass', 'pass', 'pass', 'unverified'])
+
+    def e2e(self, saved):
+        path = self.root / 'e2e.json'
+        write_json(path, saved)
+        self.data['e2e_reports'] = [path.name]
+        spec = self.spec()
+        return release.e2e_checks(spec, release.package_checks(spec)[1])[0]
+
+    def host_result(self, guest='ubuntu'):
+        expected = release.package_checks(self.spec())[1][release.GUEST_PACKAGES[guest]]
+        return {'layer': 4, 'scope': guest + '-tier1-protected-edits', 'guest': guest,
+            'status': 'pass', 'package_commit': self.data['commit'], 'package_sha256': expected['sha256'],
+            'installed_version': expected['version'], 'base_integrity_verified': True, 'clone_removed': True,
+            'finished_at': '2026-10-16T12:00:00+00:00'}
+
+    def test_e2e_imports_existing_layer4_host_batch_and_audit_formats(self):
+        self.packages()
+        for guest in release.GUESTS:
+            host = self.host_result(guest)
+            with self.subTest(guest=guest, format='protected-edits'):
+                self.assertEqual(self.e2e(host)['status'], 'pass')
+            for suite in ('p41', 'p42', 'p43'):
+                scope = guest + '-' + suite
+                batch = {**host, 'scope': scope, 'selected_scenarios': ['fixture'], 'runs': [
+                    {'scenario': 'fixture', 'status': 'pass', 'base_integrity_verified': True, 'clone_removed': True}]}
+                batch.pop('finished_at')  # Existing Layer 4 batch summaries have no timestamps.
+                if suite == 'p41': batch.pop('scope')  # Nor a scope in the uninstall batch.
+                audit = {key: host[key] for key in ('package_commit', 'package_sha256', 'installed_version')}
+                audit.update(scope=scope, status='pass', all_owned_clones_removed=True, required_passes=12)
+                for form, saved in (('batch', batch), ('audit', audit), ('scenario', {**host, 'scope': scope + '-fixture'})):
+                    with self.subTest(guest=guest, suite=suite, format=form):
+                        row = self.e2e(saved)
+                        self.assertEqual(row['status'], 'pass')
+                        self.assertEqual(row['suite'], scope if form != 'scenario' else scope + '-fixture')
+                        self.assertEqual(row['environments'], [guest])
+
+    def test_e2e_imports_layer3_host_results_and_saved_audits(self):
+        self.packages()
+        for guest in release.GUESTS:
+            host = self.host_result(guest)
+            expected = release.package_checks(self.spec())[1][release.GUEST_PACKAGES[guest]]
+            for suite in ('smoke', 'core-selected'):
+                with self.subTest(guest=guest, suite=suite):
+                    saved = {**host, 'layer': 'vm-acceptance', 'suite': guest + '-' + suite,
+                        'package': [{'filename': expected['filename'], 'sha256': expected['sha256']}],
+                        'acceptance_status': 'not_evaluated'}
+                    self.assertEqual(self.e2e(saved)['status'], 'pass')
+            audit = {'kind': 'layer3-group-audit', 'scope': 'smoke-only', 'status': 'pass',
+                'package_commit': self.data['commit'], 'copied_storage_removed': True,
+                'latest_successful_runs': [{'guest': guest, 'evidence': {
+                    'package_sha256': expected['sha256'], 'valid': True}}]}
+            self.assertEqual(self.e2e(audit)['status'], 'pass')
+            audit['status'] = 'incomplete'  # Saved offline audit did not establish host safety.
+            self.assertEqual(self.e2e(audit)['status'], 'incomplete')
+            repeatability = {'scope': 'P3.0-smoke-repeatability', 'status': 'pass',
+                'package_commit': self.data['commit'], 'pairs': {guest: {'status': 'pass', 'runs': ['a', 'b']}},
+                'runs': {guest: [{'run_id': run_id, 'valid': True, 'package_sha256': expected['sha256']}
+                                 for run_id in ('a', 'b')]}}
+            self.assertEqual(self.e2e(repeatability)['status'], 'pass')
+
+    def test_e2e_imports_actual_group_runner_summary_without_reauditing(self):
+        fixture = Layer3Fixture(self.root / 'group')
+        prepared = preflight('smoke', ['ubuntu'], 'release-e2e', fixture.inputs, root=fixture.root)
+        checked = {'valid': True, 'required_passes': 21}
+        path, saved = execute(prepared, root=fixture.root,
+            invoke=Mock(return_value=Mock(returncode=0)), checker=Mock(return_value=checked))
+        self.data['commit'] = fixture.commit
+        self.data['e2e_reports'] = [str(path)]
+        spec = self.spec()
+        packages = {'ubuntu': prepared['expected']['ubuntu']}
+        row = release.e2e_checks(spec, packages)[0]
+        self.assertEqual(row['status'], 'pass')
+        self.assertEqual(row['report_sha256'], release.sha256(path))
+        self.assertEqual(row['environments'], ['ubuntu'])
+        for mutation in ('unfinished', 'not_run', 'failed_evidence', 'other_binary'):
+            data = copy.deepcopy(saved)
+            if mutation == 'unfinished': data.pop('finished_at')
+            elif mutation == 'not_run': data['runs'][0]['status'] = 'not_run'
+            elif mutation == 'failed_evidence': data['runs'][0]['evidence_check']['valid'] = False
+            else: data['packages']['ubuntu']['sha256'] = 'f' * 64
+            write_json(path, data)
+            self.assertEqual(release.e2e_checks(spec, packages)[0]['status'],
+                             'mismatch' if mutation == 'other_binary' else 'incomplete')
+
+    def test_e2e_wrong_candidate_binary_or_version_cannot_pass(self):
+        self.packages()
+        original = self.host_result()
+        for field, value in (('package_commit', 'b' * 40), ('package_sha256', 'f' * 64),
+                             ('installed_version', 'another-version')):
+            with self.subTest(field=field):
+                self.assertEqual(self.e2e({**original, field: value})['status'], 'mismatch')
+        self.data['package_reports'].pop('ubuntu')
+        self.assertEqual(self.e2e(original)['status'], 'unverified')
+
+    def test_e2e_missing_unfinished_failed_and_invalid_reports_block_readiness(self):
+        self.packages()
+        smoke = self.smoke()
+        original = self.host_result()
+        for saved, expected in ((original, 'ready'), ({**original, 'status': 'running'}, 'incomplete'),
+                ({**original, 'status': 'fail'}, 'not_ready'),
+                ({'status': 'fail', 'scope': 'native-p43', 'error': 'audit failed'}, 'not_ready'),
+                ({'status': 'pass'}, 'not_ready')):
+            with self.subTest(saved=saved):
+                self.e2e(saved)
+                result = release.report(self.spec(), self.receipt, live=True, smoke_auditor=Mock(return_value=smoke))
+                self.assertEqual(result['status'], expected)
+                row = result['checks'][-1]
+                self.assertTrue(row['required'])
+                rendered = release.markdown(result)
+                self.assertIn('## E2E acceptance reports', rendered)
+                self.assertIn('[report](<' + row['evidence'][0] + '>)', rendered)
+        (self.root / 'e2e.json').unlink()
+        result = release.report(self.spec(), self.receipt, live=True, smoke_auditor=Mock(return_value=smoke))
+        self.assertEqual(result['status'], 'incomplete')
+        self.assertEqual(result['checks'][-1]['status'], 'missing')
+
+    def test_e2e_partial_host_or_batch_and_cleanup_errors_cannot_pass(self):
+        self.packages()
+        host = self.host_result()
+        for field in ('finished_at', 'base_integrity_verified', 'clone_removed'):
+            with self.subTest(field=field):
+                saved = {**host}
+                saved.pop(field)
+                self.assertEqual(self.e2e(saved)['status'], 'incomplete')
+        for field in ('error', 'cleanup_error', 'safety_error', 'collection_errors'):
+            with self.subTest(field=field):
+                self.assertEqual(self.e2e({**host, field: 'runner error'})['status'], 'fail')
+        batch = {**host, 'scope': 'ubuntu-p42', 'selected_scenarios': ['a', 'b'], 'runs': [
+            {'scenario': 'a', 'status': 'pass', 'clone_removed': True, 'base_integrity_verified': True}]}
+        self.assertEqual(self.e2e(batch)['status'], 'incomplete')
+
+    def test_e2e_paths_are_optional_relative_and_unique(self):
+        self.assertEqual(self.spec()['e2e_reports'], [])
+        self.data['e2e_reports'] = ['relative/result.json']
+        self.assertEqual(self.spec()['e2e_reports'], [self.root / 'relative/result.json'])
+        for value in ('not-a-list', [None], ['same.json', './same.json']):
+            self.data['e2e_reports'] = value
+            with self.assertRaises(ValueError): self.spec()
 
 
 if __name__ == '__main__':

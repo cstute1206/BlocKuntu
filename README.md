@@ -7,13 +7,15 @@ https://github.com/user-attachments/assets/4178a567-3bb1-4f56-9f0b-6fb59eb27bc4
 ## What it does
 
 - Blocks websites and applications through reusable blocklists and Tier 2 or Tier 3 allowlists activated by schedules or Detox.
-- Supports schedules and time-limited Detox sessions.
+- Supports schedules and time-limited Detox sessions that cannot be cancelled once started.
 - Offers three policy tiers:
   - **Tier 1:** always blocked while enabled. Editing an active list requires a Tier 1 edit unlock.
   - **Tier 2:** strictly blocked only while an attached schedule or Detox is active. There is no short unlock.
   - **Tier 3:** blocked only while an attached schedule or Detox is active. It has a configurable daily allowance and one two-minute manual unlock per hour.
 - Uses a browser extension plus Native Messaging for website enforcement and process matching for application enforcement.
-- Provides protected Tier 1 changes, protected uninstall, policy import/export, desktop notifications, and health checks.
+- Provides protected list changes across all tiers, login startup in the system tray, protected uninstall, policy import/export, desktop notifications, and health checks.
+
+The Tier 1 edit key authorizes five minutes of editing for website and application lists across all tiers, including scheduled lists. Active Detox lists can only be made more restrictive; the key cannot end or bypass Detox. Tier 3 retains its normal allowance and manual unlock.
 
 For detailed behavior, see [Features](Docs/FEATURES.md).
 

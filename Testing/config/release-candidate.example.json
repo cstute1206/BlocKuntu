@@ -7,5 +7,6 @@
   "ci_receipt": null,
   "package_reports": {},
   "smoke_summaries": [],
-  "recovery_checks": []
+  "recovery_checks": [],
+  "e2e_reports": []
 }

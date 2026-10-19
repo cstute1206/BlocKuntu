@@ -53,7 +53,7 @@ def candidate(path):
     path = Path(path).resolve()
     data = load(path)
     allowed = {'schema_version', 'name', 'commit', 'repository', 'ci_runs', 'ci_receipt',
-               'package_reports', 'smoke_summaries', 'recovery_checks'}
+               'package_reports', 'smoke_summaries', 'recovery_checks', 'e2e_reports'}
     if (not isinstance(data, dict) or set(data) - allowed or
             type(data.get('schema_version')) is not int or data['schema_version'] != 1):
         raise ValueError('Candidate must use schema_version 1 and known fields')
@@ -83,6 +83,7 @@ def candidate(path):
         return resolved
     data['package_reports'] = {key: resolve(value) for key, value in reports.items()}
     data['smoke_summaries'] = paths(data.get('smoke_summaries', []))
+    data['e2e_reports'] = paths(data.get('e2e_reports', []))
     data['ci_receipt'] = resolve(data['ci_receipt']) if data.get('ci_receipt') is not None else None
     recovery = data.get('recovery_checks', [])
     if not isinstance(recovery, list):
@@ -359,11 +360,121 @@ def recovery_checks(spec, packages, auditors=None):
     return rows
 
 
+def e2e_details(saved):
+    """Read existing host report envelopes; leave test acceptance to their runners."""
+    commit = saved.get('package_commit')
+    if saved.get('kind') == 'layer3-group-run':
+        runs = saved['runs']
+        bindings = {row['guest']: saved['packages'][row['guest']] for row in runs}
+        complete = (bool(saved.get('finished_at')) and bool(runs) and
+                    len(runs) == saved.get('group_count') and all(
+                        row.get('status') == 'pass' and row.get('exit_code') == 0 and
+                        row.get('evidence_check', {}).get('valid') is True for row in runs))
+        return 'layer3/' + saved['suite'], bindings, complete
+    if saved.get('kind') == 'layer3-group-audit':
+        runs = saved.get('latest_successful_runs', [])
+        bindings = {row['guest']: {'commit': commit,
+                    'sha256': row['evidence']['package_sha256']} for row in runs}
+        complete = (bool(runs) and saved.get('copied_storage_removed') is True and
+                    all(row['evidence'].get('valid') is True for row in runs))
+        return 'layer3/' + saved['scope'], bindings, complete
+    if saved.get('scope') == 'P3.0-smoke-repeatability':
+        pairs = saved['pairs']
+        runs = {guest: [row for row in saved['runs'][guest] if row['run_id'] in pair['runs']]
+                for guest, pair in pairs.items()}
+        bindings = {guest: {'commit': commit, 'sha256': rows[-1]['package_sha256']}
+                    for guest, rows in runs.items() if rows}
+        complete = bool(pairs) and all(pair.get('status') == 'pass' and len(runs[guest]) == 2 and
+            all(row.get('valid') is True for row in runs[guest]) for guest, pair in pairs.items())
+        return saved['scope'], bindings, complete
+    if saved.get('layer') == 'vm-acceptance':
+        guest = saved['guest']
+        suffix = {'ubuntu': '.deb', 'fedora': '.rpm', 'cachyos': '.pkg.tar.zst'}[guest]
+        artifacts = [item for item in saved['package'] if item['filename'].endswith(suffix)]
+        if len(artifacts) != 1:
+            raise ValueError('Expected one native package in host acceptance report')
+        complete = bool(saved.get('finished_at')) and saved.get('base_integrity_verified') is True
+        return saved['suite'], {guest: {**artifacts[0], 'commit': commit}}, complete
+    scope = saved.get('scope', '')
+    if saved.get('layer') == 4:
+        guest = saved['guest']
+        # The uninstall batch predates the scope field.
+        scope = scope or guest + '-p41'
+        if not re.fullmatch(re.escape(guest) + r'-(p4[123](?:-.+)?|tier1-protected-edits)', scope):
+            raise ValueError('Unknown Layer 4 host suite')
+        if 'runs' in saved:
+            runs, selected = saved['runs'], saved['selected_scenarios']
+            complete = (bool(selected) and len(runs) == len(selected) and
+                        {row['scenario'] for row in runs} == set(selected) and all(
+                            row.get('status') == 'pass' and row.get('base_integrity_verified') is True and
+                            row.get('clone_removed') is True for row in runs))
+        else:
+            complete = (bool(saved.get('finished_at')) and saved.get('base_integrity_verified') is True and
+                        saved.get('clone_removed') is True)
+    elif re.fullmatch(r'(ubuntu|fedora|cachyos|native)-p4[123]', scope):
+        guest = scope.split('-')[0]
+        complete = saved.get('all_owned_clones_removed') is True and saved.get('required_passes', 0) > 0
+    else:
+        raise ValueError('Not a supported final host E2E acceptance or audit report')
+    binding = {'commit': commit, 'sha256': saved.get('package_sha256')}
+    for source, target in (('package_filename', 'filename'), ('installed_version', 'version')):
+        if source in saved:
+            binding[target] = saved[source]
+    return scope, {guest: binding}, complete
+
+
+def e2e_checks(spec, packages):
+    rows = []
+    for index, path in enumerate(spec.get('e2e_reports', []), 1):
+        details = {'evidence': [path]}
+        try:
+            saved = load(path)
+            environments = ([saved['guest']] if saved.get('guest') else
+                            sorted(saved.get('packages', {})))
+            details.update(suite=saved.get('suite') or saved.get('scope') or 'E2E',
+                           environments=environments)
+            # Failed audits may omit identities; their failure must still block the candidate.
+            if saved.get('status') == 'fail':
+                status, reason = 'fail', saved.get('error') or 'E2E runner reported failure'
+            elif saved.get('status') != 'pass':
+                status, reason = 'incomplete', 'E2E report has not recorded a completed pass'
+            else:
+                suite, bindings, complete = e2e_details(saved)
+                details.update(suite=suite, environments=sorted(bindings), scope=saved.get('scope'))
+                if saved.get('package_commit') != spec['commit']:
+                    status, reason = 'mismatch', 'E2E report belongs to another candidate'
+                elif not complete:
+                    status, reason = 'incomplete', 'E2E report lacks completed host acceptance/cleanup'
+                elif not bindings or not set(bindings) <= set(GUESTS):
+                    raise ValueError('E2E report has no supported guest environment')
+                else:
+                    status, reason = 'pass', 'Existing E2E acceptance passed for the candidate artifact'
+                    for guest, binding in bindings.items():
+                        expected = packages.get(GUEST_PACKAGES[guest])
+                        if expected is None:
+                            if status != 'mismatch':
+                                status, reason = 'unverified', 'Matching package artifact must pass first'
+                        elif (binding.get('commit') != spec['commit'] or binding.get('sha256') != expected['sha256'] or
+                              any(binding[key] != expected[key] for key in ('filename', 'version') if key in binding)):
+                            status, reason = 'mismatch', 'E2E artifact differs from the selected package'
+            if saved.get('status') == 'pass' and any(saved.get(key) for key in
+                    ('error', 'cleanup_error', 'safety_error', 'collection_errors', 'preparation_error')):
+                status, reason = 'fail', 'E2E report contains a runner or cleanup error'
+            details['report_sha256'] = sha256(path)
+        except FileNotFoundError:
+            status, reason = 'missing', 'Selected E2E report missing'
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            status, reason = 'fail', 'Invalid E2E report: ' + str(error)
+        rows.append(check('e2e:' + str(index), status, reason, **details))
+    return rows
+
+
 def report(spec, receipt=None, *, live=False, smoke_auditor=audit_summaries, recovery_auditors=None):
     packages, identities = package_checks(spec)
     rows = ci_checks(spec, receipt) + packages
     rows += smoke_checks(spec, identities, live=live, auditor=smoke_auditor)
     rows += recovery_checks(spec, identities, auditors=recovery_auditors)
+    rows += e2e_checks(spec, identities)
     required = [row for row in rows if row['required']]
     status = ('ready' if all(row['status'] == 'pass' for row in required) else
               'not_ready' if any(row['status'] in ('fail', 'mismatch') for row in required) else 'incomplete')
@@ -384,7 +495,7 @@ def markdown(result):
         f'**{result["status"].upper()}** — `{selected["commit"]}`', '',
         f'Repository: {cell(selected["repository"])}. Generated: {result["generated_at"]}.', '',
         'Scope: source/package CI, six package outputs, three-guest smoke, current VM safety, '
-        'and explicitly selected recovery checks. Full catalog acceptance is not claimed.', '',
+        'and explicitly selected recovery/E2E reports. Full catalog acceptance is not claimed.', '',
         '| Check | Required | Status | Detail |', '| --- | --- | --- | --- |']
     lines += [f'| {cell(row["id"])} | {"yes" if row["required"] else "no"} | {row["status"]} | {cell(row["reason"])} |'
               for row in result['checks']]
@@ -403,6 +514,15 @@ def markdown(result):
         for browser, versions in row['browser_versions'].items():
             lines.append(f'| {cell(row["run_id"])} | {cell(browser)} | {cell(versions.get("browser_version", "unavailable"))} | '
                          f'{cell(versions.get("extension_version", "unavailable"))} | `{digest}` |')
+    e2e = [row for row in result['checks'] if row['id'].startswith('e2e:')]
+    if e2e:
+        lines += ['', '## E2E acceptance reports', '', '| Suite | Environment | Status | Report |',
+                  '| --- | --- | --- | --- |']
+        for row in e2e:
+            path = row['evidence'][0]
+            lines.append(f'| {cell(row.get("suite", row["id"]))} | '
+                         f'{cell(", ".join(row.get("environments", [])) or "unavailable")} | '
+                         f'{row["status"]} | [report](<{cell(path)}>) |')
     lines += ['', '## Evidence references', '']
     lines += [f'- {cell(row["id"])}: {cell(path)}' for row in result['checks'] for path in row['evidence']]
     return '\n'.join(lines) + '\n'

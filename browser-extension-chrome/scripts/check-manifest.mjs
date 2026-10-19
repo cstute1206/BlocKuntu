@@ -22,6 +22,10 @@ function assert(condition, message) {
 
 assert(manifest.manifest_version === 3, "manifest_version must be 3");
 assert(
+  manifest.incognito === "split",
+  "Chrome must use split incognito mode to display the extension block page in private tabs"
+);
+assert(
   manifest.background?.service_worker === "dist/background.js",
   "Chrome MV3 must use a service worker"
 );

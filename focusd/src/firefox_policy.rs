@@ -70,8 +70,8 @@ impl FirefoxPolicyManager {
         }
     }
 
-    /// Creates a policy manager for Firefox-family browsers that ship their own
-    /// policy document. BlocKuntu changes only its required entries and records
+    /// Creates a policy manager for a shared Firefox-family policy document.
+    /// BlocKuntu changes only its required entries and records
     /// the prior values so uninstall can restore them without discarding the
     /// browser's defaults.
     pub fn merging_existing_policy(
@@ -287,13 +287,13 @@ impl FirefoxPolicyManager {
             Err(error) => return Err(error.into()),
         };
 
+        self.ensure_merge_backup(existing.as_ref())?;
         if existing.as_ref().is_some_and(|policy| {
             policy_includes_managed_settings(policy, expected, &self.extension_id)
         }) {
             return Ok(RepairStatus::AlreadyCompliant);
         }
 
-        self.ensure_merge_backup(existing.as_ref())?;
         let merged = match existing {
             Some(policy) => merge_managed_settings(policy, expected, &self.extension_id)?,
             None => expected.clone(),
@@ -327,24 +327,38 @@ impl FirefoxPolicyManager {
             Err(error) => return Err(error.into()),
         };
 
-        if backup.policy_was_missing {
+        let contents = match fs::read(&self.policy_path) {
+            Ok(contents) => contents,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && backup.policy_was_missing =>
+            {
+                fs::remove_file(backup_path)?;
+                return Ok(RepairStatus::Repaired);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let current = serde_json::from_slice::<Value>(&contents).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "cannot restore browser policy because {} is not valid JSON: {error}",
+                    self.policy_path.display()
+                ),
+            )
+        })?;
+        let restored = restore_managed_settings(current, &self.extension_id, &backup)?;
+        let empty = restored.as_object().is_some_and(|root| root.len() == 1)
+            && restored
+                .get("policies")
+                .and_then(Value::as_object)
+                .is_some_and(|policies| policies.is_empty());
+        if backup.policy_was_missing && empty {
             match fs::remove_file(&self.policy_path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
         } else {
-            let contents = fs::read(&self.policy_path)?;
-            let current = serde_json::from_slice::<Value>(&contents).map_err(|error| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "cannot restore browser policy because {} is not valid JSON: {error}",
-                        self.policy_path.display()
-                    ),
-                )
-            })?;
-            let restored = restore_managed_settings(current, &self.extension_id, &backup)?;
             self.write_policy(&restored)?;
         }
 
@@ -363,7 +377,37 @@ impl FirefoxPolicyManager {
             return Ok(());
         }
 
-        let backup = merged_policy_backup(existing, &self.extension_id)?;
+        // Adopt a policy left by the previous whole-document writer without
+        // backing up BlocKuntu's own entries as if they belonged to the user.
+        let adopted = existing
+            .filter(|policy| {
+                policy_includes_managed_settings(
+                    policy,
+                    &self.expected_policy(),
+                    &self.extension_id,
+                )
+            })
+            .map(|policy| {
+                restore_managed_settings(
+                    policy.clone(),
+                    &self.extension_id,
+                    &MergedPolicyBackup {
+                        policy_was_missing: true,
+                        policy_values: Vec::new(),
+                        extension_setting: None,
+                        preference_setting: None,
+                    },
+                )
+            })
+            .transpose()?;
+        let original = adopted.as_ref().or(existing);
+        let mut backup = merged_policy_backup(original, &self.extension_id)?;
+        if adopted
+            .as_ref()
+            .is_some_and(|policy| policy == &json!({"policies": {}}))
+        {
+            backup.policy_was_missing = true;
+        }
         if let Some(parent) = backup_path.parent() {
             fs::create_dir_all(parent)?;
             fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
@@ -520,10 +564,15 @@ fn restore_managed_settings(
             )
         })?;
 
-    for (key, original) in &backup.policy_values {
+    for key in MANAGED_POLICY_KEYS {
+        let original = backup
+            .policy_values
+            .iter()
+            .find(|(name, _)| name == key)
+            .and_then(|(_, value)| value.as_ref());
         match original {
             Some(value) => {
-                policies.insert(key.clone(), value.clone());
+                policies.insert(key.to_string(), value.clone());
             }
             None => {
                 policies.remove(key);
@@ -625,6 +674,131 @@ fn temporary_path(path: &Path) -> PathBuf {
 mod tests {
     use super::{FirefoxPolicyManager, RepairStatus};
     use serde_json::json;
+
+    fn merging_manager(temp: &tempfile::TempDir) -> FirefoxPolicyManager {
+        FirefoxPolicyManager::merging_existing_policy(
+            temp.path().join("firefox/policies.json"),
+            "blockuntu@example.local",
+            "https://addons.mozilla.org/firefox/downloads/latest/blockuntu/latest.xpi",
+            temp.path().join("backups/firefox.json"),
+        )
+    }
+
+    fn read_policy(manager: &FirefoxPolicyManager) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(manager.policy_path()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn firefox_preserves_unrelated_settings_through_repair_restart_and_removal() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = merging_manager(&temp);
+        std::fs::create_dir_all(manager.policy_path().parent().unwrap()).unwrap();
+        let original = json!({"policies": {"DisableTelemetry": true, "DisableDeveloperTools": false,
+            "Preferences": {"browser.startup.homepage": {"Value": "https://example.invalid"}},
+            "ExtensionSettings": {"other@example.local": {"installation_mode": "normal_installed"}}}});
+        std::fs::write(
+            manager.policy_path(),
+            serde_json::to_vec(&original).unwrap(),
+        )
+        .unwrap();
+        manager.verify_and_repair().unwrap();
+        assert_eq!(read_policy(&manager)["policies"]["DisableTelemetry"], true);
+        let backup = std::fs::read(temp.path().join("backups/firefox.json")).unwrap();
+        let mut altered = read_policy(&manager);
+        altered["policies"]["DisableDeveloperTools"] = json!(false);
+        altered["policies"]["ShowHomeButton"] = json!(true);
+        std::fs::write(manager.policy_path(), serde_json::to_vec(&altered).unwrap()).unwrap();
+        // A new manager must reuse the original backup rather than replacing it.
+        let restarted = merging_manager(&temp);
+        restarted.verify_and_repair().unwrap();
+        assert_eq!(
+            std::fs::read(temp.path().join("backups/firefox.json")).unwrap(),
+            backup
+        );
+        assert_eq!(
+            read_policy(&restarted)["policies"]["DisableTelemetry"],
+            true
+        );
+        restarted.remove_policy().unwrap();
+        let mut expected = original;
+        expected["policies"]["ShowHomeButton"] = json!(true);
+        assert_eq!(read_policy(&restarted), expected);
+        assert!(!temp.path().join("backups/firefox.json").exists());
+    }
+
+    #[test]
+    fn created_policy_preserves_unrelated_entries_added_after_activation() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = merging_manager(&temp);
+        manager.verify_and_repair().unwrap();
+        let mut current = read_policy(&manager);
+        current["policies"]["DisableTelemetry"] = json!(true);
+        current["policies"]["ExtensionSettings"]["other@example.local"] =
+            json!({"installation_mode": "normal_installed"});
+        std::fs::write(manager.policy_path(), serde_json::to_vec(&current).unwrap()).unwrap();
+        manager.remove_policy().unwrap();
+        assert_eq!(
+            read_policy(&manager),
+            json!({"policies": {"DisableTelemetry":true,
+            "ExtensionSettings": {"other@example.local": {"installation_mode": "normal_installed"}}}})
+        );
+    }
+
+    #[test]
+    fn created_policy_without_unrelated_entries_is_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = merging_manager(&temp);
+        manager.verify_and_repair().unwrap();
+        manager.remove_policy().unwrap();
+        assert!(!manager.policy_path().exists());
+        assert!(!temp.path().join("backups/firefox.json").exists());
+    }
+
+    #[test]
+    fn adopts_legacy_managed_entries_without_restoring_them_on_uninstall() {
+        for unrelated in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let manager = merging_manager(&temp);
+            std::fs::create_dir_all(manager.policy_path().parent().unwrap()).unwrap();
+            let mut existing = manager.expected_policy();
+            if unrelated {
+                existing["policies"]["DisableTelemetry"] = json!(true);
+            }
+            std::fs::write(
+                manager.policy_path(),
+                serde_json::to_vec(&existing).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                manager.verify_and_repair().unwrap(),
+                RepairStatus::AlreadyCompliant
+            );
+            assert!(temp.path().join("backups/firefox.json").exists());
+            manager.remove_policy().unwrap();
+            if unrelated {
+                assert_eq!(
+                    read_policy(&manager),
+                    json!({"policies": {"DisableTelemetry":true}})
+                );
+            } else {
+                assert!(!manager.policy_path().exists());
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_existing_policy_is_not_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = merging_manager(&temp);
+        std::fs::create_dir_all(manager.policy_path().parent().unwrap()).unwrap();
+        std::fs::write(manager.policy_path(), b"malformed policy").unwrap();
+        assert!(manager.verify_and_repair().is_err());
+        assert_eq!(
+            std::fs::read(manager.policy_path()).unwrap(),
+            b"malformed policy"
+        );
+        assert!(!temp.path().join("backups/firefox.json").exists());
+    }
 
     #[test]
     fn repairs_missing_policy_and_then_accepts_it() {
