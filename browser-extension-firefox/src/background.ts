@@ -1133,6 +1133,12 @@ browser.alarms.onAlarm.addListener((alarm) => {
     revalidateOpenTabs();
   }
 });
+// Firefox MV3 event pages need a persisted startup listener to wake on every
+// browser session, even when restored tabs produce no navigation event.
+browser.runtime.onStartup.addListener(() => {
+  void sendHeartbeat();
+  revalidateOpenTabs();
+});
 ensureLifecycleAlarm(HEARTBEAT_ALARM);
 ensureLifecycleAlarm(VISIT_ALARM);
 ensureLifecycleAlarm(REVALIDATE_ALARM);

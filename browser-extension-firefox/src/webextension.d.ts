@@ -23,6 +23,7 @@ declare namespace BlockuntuWebExtension {
 
   interface RuntimeApi {
     id: string;
+    onStartup: ExtensionEvent<() => void>;
     lastError?: { message?: string };
     connectNative(name: string): RuntimePort;
     getManifest(): RuntimeManifest;
