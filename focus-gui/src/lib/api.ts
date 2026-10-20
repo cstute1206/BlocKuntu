@@ -51,10 +51,14 @@ export function importPolicyToml(socketPath?: string): Promise<PolicyFileResult>
   return invoke("import_policy_toml", { socketPath });
 }
 
-export function upsertSiteList(rule: Rule, socketPath?: string): Promise<ConfigMutationResponse> {
+export function upsertSiteList(
+  rule: Rule,
+  socketPath?: string,
+  allowance?: Allowance
+): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "upsert_site_list",
-    { rule, now: clientNow() },
+    { rule, allowance, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }
@@ -88,11 +92,12 @@ export function deleteAllowance(id: string, socketPath?: string): Promise<Config
 
 export function upsertAppRule(
   rule: AppRule,
-  socketPath?: string
+  socketPath?: string,
+  allowance?: Allowance
 ): Promise<ConfigMutationResponse> {
   return daemonRpc(
     "upsert_app_rule",
-    { rule, now: clientNow() },
+    { rule, allowance, now: clientNow() },
     socketPath
   ) as Promise<ConfigMutationResponse>;
 }

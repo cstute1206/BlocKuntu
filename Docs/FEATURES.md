@@ -18,6 +18,7 @@ Website and application lists can contain multiple entries with different blocki
 - Schedule times can be entered in 24-hour or AM/PM format.
 - Tier 2 and Tier 3 need to be attached to a schedule or Detox to be active.
 - Tier 3 offers a daily allowance, before the block becomes active.
+- Saving a website or application list and its daily allowance is one atomic operation: validation or database-write failures leave both unchanged, and the editor retains the draft for correction and retry.
 - Detox activates selected Tier 2 and Tier 3 lists for one minute through twelve weeks. Tier 2 remains strict, while Tier 3 retains its normal allowance and manual-unlock behavior.
 - While a blocklist is active, you can append blocked rows but cannot remove them. While an allowlist is active, you can remove allowed rows but cannot add or edit them. Both are restriction-tightening changes. Tier 1 lists are active at all times while enabled, so broader edits require the Tier 1 unlock key. The same key authorizes broader edits to scheduled Tier 2 and Tier 3 website and application lists for five minutes, under the existing protected-access eligibility setting. Active schedule windows remain protected. Detox-attached lists remain limited to tightening changes even with the key; their tier, mode, enabled state, entries already blocked and allowance cannot be weakened or replaced. Direct attachment edits stay locked; deleting an idle schedule may clean up its attachment without ending Detox, which independently retains its selected list IDs.
 
@@ -103,6 +104,7 @@ For a list of supported browsers, see [Supported browsers](supportedBrowsers.md)
   - One schedule can have multiple windows.
 - Select the attached website lists and application lists. The edit key also authorizes attachment changes on scheduled lists, except Detox-attached lists.
 - Deleting a website list, application list or idle schedule uses the same native confirmation dialog as changing protected settings access. The red **Delete** button opens a confirmation naming the item and explaining its consequences; canceling or dismissing it makes no changes. Deleting a list removes its schedule attachments and unused allowance, preserving schedules and other lists. Deleting a schedule removes its ID from all remaining lists, even if a previously attached list has already been deleted. Lists without another active schedule or Detox become inactive (Tier 1 stays active). Active schedules cannot be deleted. Active lists require the protected edit key for deletion; Detox-attached lists cannot be deleted.
+- New lists and schedules receive unique IDs, separate from their display names, so they do not inherit a deleted item's usage or unlock state. Deleting a list also revokes its existing manual unlocks, including its share of a grouped unlock; other lists in the group retain their unlock. Reusing a deleted list ID through import does not revive its old unlocks. Unlock quota, reason history, statistics and event logs remain intact.
 
 ## Statistics
 

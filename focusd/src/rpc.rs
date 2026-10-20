@@ -441,6 +441,8 @@ struct ListRunningAppsParams {
 struct UpsertSiteListParams {
     rule: RuleConfig,
     #[serde(default)]
+    allowance: Option<AllowanceConfig>,
+    #[serde(default)]
     now: Option<String>,
 }
 
@@ -468,6 +470,8 @@ struct DeleteAllowanceParams {
 #[derive(Debug, Deserialize)]
 struct UpsertAppRuleParams {
     rule: AppRuleConfig,
+    #[serde(default)]
+    allowance: Option<AllowanceConfig>,
     #[serde(default)]
     now: Option<String>,
 }
@@ -1737,6 +1741,14 @@ fn upsert_site_list_method(context: &RpcContext, params: UpsertSiteListParams) -
     let rule_id = params.rule.id.clone();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
+    stage_list_allowance(
+        &core,
+        &mut next,
+        params.allowance,
+        params.rule.allowance_id.as_deref(),
+        params.rule.tier,
+        now,
+    )?;
     let old_allowance_id = next
         .rules
         .iter()
@@ -1851,24 +1863,7 @@ fn upsert_allowance_method(context: &RpcContext, params: UpsertAllowanceParams) 
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
 
-    match next
-        .allowances
-        .iter()
-        .position(|candidate| candidate.id == params.allowance.id)
-    {
-        Some(index) => {
-            let current_allowance = &next.allowances[index];
-            if current_allowance != &params.allowance
-                && allowance_is_active_at(&current_allowance.id, &core, now)?
-                && (!tier1_edit_window_active(&core, now)?
-                    || allowance_in_active_detox(&core, &current_allowance.id, now)?)
-            {
-                return Err(active_allowance_edit_error(&current_allowance.id));
-            }
-            next.allowances[index] = params.allowance;
-        }
-        None => next.allowances.push(params.allowance),
-    }
+    stage_allowance(&core, &mut next, params.allowance, now)?;
 
     focus_core::validate_config(&next)?;
     persist_policy_config(context, &mut core, next)?;
@@ -1884,6 +1879,52 @@ fn upsert_allowance_method(context: &RpcContext, params: UpsertAllowanceParams) 
         "config": core.config(),
         "updated_at": updated_at
     }))
+}
+
+fn stage_list_allowance(
+    core: &FocusCore,
+    next: &mut Config,
+    allowance: Option<AllowanceConfig>,
+    allowance_id: Option<&str>,
+    tier: RuleTier,
+    now: DateTime<FixedOffset>,
+) -> Result<()> {
+    if let Some(allowance) = allowance {
+        if tier != RuleTier::ControlledAccess || allowance_id != Some(allowance.id.as_str()) {
+            return Err(DaemonError::InvalidRequest(
+                "the supplied allowance must belong to the Tier 3 list being saved".into(),
+            ));
+        }
+        stage_allowance(core, next, allowance, now)?;
+    }
+    Ok(())
+}
+
+fn stage_allowance(
+    core: &FocusCore,
+    next: &mut Config,
+    allowance: AllowanceConfig,
+    now: DateTime<FixedOffset>,
+) -> Result<()> {
+    match next
+        .allowances
+        .iter()
+        .position(|candidate| candidate.id == allowance.id)
+    {
+        Some(index) => {
+            let current_allowance = &next.allowances[index];
+            if current_allowance != &allowance
+                && allowance_is_active_at(&current_allowance.id, core, now)?
+                && (!tier1_edit_window_active(core, now)?
+                    || allowance_in_active_detox(core, &current_allowance.id, now)?)
+            {
+                return Err(active_allowance_edit_error(&current_allowance.id));
+            }
+            next.allowances[index] = allowance;
+        }
+        None => next.allowances.push(allowance),
+    }
+    Ok(())
 }
 
 fn delete_allowance_method(context: &RpcContext, params: DeleteAllowanceParams) -> Result<Value> {
@@ -1954,6 +1995,14 @@ fn upsert_app_rule_method(context: &RpcContext, params: UpsertAppRuleParams) -> 
     let rule_id = params.rule.id.clone();
     let mut core = context.core.lock().map_err(|_| DaemonError::LockPoisoned)?;
     let mut next = core.config().clone();
+    stage_list_allowance(
+        &core,
+        &mut next,
+        params.allowance,
+        params.rule.allowance_id.as_deref(),
+        params.rule.tier,
+        now,
+    )?;
     let old_allowance_id = next
         .app_rules
         .iter()
@@ -4905,7 +4954,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
 
-    use chrono::{Duration, Local, TimeZone, Utc};
+    use chrono::{DateTime, Duration, Local, TimeZone, Utc};
     use focus_core::{Config, Database, DetoxSession, FocusCore, HeartbeatState};
     use serde_json::{json, Value};
 
@@ -6953,6 +7002,220 @@ mod tests {
             matchers = [{ kind = "command_name", value = "game" }]
         "#,
         )
+    }
+
+    fn persist_qos_fixture(context: &RpcContext, edit_unlocked: bool) -> Config {
+        let mut core = context.core.lock().unwrap();
+        core.database()
+            .replace_policy_config(core.config())
+            .unwrap();
+        let persisted = core.database().load_policy_config().unwrap();
+        core.replace_config(persisted).unwrap();
+        if edit_unlocked {
+            core.database()
+                .set_service_state(
+                    super::TIER1_EDIT_UNLOCK_UNTIL_KEY,
+                    "2026-05-22T10:05:00Z",
+                    Utc::now(),
+                )
+                .unwrap();
+        }
+        core.config().clone()
+    }
+
+    #[test]
+    fn list_and_allowance_saves_validate_and_commit_atomically() {
+        for (collection, method, allowance_id) in [
+            ("rules", "upsert_site_list", "daily"),
+            ("app_rules", "upsert_app_rule", "app-daily"),
+        ] {
+            for scenario in [
+                "invalid_list",
+                "database_failure",
+                "update",
+                "new_allowance",
+                "unrelated_allowance",
+            ] {
+                let context = qos_context();
+                let before = persist_qos_fixture(&context, true);
+                let mut rule = serde_json::to_value(&before).unwrap()[collection][0].clone();
+                rule["name"] = json!("Changed together");
+                let mut allowance = json!({"id":allowance_id, "daily_minutes":30});
+                if scenario == "new_allowance" {
+                    allowance["id"] = json!("new-daily");
+                    rule["allowance_id"] = json!("new-daily");
+                } else if scenario == "unrelated_allowance" {
+                    allowance["id"] = json!("unrelated");
+                } else if scenario == "invalid_list" {
+                    if collection == "rules" {
+                        rule["patterns"] = json!([]);
+                    } else {
+                        rule["matchers"] = json!([{"kind":"executable_path","value":"relative"}]);
+                    }
+                } else if scenario == "database_failure" {
+                    context
+                        .core
+                        .lock()
+                        .unwrap()
+                        .database()
+                        .connection()
+                        .execute_batch(
+                            "CREATE TRIGGER fail_policy BEFORE INSERT ON policy_defaults
+                         BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;",
+                        )
+                        .unwrap();
+                }
+                let response = qos_rpc(
+                    &context,
+                    method,
+                    json!({"rule":rule,"allowance":allowance,"now":"2026-05-22T10:01:00Z"}),
+                );
+                let core = context.core.lock().unwrap();
+                if matches!(scenario, "update" | "new_allowance") {
+                    assert!(response.get("error").is_none(), "{scenario}: {response}");
+                    assert_eq!(response["result"]["config"][collection][0], rule);
+                    let id = allowance["id"].as_str().unwrap();
+                    assert_eq!(
+                        core.config()
+                            .allowances
+                            .iter()
+                            .find(|a| a.id == id)
+                            .unwrap()
+                            .daily_minutes,
+                        30
+                    );
+                    if scenario == "new_allowance" {
+                        assert!(!core
+                            .config()
+                            .allowances
+                            .iter()
+                            .any(|a| a.id == allowance_id));
+                    }
+                } else {
+                    assert!(response.get("error").is_some(), "{scenario}: {response}");
+                    assert_eq!(*core.config(), before, "{scenario}");
+                }
+                assert_eq!(
+                    core.database().load_policy_config().unwrap(),
+                    *core.config()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn combined_list_saves_preserve_protected_allowance_and_detox_rules() {
+        for (collection, method, allowance_id) in [
+            ("rules", "upsert_site_list", "daily"),
+            ("app_rules", "upsert_app_rule", "app-daily"),
+        ] {
+            let context = qos_context();
+            let before = persist_qos_fixture(&context, false);
+            let rule = serde_json::to_value(&before).unwrap()[collection][0].clone();
+            let params = json!({"rule":rule,"allowance":{"id":allowance_id,"daily_minutes":30},"now":"2026-05-22T10:01:00Z"});
+            let response = qos_rpc(&context, method, params.clone());
+            assert!(response.get("error").is_some(), "{response}");
+            persist_qos_fixture(&context, true);
+            // Add a live Detox directly to the isolated runtime database.
+            context
+                .core
+                .lock()
+                .unwrap()
+                .database()
+                .insert_detox_session(&DetoxSession {
+                    id: "fixture-detox".into(),
+                    name: Some("Focus".into()),
+                    starts_at: DateTime::parse_from_rfc3339("2026-05-22T10:00:00Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    ends_at: DateTime::parse_from_rfc3339("2026-05-22T11:00:00Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    cancelled_at: None,
+                    site_rule_ids: vec!["site".into()],
+                    app_rule_ids: vec!["app".into()],
+                })
+                .unwrap();
+            let response = qos_rpc(&context, method, params);
+            assert!(response.get("error").is_some(), "{response}");
+            let core = context.core.lock().unwrap();
+            assert_eq!(*core.config(), before);
+            assert_eq!(core.database().load_policy_config().unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn deleting_and_recreating_lists_does_not_restore_old_manual_unlocks() {
+        for (collection, save, delete, allowance_id, target) in [
+            (
+                "rules",
+                "upsert_site_list",
+                "delete_site_list",
+                "daily",
+                "blocked.example",
+            ),
+            (
+                "app_rules",
+                "upsert_app_rule",
+                "delete_app_rule",
+                "app-daily",
+                "app",
+            ),
+        ] {
+            let context = qos_context();
+            let before = persist_qos_fixture(&context, true);
+            let rule = serde_json::to_value(&before).unwrap()[collection][0].clone();
+            let now = "2026-05-22T10:01:00Z";
+            let response = qos_rpc(
+                &context,
+                "request_unlock",
+                json!({"target":target,
+                "reason":"I need this target to complete an urgent work task", "now":now}),
+            );
+            assert!(response.get("error").is_none(), "{response}");
+            let response = qos_rpc(&context, delete, json!({"id":rule["id"],"now":now}));
+            assert!(response.get("error").is_none(), "{response}");
+            let response = qos_rpc(
+                &context,
+                save,
+                json!({"rule":rule,
+                "allowance":{"id":allowance_id,"daily_minutes":0},"now":now}),
+            );
+            assert!(response.get("error").is_none(), "{response}");
+            {
+                let core = context.core.lock().unwrap();
+                let at = DateTime::parse_from_rfc3339(now).unwrap();
+                let decision = if collection == "rules" {
+                    core.evaluate_url("https://blocked.example", at)
+                } else {
+                    focus_core::evaluate_app(
+                        &focus_core::ProcessIdentity {
+                            pid: None,
+                            executable_path: None,
+                            executable_basename: None,
+                            command_name: Some("game".into()),
+                            desktop_id: None,
+                            window_titles: vec![],
+                        },
+                        &focus_core::EvaluationContext::new(core.config(), core.database(), at),
+                    )
+                };
+                assert!(
+                    matches!(decision, focus_core::Decision::Block(_)),
+                    "{decision:?}"
+                );
+            }
+            let response = qos_rpc(
+                &context,
+                "request_unlock",
+                json!({"target":target,
+                "reason":"A different sufficiently long reason for access", "now":now}),
+            );
+            assert!(
+                response.get("error").is_some(),
+                "deletion must retain the hourly quota: {response}"
+            );
+        }
     }
 
     #[test]

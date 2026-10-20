@@ -53,7 +53,6 @@
     recoveryCredentials,
     hideRecoveryCredentials,
     unlockTier1Edit,
-    upsertAllowance,
     upsertAppRule,
     upsertSchedule,
     upsertSiteList
@@ -61,7 +60,6 @@
   import {
     applicationUiPreferences,
     appRuleIsActive,
-    cloneAllowance,
     cloneAllowanceForRule,
     cloneAppRule,
     cloneRule,
@@ -76,7 +74,7 @@
     lastSelectedView,
     markFirstRunOverviewDismissed,
     mergeAppMatchers,
-    nextAvailableIndexedId,
+    newItemIdentity,
     normalizeAllowanceDraft,
     normalizeAppRuleDraft,
     normalizeRuleDraft,
@@ -1073,14 +1071,15 @@
   }
 
   function startNewRule(): void {
-    const { id, index } = nextAvailableIndexedId(
-      config?.rules.map((rule) => rule.id) ?? [],
-      "site-list"
+    const { id, name } = newItemIdentity(
+      config?.rules.map((rule) => rule.name) ?? [],
+      "site-list",
+      "Website"
     );
     selectedRuleId = null;
     const newRule: Rule = {
       id,
-      name: `Website ${index}`,
+      name,
       tier: "controlled_access",
       enabled: true,
       mode: "blocklist",
@@ -1108,14 +1107,12 @@
       const socket = socketArg();
       const savedRule = config?.rules.find((rule) => rule.id === ruleDraft?.id) ?? null;
       const additiveOnlySave = savedRule ? siteRuleSaveIsAdditiveOnly(savedRule, config) : false;
+      let allowance: Allowance | undefined;
       if (normalizedRuleDraft.tier === "controlled_access" && !additiveOnlySave) {
-        const allowance = normalizeAllowanceDraft(
+        allowance = normalizeAllowanceDraft(
           ruleAllowanceDraft ?? defaultAllowanceForRule(normalizedRuleDraft),
           normalizedRuleDraft
         );
-        const allowanceResponse = await upsertAllowance(allowance, socket);
-        config = allowanceResponse.config;
-        ruleAllowanceDraft = cloneAllowance(allowance);
         normalizedRuleDraft.allowance_id = allowance.id;
       } else if (savedRule && additiveOnlySave) {
         normalizedRuleDraft.allowance_id = savedRule.allowance_id ?? null;
@@ -1124,7 +1121,7 @@
       }
 
       const savedRuleDraft = normalizeRuleDraftForSave(normalizedRuleDraft, config);
-      const response = await upsertSiteList(savedRuleDraft, socket);
+      const response = await upsertSiteList(savedRuleDraft, socket, allowance);
       config = response.config;
       selectedRuleId = savedRuleDraft.id;
       setRuleDraft(
@@ -1177,14 +1174,15 @@
   }
 
   function startNewAppRule(): void {
-    const { id, index } = nextAvailableIndexedId(
-      config?.app_rules.map((rule) => rule.id) ?? [],
-      "app-rule"
+    const { id, name } = newItemIdentity(
+      config?.app_rules.map((rule) => rule.name) ?? [],
+      "app-rule",
+      "Application"
     );
     selectedAppRuleId = null;
     appRuleDraft = {
       id,
-      name: `Application ${index}`,
+      name,
       tier: "hard",
       enabled: true,
       mode: "blocklist",
@@ -1245,23 +1243,22 @@
       const socket = socketArg();
       const savedRule = config?.app_rules.find((rule) => rule.id === appRuleDraft?.id) ?? null;
       const additiveOnlySave = savedRule ? appRuleSaveIsAdditiveOnly(savedRule, config) : false;
+      const normalizedDraft = normalizeAppRuleDraft(appRuleDraft);
+      let allowance: Allowance | undefined;
       if (appRuleDraft.tier === "controlled_access" && !additiveOnlySave) {
-        const allowance = normalizeAllowanceDraft(
+        allowance = normalizeAllowanceDraft(
           appRuleAllowanceDraft ?? defaultAllowanceForRule(appRuleDraft),
           appRuleDraft
         );
-        const allowanceResponse = await upsertAllowance(allowance, socket);
-        config = allowanceResponse.config;
-        appRuleAllowanceDraft = cloneAllowance(allowance);
-        appRuleDraft.allowance_id = allowance.id;
+        normalizedDraft.allowance_id = allowance.id;
       } else if (savedRule && additiveOnlySave) {
-        appRuleDraft.allowance_id = savedRule.allowance_id ?? null;
+        normalizedDraft.allowance_id = savedRule.allowance_id ?? null;
       } else {
-        appRuleDraft.allowance_id = null;
+        normalizedDraft.allowance_id = null;
       }
 
-      const savedAppRuleDraft = normalizeAppRuleDraftForSave(appRuleDraft, config);
-      const response = await upsertAppRule(savedAppRuleDraft, socket);
+      const savedAppRuleDraft = normalizeAppRuleDraftForSave(normalizedDraft, config);
+      const response = await upsertAppRule(savedAppRuleDraft, socket, allowance);
       config = response.config;
       selectedAppRuleId = savedAppRuleDraft.id;
       setAppRuleDraft(
@@ -1328,14 +1325,15 @@
   }
 
   function startNewSchedule(): void {
-    const { id, index } = nextAvailableIndexedId(
-      config?.schedules.map((schedule) => schedule.id) ?? [],
-      "schedule"
+    const { id, name } = newItemIdentity(
+      config?.schedules.map((schedule) => schedule.name ?? schedule.id) ?? [],
+      "schedule",
+      "Schedule"
     );
     selectedScheduleId = null;
     scheduleDraft = {
       id,
-      name: `Schedule ${index}`,
+      name,
       windows: [{ weekday: "workdays", start: "09:00", end: "17:00" }]
     };
     scheduleSiteRuleIds = [];
