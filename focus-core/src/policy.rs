@@ -221,17 +221,7 @@ impl<'a> PolicyEngine<'a> {
         if target.is_empty() {
             return Err(UnlockError::EmptyTarget.into());
         }
-        if let Some((rule_id, session_id, ends_at)) =
-            self.active_detox_for_unlock_target(target, context)?
-        {
-            return Err(UnlockError::TargetInActiveDetox {
-                rule_id,
-                session_id,
-                ends_at,
-            }
-            .into());
-        }
-        let rule = self.resolve_unlock_rule(target, context)?;
+        let rules = self.resolve_unlock_rules(target, context)?;
 
         let reason = clean_unlock_reason(&reason);
         if reason.is_empty() {
@@ -261,13 +251,14 @@ impl<'a> PolicyEngine<'a> {
         let minutes = TIER_3_UNLOCK_MINUTES;
 
         let now = context.now_utc();
-        let active_unlock = self.database.active_unlock_for_rule(&rule.id, now)?;
-        if let Some(active) = active_unlock {
-            return Err(UnlockError::UnlockAlreadyActive {
-                rule_id: rule.id.clone(),
-                active_until: active.expires_at,
+        for rule in &rules {
+            if let Some(active) = self.database.active_unlock_for_rule(&rule.id, now)? {
+                return Err(UnlockError::UnlockAlreadyActive {
+                    rule_id: rule.id.clone(),
+                    active_until: active.expires_at,
+                }
+                .into());
             }
-            .into());
         }
 
         let unlocks_in_hour = self
@@ -280,9 +271,10 @@ impl<'a> PolicyEngine<'a> {
             .into());
         }
 
+        let rule_ids = rules.iter().map(|rule| rule.id.clone()).collect::<Vec<_>>();
         let unlock = self.database.insert_unlock(
-            &rule.target,
-            &rule.id,
+            &rules[0].target,
+            &rule_ids,
             minutes,
             &reason,
             now,
@@ -290,8 +282,12 @@ impl<'a> PolicyEngine<'a> {
         )?;
         self.database.record_event(
             "unlock_granted",
-            Some(&rule.target),
-            Some(&format!("rule_id={};minutes={minutes}", rule.id)),
+            Some(&rules[0].target),
+            Some(&format!(
+                "rule_id={};rule_ids={};minutes={minutes}",
+                rule_ids[0],
+                rule_ids.join(",")
+            )),
             now,
         )?;
         Ok(unlock)
@@ -466,25 +462,74 @@ impl<'a> PolicyEngine<'a> {
         }
     }
 
+    fn application_lists_for_unlock(&self, target: &str) -> Vec<&AppRuleConfig> {
+        // Names take precedence so a name shared by several lists always
+        // selects the whole group, even when it also happens to be a list ID.
+        let name = target.to_lowercase();
+        let named = self
+            .config
+            .app_rules
+            .iter()
+            .filter(|rule| rule.name.trim().to_lowercase() == name)
+            .collect::<Vec<_>>();
+        if !named.is_empty() {
+            return named;
+        }
+        self.config
+            .app_rules
+            .iter()
+            .filter(|rule| rule.id == target)
+            .collect()
+    }
+
+    fn resolve_unlock_rules(
+        &self,
+        target: &str,
+        context: &EvaluationContext<'_>,
+    ) -> Result<Vec<ResolvedUnlockRule>, Error> {
+        let mut eligible = Vec::new();
+        for rule in self.application_lists_for_unlock(target) {
+            if rule.enabled
+                && rule.tier == RuleTier::ControlledAccess
+                && self.controlled_app_rule_is_active(rule, context)?
+            {
+                eligible.push(unlock_rule_from_app(rule, target)?);
+            }
+        }
+        if !eligible.is_empty() {
+            return Ok(eligible);
+        }
+        if let Some((rule_id, session_id, ends_at)) =
+            self.active_detox_for_unlock_target(target, context)?
+        {
+            return Err(UnlockError::TargetInActiveDetox {
+                rule_id,
+                session_id,
+                ends_at,
+            }
+            .into());
+        }
+        Ok(vec![self.resolve_unlock_rule(target, context)?])
+    }
+
     fn resolve_unlock_rule(
         &self,
         target: &str,
         context: &EvaluationContext<'_>,
     ) -> Result<ResolvedUnlockRule, Error> {
-        if let Some(rule) = self
-            .config
-            .app_rules
-            .iter()
-            .find(|rule| rule.enabled && rule.id == target)
-        {
-            let active = match rule.tier {
-                RuleTier::Hard => true,
-                RuleTier::ScheduledBlock => self.app_rule_is_active(rule, context),
-                RuleTier::ControlledAccess => self.controlled_app_rule_is_active(rule, context)?,
-            };
-            if active {
-                return unlock_rule_from_app(rule, target);
+        let named = self.application_lists_for_unlock(target);
+        if !named.is_empty() {
+            for rule in named {
+                if rule.enabled
+                    && (rule.tier == RuleTier::Hard || self.app_rule_is_active(rule, context))
+                {
+                    return unlock_rule_from_app(rule, target);
+                }
             }
+            return Err(UnlockError::UnknownTarget {
+                target: target.to_string(),
+            }
+            .into());
         }
 
         if let Some(parsed) = normalize_unlock_url_target(target) {
@@ -558,6 +603,29 @@ impl<'a> PolicyEngine<'a> {
         target: &str,
         context: &EvaluationContext<'_>,
     ) -> Result<Option<(String, String, DateTime<Utc>)>, Error> {
+        let named = self.application_lists_for_unlock(target);
+        if !named.is_empty() {
+            let strict_ids = named
+                .iter()
+                .filter(|rule| rule.enabled && rule.tier == RuleTier::ScheduledBlock)
+                .map(|rule| rule.id.as_str())
+                .collect::<Vec<_>>();
+            return Ok(active_detox_sessions(self.database, context)?
+                .into_iter()
+                .filter_map(|session| {
+                    strict_ids
+                        .iter()
+                        .find(|id| {
+                            session
+                                .app_rule_ids
+                                .iter()
+                                .any(|candidate| candidate == *id)
+                        })
+                        .map(|id| ((*id).to_string(), session.id, session.ends_at))
+                })
+                .max_by_key(|(_, _, end)| *end));
+        }
+
         if let Some(parsed) = normalize_unlock_url_target(target) {
             if let Some(BlockReason::Detox {
                 rule_id,

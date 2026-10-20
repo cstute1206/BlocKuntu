@@ -1,6 +1,5 @@
 <script lang="ts">
-  import DeleteConfirmation from "../DeleteConfirmation.svelte";
-  let deleteConfirmationOpen = $state(false);
+  import { confirmDeletion } from "../../lib/ui";
   import {
     AlertTriangle,
     ListChecks,
@@ -183,6 +182,12 @@
       ruleDraft.schedule_ids = ruleDraft.schedule_ids.filter((id) => id !== scheduleId);
     } else {
       ruleDraft.schedule_ids = [...ruleDraft.schedule_ids, scheduleId];
+    }
+  }
+  function requestDeleteRule(): void {
+    if (!savedRule || ruleDraftEditLocked || ruleSaving) return;
+    if (confirmDeletion(savedRule.name || savedRule.id, "Its schedule attachments and unused allowance will be removed. Schedules and other lists remain.")) {
+      void onRemoveRuleDraft();
     }
   }
 </script>
@@ -389,7 +394,7 @@
         </button>
         <button
           class="secondary danger-action"
-          onclick={() => (deleteConfirmationOpen = true)}
+          onclick={requestDeleteRule}
           disabled={ruleSaving || ruleDraftDetoxLocked || (ruleDraftActive && !tier1EditUnlocked) || !ruleDraftIsExisting}
         >
           <Trash2 size={17} aria-hidden="true" />
@@ -474,11 +479,4 @@
       </div>
     </div>
   </div>
-{/if}
-
-{#if deleteConfirmationOpen && savedRule}
-  <DeleteConfirmation name={savedRule.name || savedRule.id}
-    consequences="Its schedule attachments and unused allowance will be removed. Schedules and other lists remain."
-    onCancel={() => (deleteConfirmationOpen = false)}
-    onDelete={() => { deleteConfirmationOpen = false; void onRemoveRuleDraft(); }} />
 {/if}

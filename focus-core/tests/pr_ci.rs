@@ -135,7 +135,7 @@ fn pr_pol_005_aal_005_detox_has_exact_absolute_start_and_end() {
 
 #[test]
 fn pr_aal_015_016_018_detox_unlock_by_id_or_identity_expires_without_refilling() {
-    for target in ["focus", "game"] {
+    for target in ["focus", "game", "  fOcUs  "] {
         let mut policy = config("app_rules", "controlled_access");
         policy.app_rules[0].schedule_ids.clear();
         let db = Database::in_memory().unwrap();
@@ -483,8 +483,8 @@ fn pr_aal_016_rejects_strict_tiers_short_reused_reasons_and_hourly_quota() {
     policy.schedules[0].windows[0].end = "23:59".parse().unwrap();
     let db = Database::in_memory().unwrap();
     let ctx = EvaluationContext::new(&policy, &db, now());
-    assert!(request_unlock("focus", "1234567890!!!short".into(), &ctx).is_err());
-    request_unlock("focus", reason.into(), &ctx).unwrap();
+    assert!(request_unlock("FOCUS", "1234567890!!!short".into(), &ctx).is_err());
+    request_unlock("Focus", reason.into(), &ctx).unwrap();
     assert!(request_unlock(
         "focus",
         "A different sufficiently long explanation for this request".into(),
@@ -494,9 +494,240 @@ fn pr_aal_016_rejects_strict_tiers_short_reused_reasons_and_hourly_quota() {
     let later = EvaluationContext::new(&policy, &db, now() + Duration::minutes(61));
     assert!(request_unlock("focus", reason.to_uppercase(), &later).is_err());
     request_unlock(
-        "focus",
+        "FOCUS",
         "A different sufficiently long explanation for this request".into(),
         &later,
     )
     .unwrap();
+}
+
+#[test]
+fn application_display_names_unlock_both_modes_and_preserve_expiry() {
+    for mode in [
+        focus_core::ListMode::Blocklist,
+        focus_core::ListMode::Allowlist,
+    ] {
+        let mut policy = config("app_rules", "controlled_access");
+        policy.app_rules[0].name = "Büro Tools".into();
+        policy.app_rules[0].mode = mode;
+        policy.allowances[0].daily_minutes = 0;
+        let db = Database::in_memory().unwrap();
+        let target = process(if mode == focus_core::ListMode::Blocklist {
+            "editor"
+        } else {
+            "game"
+        });
+        let ctx = EvaluationContext::new(&policy, &db, now());
+        assert!(evaluate_app(&target, &ctx).is_block());
+        let unlock = request_unlock(
+            "  bÜRO tools  ",
+            "I need this application to finish an urgent work task".into(),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(unlock.rule_id, "focus");
+        assert_eq!(
+            unlock.expires_at,
+            (now() + Duration::minutes(2)).with_timezone(&Utc)
+        );
+        assert!(!evaluate_app(&target, &ctx).is_block());
+        assert!(evaluate_app(
+            &target,
+            &EvaluationContext::new(&policy, &db, now() + Duration::minutes(2))
+        )
+        .is_block());
+    }
+}
+
+#[test]
+fn duplicate_application_names_unlock_every_eligible_list_with_shared_expiry() {
+    for mode in [
+        focus_core::ListMode::Blocklist,
+        focus_core::ListMode::Allowlist,
+    ] {
+        let mut policy = config("app_rules", "controlled_access");
+        policy.allowances[0].daily_minutes = 0;
+        policy.app_rules[0].mode = mode;
+        let mut other = policy.app_rules[0].clone();
+        other.id = "another-list".into();
+        other.name = "FOCUS".into();
+        other.allowance_id = None;
+        other.schedule_ids.clear();
+        other.matchers[0].value = "game".into();
+        policy.app_rules.push(other);
+        policy.validate().unwrap();
+        let db = Database::in_memory().unwrap();
+        db.insert_detox_session(&DetoxSession {
+            id: "detox".into(),
+            name: None,
+            starts_at: now().with_timezone(&Utc),
+            ends_at: (now() + Duration::hours(1)).with_timezone(&Utc),
+            cancelled_at: None,
+            site_rule_ids: vec![],
+            app_rule_ids: vec!["another-list".into()],
+        })
+        .unwrap();
+        let ctx = EvaluationContext::new(&policy, &db, now());
+        let reason = "I need these applications to finish an urgent work task";
+        for app in ["editor", "game"] {
+            assert!(evaluate_app(&process(app), &ctx).is_block());
+        }
+        // Even when the name also equals the first list ID, it selects the group.
+        let grant = request_unlock("focus", reason.into(), &ctx).unwrap();
+        assert_eq!(grant.rule_ids, ["focus", "another-list"]);
+        assert_eq!(
+            grant.expires_at,
+            (now() + Duration::minutes(2)).with_timezone(&Utc)
+        );
+        for app in ["editor", "game"] {
+            assert!(!evaluate_app(&process(app), &ctx).is_block());
+            assert!(evaluate_app(
+                &process(app),
+                &EvaluationContext::new(&policy, &db, now() + Duration::minutes(2))
+            )
+            .is_block());
+        }
+        assert!(matches!(
+            request_unlock(
+                "FOCUS",
+                "Another sufficiently long reason for these applications".into(),
+                &EvaluationContext::new(&policy, &db, now() + Duration::minutes(3))
+            ),
+            Err(focus_core::Error::Unlock(
+                focus_core::UnlockError::HourlyQuotaExceeded { .. }
+            ))
+        ));
+    }
+}
+
+#[test]
+fn duplicate_names_skip_ineligible_lists_and_preserve_strict_restrictions() {
+    for tier in [
+        focus_core::RuleTier::Hard,
+        focus_core::RuleTier::ScheduledBlock,
+    ] {
+        let mut policy = config("app_rules", "controlled_access");
+        policy.allowances[0].daily_minutes = 0;
+        let mut strict = policy.app_rules[0].clone();
+        strict.id = "strict".into();
+        strict.tier = tier;
+        strict.mode = focus_core::ListMode::Blocklist;
+        strict.matchers[0].value = "game".into();
+        strict.allowance_id = None;
+        let mut disabled = policy.app_rules[0].clone();
+        disabled.id = "disabled".into();
+        disabled.enabled = false;
+        disabled.mode = focus_core::ListMode::Blocklist;
+        disabled.allowance_id = None;
+        let mut inactive = disabled.clone();
+        inactive.id = "inactive".into();
+        inactive.enabled = true;
+        inactive.schedule_ids.clear();
+        policy.app_rules.extend([strict, disabled, inactive]);
+        policy.validate().unwrap();
+        let db = Database::in_memory().unwrap();
+        let ctx = EvaluationContext::new(&policy, &db, now());
+        let grant = request_unlock(
+            "FOCUS",
+            "I need these applications to finish an urgent work task".into(),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(grant.rule_ids, ["focus"]);
+        assert!(evaluate_app(&process("game"), &ctx).is_block());
+    }
+}
+
+#[test]
+fn an_application_list_id_still_selects_one_list_when_it_is_not_a_display_name() {
+    let mut policy = config("app_rules", "controlled_access");
+    policy.allowances[0].daily_minutes = 0;
+    policy.app_rules[0].id = "first-id".into();
+    let mut other = policy.app_rules[0].clone();
+    other.id = "second-id".into();
+    other.allowance_id = None;
+    policy.app_rules.push(other);
+    let db = Database::in_memory().unwrap();
+    let ctx = EvaluationContext::new(&policy, &db, now());
+    let grant = request_unlock(
+        "first-id",
+        "I need this application to finish an urgent work task".into(),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(grant.rule_ids, ["first-id"]);
+    assert!(evaluate_app(&process("game"), &ctx).is_block());
+}
+
+#[test]
+fn inactive_or_disabled_names_do_not_fall_through_to_an_unrelated_allowlist() {
+    for disabled in [true, false] {
+        let mut policy = config("app_rules", "controlled_access");
+        let mut other = policy.app_rules[0].clone();
+        other.id = "active-list".into();
+        other.name = "Other applications".into();
+        other.allowance_id = None;
+        policy.app_rules[0].name = "Paused applications".into();
+        if disabled {
+            policy.app_rules[0].enabled = false;
+        } else {
+            policy.app_rules[0].schedule_ids.clear();
+        }
+        policy.app_rules.push(other);
+        let db = Database::in_memory().unwrap();
+        let ctx = EvaluationContext::new(&policy, &db, now());
+        assert!(matches!(
+            request_unlock(
+                "PAUSED applications",
+                "I need this application to finish an urgent work task".into(),
+                &ctx
+            ),
+            Err(focus_core::Error::Unlock(
+                focus_core::UnlockError::UnknownTarget { .. }
+            ))
+        ));
+    }
+}
+
+#[test]
+fn strict_application_names_stay_strict_in_schedules_and_detox() {
+    for tier in [
+        focus_core::RuleTier::Hard,
+        focus_core::RuleTier::ScheduledBlock,
+    ] {
+        let mut policy = config("app_rules", "scheduled_block");
+        policy.app_rules[0].mode = focus_core::ListMode::Blocklist;
+        policy.app_rules[0].tier = tier;
+        let db = Database::in_memory().unwrap();
+        let ctx = EvaluationContext::new(&policy, &db, now());
+        assert!(request_unlock(
+            "FOCUS",
+            "I need this application to finish an urgent work task".into(),
+            &ctx
+        )
+        .is_err());
+    }
+    let mut policy = config("app_rules", "scheduled_block");
+    policy.app_rules[0].schedule_ids.clear();
+    let db = Database::in_memory().unwrap();
+    db.insert_detox_session(&DetoxSession {
+        id: "detox".into(),
+        name: None,
+        starts_at: now().with_timezone(&Utc),
+        ends_at: (now() + Duration::hours(1)).with_timezone(&Utc),
+        cancelled_at: None,
+        site_rule_ids: vec![],
+        app_rule_ids: vec!["focus".into()],
+    })
+    .unwrap();
+    assert!(matches!(
+        request_unlock(
+            "FOCUS",
+            "I need this application to finish an urgent work task".into(),
+            &EvaluationContext::new(&policy, &db, now())
+        ),
+        Err(focus_core::Error::Unlock(
+            focus_core::UnlockError::TargetInActiveDetox { .. }
+        ))
+    ));
 }

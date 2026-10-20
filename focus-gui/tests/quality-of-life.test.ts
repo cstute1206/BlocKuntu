@@ -1,13 +1,14 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { cleanup, fireEvent, render, within } from "@testing-library/svelte";
+import { cleanup, fireEvent, render } from "@testing-library/svelte";
 import AppRulesHarness from "./AppRulesHarness.svelte";
 import SiteListsHarness from "./SiteListsHarness.svelte";
 import SchedulesHarness from "./SchedulesHarness.svelte";
+import OverviewView from "../src/components/views/OverviewView.svelte";
 import DetoxView from "../src/components/views/DetoxView.svelte";
 import { mergeAppMatchers, normalizeAppRuleDraft } from "../src/lib/ui";
 import type { AppRule, ConfigSnapshot, Rule, RunningApp, Schedule } from "../src/lib/types";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const appRule = (tier: AppRule["tier"] = "hard"): AppRule => ({
   id: "work", name: "Work", tier, mode: "blocklist", enabled: true,
   allowance_id: null, schedule_ids: ["always"], matchers: [{ kind: "command_name", value: "editor" }]
@@ -57,7 +58,7 @@ for (const tier of ["hard", "scheduled_block", "controlled_access"] as const) {
 }
 
 for (const type of ["application", "website", "schedule"]) {
-  test(`${type} Delete names the item, Cancel makes no change and Delete runs once`, async () => {
+  test(`${type} Delete uses the settings-style native confirmation and Cancel makes no change`, async () => {
     const remove = vi.fn();
     const screen = type === "application"
       ? render(AppRulesHarness, { rule: appRule(), config: config(), unlocked: true, save: vi.fn(), remove })
@@ -66,17 +67,16 @@ for (const type of ["application", "website", "schedule"]) {
         : render(SchedulesHarness, { config: {...config(), schedules:[{id:"idle",name:"Idle schedule",windows:[]}] } as ConfigSnapshot, schedule: {id:"idle", name:"Idle schedule", windows:[]}, remove });
     const action = screen.getByRole("button", {name:"Delete"});
     expect(action.classList.contains("danger-action")).toBe(true);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     await fireEvent.click(action);
-    let dialog = screen.getByRole("dialog");
-    expect(dialog.textContent).toContain(type === "schedule" ? "Idle schedule" : "Work");
-    expect(dialog.textContent).toMatch(type === "schedule" ? /detached/i : /schedule attachments/i);
-    expect(remove).not.toHaveBeenCalled();
-    await fireEvent.click(within(dialog).getByRole("button", {name:"Cancel"}));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0][0]).toContain(type === "schedule" ? "Idle schedule" : "Work");
+    expect(confirm.mock.calls[0][0]).toMatch(type === "schedule" ? /detached/i : /schedule attachments/i);
+    expect(confirm.mock.calls[0][0]).toContain("This cannot be undone.");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(remove).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
     await fireEvent.click(action);
-    dialog = screen.getByRole("dialog");
-    await fireEvent.click(within(dialog).getByRole("button", {name:"Delete"}));
     expect(remove).toHaveBeenCalledTimes(1);
   });
 }
@@ -98,4 +98,25 @@ test("protected key opens schedule attachment controls while Detox keeps them lo
   await screen.rerender({detox:["work"]});
   attachments = screen.getAllByRole("checkbox") as HTMLInputElement[];
   expect(attachments.every(input => input.disabled)).toBe(true);
+});
+
+test("Manual Unlock advertises and submits application display names", async () => {
+  const unlock = vi.fn();
+  const screen = render(OverviewView, {
+    status:null, health:null, config:config("controlled_access"), showFirstRunOverview:false,
+    urlDecision:null, urlChecking:false, unlockResult:null, unlocking:false,
+    uninstallPhrase:null, tier1EditKey:null, onDismissFirstRunOverview:vi.fn(),
+    onRunUrlCheck:vi.fn(), onRunUnlock:unlock
+  });
+  const target = screen.getByLabelText("Target") as HTMLInputElement;
+  await fireEvent.input(target, {target:{value:"Work"}});
+  await fireEvent.input(screen.getByRole("textbox", {name:/reason/i}), {target:{value:"I need this application to finish an urgent work task"}});
+  expect(target.value).toBe("Work");
+  expect(screen.getByText(/application list name/i)).toBeTruthy();
+  expect(screen.container.querySelector('datalist option[value="Work"]')).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", {name:"Unlock"}));
+  expect(unlock).toHaveBeenCalledTimes(1);
+  await screen.rerender({unlockResult:{id:1, target:"Work", rule_id:"first", rule_ids:["first", "second"],
+    minutes:2, reason:"A specific work reason", started_at:new Date().toISOString(), expires_at:new Date(Date.now()+120000).toISOString()}});
+  expect(screen.getByText(/\(2 lists\)/)).toBeTruthy();
 });

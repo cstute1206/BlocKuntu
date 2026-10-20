@@ -1,6 +1,5 @@
 <script lang="ts">
-  import DeleteConfirmation from "../DeleteConfirmation.svelte";
-  let deleteConfirmationOpen = $state(false);
+  import { confirmDeletion } from "../../lib/ui";
   import {
     AlertTriangle,
     ChevronDown,
@@ -206,6 +205,12 @@
       appRuleDraft.schedule_ids = [...appRuleDraft.schedule_ids, scheduleId];
     }
   }
+  function requestDeleteAppRule(): void {
+    if (!savedAppRule || appRuleDraftEditLocked || appRuleSaving) return;
+    if (confirmDeletion(savedAppRule.name || savedAppRule.id, "Its schedule attachments and unused allowance will be removed. Schedules and other lists remain.")) {
+      void onRemoveAppRuleDraft();
+    }
+  }
 </script>
 
 <section class="split-view">
@@ -243,7 +248,7 @@
       <h2>{appRuleDraft?.name || "Application"}</h2>
     </div>
     {#if appRuleDraft}
-      <p class="policy-note">List ID: <code>{appRuleDraft.id}</code>. Use this ID, not the display name, for Manual Unlock of an active Tier 3 list.</p>
+      <p class="policy-note">List ID: <code>{appRuleDraft.id}</code>. For Manual Unlock of an active Tier 3 list, enter its display name or this ID. A display name unlocks every matching active Tier 3 list together.</p>
       {#if appRuleDraftEditLocked}
         <section class="inline-warning">
           <AlertTriangle size={17} aria-hidden="true" />
@@ -413,7 +418,7 @@
         </button>
         <button
           class="secondary danger-action"
-          onclick={() => (deleteConfirmationOpen = true)}
+          onclick={requestDeleteAppRule}
           disabled={
             appRuleSaving ||
             appRuleDraftDetoxLocked ||
@@ -552,11 +557,4 @@
       </div>
     </div>
   </div>
-{/if}
-
-{#if deleteConfirmationOpen && savedAppRule}
-  <DeleteConfirmation name={savedAppRule.name || savedAppRule.id}
-    consequences="Its schedule attachments and unused allowance will be removed. Schedules and other lists remain."
-    onCancel={() => (deleteConfirmationOpen = false)}
-    onDelete={() => { deleteConfirmationOpen = false; void onRemoveAppRuleDraft(); }} />
 {/if}
