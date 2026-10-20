@@ -317,18 +317,17 @@ export function windowsFor(schedule: Schedule, weekday: ScheduleDay): string {
   return windows.map((window) => `${window.start}-${window.end}`).join(", ");
 }
 
-export function nextAvailableIndexedId(
-  existingIds: string[],
-  prefix: string
-): { id: string; index: number } {
-  const existing = new Set(existingIds);
+export function newItemIdentity(
+  existingNames: string[],
+  idPrefix: string,
+  namePrefix: string
+): { id: string; name: string } {
+  const existing = new Set(existingNames);
   let index = 1;
-  let id = `${prefix}-${index}`;
-  while (existing.has(id)) {
+  while (existing.has(`${namePrefix} ${index}`)) {
     index += 1;
-    id = `${prefix}-${index}`;
   }
-  return { id, index };
+  return { id: `${idPrefix}-${crypto.randomUUID()}`, name: `${namePrefix} ${index}` };
 }
 
 export function firstRunOverviewDismissed(): boolean {

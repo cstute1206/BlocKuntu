@@ -1159,6 +1159,15 @@ impl Database {
             }
         }
 
+        // Revoke only missing lists' shares of grants, atomically with policy
+        // replacement. Keep parent requests for quota and reason history.
+        transaction.execute(
+            "UPDATE unlock_rule_targets SET revoked = 1
+             WHERE revoked = 0 AND rule_id NOT IN (
+                 SELECT id FROM policy_site_lists UNION SELECT id FROM policy_app_rules
+             )",
+            [],
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -1744,24 +1753,24 @@ impl Database {
         let mut unlock = self
             .conn
             .query_row(
-                "SELECT id, target, rule_id, minutes, reason, started_at, expires_at FROM unlocks
-             WHERE (rule_id = ?1 OR EXISTS (
-                 SELECT 1 FROM unlock_rule_targets WHERE unlock_id = unlocks.id AND rule_id = ?1
-             )) AND expires_at > ?2 ORDER BY expires_at DESC LIMIT 1",
+                "SELECT unlocks.id, target, unlocks.rule_id, minutes, reason, started_at, expires_at
+                 FROM unlock_rule_targets AS targets JOIN unlocks ON unlocks.id = targets.unlock_id
+                 WHERE targets.rule_id = ?1 AND targets.revoked = 0 AND expires_at > ?2
+                 ORDER BY expires_at DESC LIMIT 1",
                 params![rule_id, format_time(now)],
                 unlock_from_row,
             )
             .optional()?;
         if let Some(unlock) = unlock.as_mut() {
             let mut statement = self.conn.prepare(
-                "SELECT rule_id FROM unlock_rule_targets WHERE unlock_id = ?1 ORDER BY position",
+                "SELECT rule_id FROM unlock_rule_targets
+                 WHERE unlock_id = ?1 AND revoked = 0 ORDER BY position",
             )?;
             let ids = statement
                 .query_map([unlock.id], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
-            if !ids.is_empty() {
-                unlock.rule_ids = ids;
-            }
+            unlock.rule_id = ids[0].clone();
+            unlock.rule_ids = ids;
         }
         Ok(unlock)
     }
@@ -2193,6 +2202,7 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
             unlock_id INTEGER NOT NULL REFERENCES unlocks(id) ON DELETE CASCADE,
             rule_id TEXT NOT NULL,
             position INTEGER NOT NULL,
+            revoked INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (unlock_id, rule_id)
         );
         CREATE INDEX IF NOT EXISTS idx_unlock_rule_targets_rule ON unlock_rule_targets(rule_id, unlock_id);
@@ -2477,6 +2487,18 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
     migrate_policy_schedule_windows_day_groups(conn)?;
     migrate_policy_site_list_patterns_url_contains(conn)?;
     migrate_policy_rule_tiers(conn)?;
+    if !table_has_column(conn, "unlock_rule_targets", "revoked")? {
+        conn.execute_batch(
+            "ALTER TABLE unlock_rule_targets ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    // Legacy grants predate the target table. Backfill only grants with no
+    // targets, so reopening the database cannot resurrect revoked targets.
+    conn.execute_batch(
+        "INSERT INTO unlock_rule_targets (unlock_id, rule_id, position)
+         SELECT id, rule_id, 0 FROM unlocks
+         WHERE NOT EXISTS (SELECT 1 FROM unlock_rule_targets WHERE unlock_id = unlocks.id);",
+    )?;
     migrate_policy_list_modes(conn)?;
     normalize_policy_website_allowlists(conn)?;
     initialize_event_totals(conn)?;
@@ -3142,6 +3164,146 @@ mod tests {
 
     fn timestamp(value: &str) -> DateTime<FixedOffset> {
         DateTime::parse_from_rfc3339(value).expect("timestamp should parse")
+    }
+
+    fn deletion_fixture() -> Config {
+        Config::from_toml_str(
+            r#"
+            [[rules]]
+            id = "site"
+            name = "Website"
+            tier = "controlled_access"
+            patterns = [{ kind = "domain", value = "example.com" }]
+            [[app_rules]]
+            id = "app"
+            name = "Application"
+            tier = "controlled_access"
+            matchers = [{ kind = "command_name", value = "game" }]
+            "#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn deleted_lists_cannot_inherit_grouped_unlocks_after_recreation_or_restart() {
+        for deleted in ["site", "app"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("deleted.sqlite3");
+            let database = Database::open(&path).unwrap();
+            let original = deletion_fixture();
+            database.replace_policy_config(&original).unwrap();
+            let now = Utc::now();
+            database
+                .record_event("fixture", Some(deleted), None, now)
+                .unwrap();
+            database
+                .insert_unlock(
+                    "Group",
+                    &["site".into(), "app".into()],
+                    2,
+                    "A sufficiently long specific reason",
+                    now,
+                    now + Duration::minutes(2),
+                )
+                .unwrap();
+            let mut next = original.clone();
+            next.rules.retain(|rule| rule.id != deleted);
+            next.app_rules.retain(|rule| rule.id != deleted);
+            database.replace_policy_config(&next).unwrap();
+            // Explicit reuse through RPC/import must not revive an old grant.
+            database.replace_policy_config(&original).unwrap();
+            drop(database);
+            let reopened = Database::open(&path).unwrap();
+            assert!(reopened
+                .active_unlock_for_rule(deleted, now)
+                .unwrap()
+                .is_none());
+            let retained = if deleted == "site" { "app" } else { "site" };
+            let grant = reopened
+                .active_unlock_for_rule(retained, now)
+                .unwrap()
+                .unwrap();
+            assert_eq!(grant.rule_ids, [retained]);
+            assert_eq!(grant.rule_id, retained);
+            assert_eq!(
+                reopened
+                    .count_unlocks_since(now - Duration::seconds(1))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                reopened.unlock_reasons().unwrap(),
+                ["A sufficiently long specific reason"]
+            );
+            assert_eq!(reopened.event_summary().unwrap().total_events, 1);
+        }
+    }
+
+    #[test]
+    fn failed_policy_write_does_not_revoke_unlocks_or_delete_lists() {
+        let database = Database::in_memory().unwrap();
+        let config = deletion_fixture();
+        database.replace_policy_config(&config).unwrap();
+        let now = Utc::now();
+        database
+            .insert_unlock(
+                "Website",
+                &["site".into()],
+                2,
+                "A sufficiently long specific reason",
+                now,
+                now + Duration::minutes(2),
+            )
+            .unwrap();
+        database
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_revocation BEFORE UPDATE ON unlock_rule_targets
+             BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;",
+            )
+            .unwrap();
+        let mut next = config.clone();
+        next.rules.clear();
+        assert!(database.replace_policy_config(&next).is_err());
+        assert_eq!(database.load_policy_config().unwrap(), config);
+        assert!(database
+            .active_unlock_for_rule("site", now)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn existing_grouped_unlocks_gain_revocation_support_without_losing_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("pre-revocation.sqlite3");
+        let database = Database::open(&path).unwrap();
+        let now = Utc::now();
+        database
+            .insert_unlock(
+                "Group",
+                &["first".into(), "second".into()],
+                2,
+                "A sufficiently long specific reason",
+                now,
+                now + Duration::minutes(2),
+            )
+            .unwrap();
+        database
+            .conn
+            .execute_batch("ALTER TABLE unlock_rule_targets DROP COLUMN revoked")
+            .unwrap();
+        drop(database);
+        let reopened = Database::open(path).unwrap();
+        for id in ["first", "second"] {
+            assert_eq!(
+                reopened
+                    .active_unlock_for_rule(id, now)
+                    .unwrap()
+                    .unwrap()
+                    .rule_ids,
+                ["first", "second"]
+            );
+        }
     }
 
     #[test]
