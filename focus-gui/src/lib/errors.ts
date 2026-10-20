@@ -249,7 +249,7 @@ function humanizeDaemonDetail(detail: string, rpcMessage: string | null): string
   }
 
   if (normalized === "unlock target is empty") {
-    return "Enter a website URL, application matcher value, or application list ID before requesting an unlock.";
+    return "Enter a website URL, application list name, list ID, or application matcher value before requesting an unlock.";
   }
 
   if (normalized === "unlock reason is required") {

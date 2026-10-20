@@ -266,22 +266,19 @@
       <h2>Manual Unlock</h2>
     </div>
     <p class="policy-note">
-      Manual unlocks only apply to active Tier 3 rules, including Tier 3 activated by Detox. Tier 1
-      and Tier 2 blocks cannot be bypassed.
-    </p>
-    <p class="policy-note">
-      Enter a website domain or URL (example.com or https://example.com/path), an application
-      matcher value (editor, /usr/bin/editor, or editor.desktop), or an application list ID
-      (app-rule-1). IDs are identifiers, not display names. Website list IDs and display names
-      are not supported; use a matching website URL instead. An unlock applies to the entire
-      matching Tier 3 list, not just the entered website or application. For allowlists, enter an excluded URL or application identity, or the application list ID. Other lists still apply.
-      Each unlock lasts two minutes, with one unlock globally per rolling hour. Give a new reason
-      containing at least 20 letters.
+      Enter a website URL or an application list name, ID, or matcher to unlock active Tier 3 lists
+      for two minutes. Application lists with the same name unlock together, with one unlock per
+      hour and a new reason of at least 20 letters.
     </p>
     <div class="unlock-grid">
       <label>
         <span>Target</span>
-        <input bind:value={unlockTarget} placeholder="example.com, /usr/bin/editor, or app-rule-1" />
+        <input bind:value={unlockTarget} list="manual-unlock-applications" placeholder="Games, app-rule-1, or example.com" />
+        <datalist id="manual-unlock-applications">
+          {#each controlledAppRules.filter((rule) => rule.enabled) as rule (rule.id)}
+            <option value={rule.name} label={rule.id}></option>
+          {/each}
+        </datalist>
       </label>
       <label class="reason-field">
         <span>Reason ({unlockReasonLetterCount}/20 letters)</span>
@@ -299,7 +296,8 @@
     </div>
     {#if unlockResult}
       <p class="result-text">
-        Manual unlock granted for {unlockResult.target} for {unlockResult.minutes} minutes, until
+        Manual unlock granted for {unlockResult.target}{#if (unlockResult.rule_ids?.length ?? 1) > 1}
+          ({unlockResult.rule_ids?.length} lists){/if} for {unlockResult.minutes} minutes, until
         {new Date(unlockResult.expires_at).toLocaleString()}. Reason: {unlockResult.reason}
       </p>
     {/if}

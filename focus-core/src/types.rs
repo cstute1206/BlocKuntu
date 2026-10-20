@@ -110,6 +110,7 @@ pub struct UnlockState {
     pub id: i64,
     pub target: String,
     pub rule_id: String,
+    pub rule_ids: Vec<String>,
     pub minutes: u32,
     pub reason: String,
     pub started_at: DateTime<Utc>,

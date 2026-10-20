@@ -21,7 +21,7 @@ Entries in one allowlist are alternatives. Multiple active allowlists are inters
 | Tier 2 | Matching entries are blocked during an attached schedule or Detox  | Non-matching targets are blocked during an attached schedule or Detox  |
 | Tier 3 | Matching entries consume allowance and block after it is exhausted | Non-matching targets consume allowance and block after it is exhausted |
 
-Tier 3 keeps the existing two-minute manual unlock. An application list can be selected by its list ID (not its display name) or an application matcher value that it rejects. Website list IDs are not supported; enter a domain or URL rejected by the website list in **Overview → Manual Unlock**. Unlocking one allowlist does not override another active allowlist or a matching blocklist.
+Tier 3 keeps the existing two-minute manual unlock. An application list can be selected by its display name (for example `Games`), list ID, or an application identity that it rejects. Names ignore case and surrounding spaces. A name unlocks all matching active Tier 3 application lists in one grant, with one quota slot and one shared expiry. Disabled/inactive lists are excluded; Tier 1 and Tier 2 restrictions stay enforced. A matching name takes precedence over an ID. Website list names and IDs are not supported; enter a domain or URL rejected by the website list in **Overview → Manual Unlock**. Lists outside the unlock grant continue to apply, including active Tier 1 and Tier 2 lists.
 
 ## Website allowlists
 
@@ -155,7 +155,7 @@ The installed package still needs VM acceptance. At minimum:
 2. Attach each list to a schedule and activate each through Detox.
 3. Confirm every required process identity for a multi-process application is present and the application remains usable.
 4. Confirm a background or minimized rejected Tier 3 process consumes allowance, then closes after exhaustion.
-5. Request a manual unlock using the application list ID and relaunch the rejected application.
+5. Request a manual unlock using the application list display name or ID and relaunch the rejected application.
 6. Test a terminal, an IDE, and a browser including their renderers, GPU processes, language servers, crash handlers, and child processes.
 7. Confirm required D-Bus, portal, authentication, audio, and clipboard processes were explicitly allowed and remain healthy.
 8. Confirm the GUI, daemon, Native Messaging, and protected uninstall remain available through the BlocKuntu recovery exemption.

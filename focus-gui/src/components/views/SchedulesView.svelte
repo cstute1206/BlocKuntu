@@ -1,6 +1,5 @@
 <script lang="ts">
-  import DeleteConfirmation from "../DeleteConfirmation.svelte";
-  let deleteConfirmationOpen = $state(false);
+  import { confirmDeletion } from "../../lib/ui";
   import { AlertTriangle, CalendarDays, Plus, Save, Trash2 } from "@lucide/svelte";
   import { scheduleDayChoices, scheduleIsActive, weekdays, windowsFor } from "../../lib/ui";
   import type { AppRule, ConfigSnapshot, Rule, Schedule } from "../../lib/types";
@@ -137,6 +136,12 @@
 
   function toggleId(values: string[], id: string): string[] {
     return values.includes(id) ? values.filter((value) => value !== id) : [...values, id];
+  }
+  function requestDeleteSchedule(): void {
+    if (!savedSchedule || scheduleDraftLocked || scheduleSaving) return;
+    if (confirmDeletion(savedSchedule.name || savedSchedule.id, "It will be detached from all website and application lists. Those lists remain; Tier 2 and Tier 3 lists without another active schedule or Detox become inactive.")) {
+      void onRemoveScheduleDraft();
+    }
   }
 </script>
 
@@ -295,7 +300,7 @@
         </button>
         <button
           class="secondary danger-action"
-          onclick={() => (deleteConfirmationOpen = true)}
+          onclick={requestDeleteSchedule}
           disabled={scheduleSaving || scheduleDraftLocked || !scheduleDraftIsExisting}
         >
           <Trash2 size={17} aria-hidden="true" />
@@ -339,10 +344,3 @@
     </div>
   </article>
 </section>
-
-{#if deleteConfirmationOpen && savedSchedule}
-  <DeleteConfirmation name={savedSchedule.name || savedSchedule.id}
-    consequences="It will be detached from all website and application lists. Those lists remain; Tier 2 and Tier 3 lists without another active schedule or Detox become inactive."
-    onCancel={() => (deleteConfirmationOpen = false)}
-    onDelete={() => { deleteConfirmationOpen = false; void onRemoveScheduleDraft(); }} />
-{/if}

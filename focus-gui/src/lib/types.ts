@@ -271,6 +271,7 @@ export interface UnlockResult {
   id: number;
   target: string;
   rule_id: string;
+  rule_ids?: string[];
   minutes: number;
   reason: string;
   started_at: string;

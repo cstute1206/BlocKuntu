@@ -3830,6 +3830,7 @@ fn unlock_to_json(unlock: &UnlockState) -> Value {
         "id": unlock.id,
         "target": unlock.target,
         "rule_id": unlock.rule_id,
+        "rule_ids": unlock.rule_ids,
         "minutes": unlock.minutes,
         "reason": unlock.reason,
         "started_at": unlock.started_at,
@@ -7195,9 +7196,48 @@ mod tests {
     }
 
     #[test]
-    fn manual_unlock_targets_include_app_ids_but_not_website_list_ids_or_names() {
+    fn application_name_rpc_unlocks_all_duplicates_in_one_grant() {
+        let context = qos_context();
+        {
+            let mut core = context.core.lock().unwrap();
+            let mut config = core.config().clone();
+            let mut second = config.app_rules[0].clone();
+            second.id = "second-app".into();
+            second.name = "APPLICATION display NAME".into();
+            second.allowance_id = None;
+            config.app_rules.push(second);
+            core.replace_config(config).unwrap();
+        }
+        let response = qos_rpc(
+            &context,
+            "request_unlock",
+            json!({"target":"application DISPLAY name",
+            "reason":"I need these applications for this urgent work requirement", "now":"2026-05-22T10:00:00Z"}),
+        );
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["rule_ids"], json!(["app", "second-app"]));
+        assert_eq!(response["result"]["minutes"], 2);
+        let second = qos_rpc(
+            &context,
+            "request_unlock",
+            json!({"target":"app",
+            "reason":"Another sufficiently long specific reason for this access", "now":"2026-05-22T10:03:00Z"}),
+        );
+        assert!(
+            second["error"]["data"]
+                .as_str()
+                .unwrap()
+                .contains("global hourly unlock quota"),
+            "{second}"
+        );
+    }
+
+    #[test]
+    fn manual_unlock_targets_include_app_ids_and_names_but_not_website_list_names() {
         for target in [
             "app",
+            "Application display name",
+            "  APPLICATION display NAME  ",
             "game",
             "blocked.example",
             "https://blocked.example/path",
@@ -7210,7 +7250,7 @@ mod tests {
             );
             assert!(response.get("error").is_none(), "{target}: {response}");
         }
-        for target in ["site", "Website display name", "Application display name"] {
+        for target in ["site", "Website display name"] {
             let context = qos_context();
             let response = qos_rpc(
                 &context,

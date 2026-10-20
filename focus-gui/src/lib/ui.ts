@@ -462,3 +462,7 @@ function dayIncludes(scheduleDay: ScheduleDay, weekday: ScheduleDay): boolean {
       return scheduleDay === weekday;
   }
 }
+
+export function confirmDeletion(name: string, consequences: string): boolean {
+  return window.confirm(`Delete “${name}”?\n\n${consequences}\n\nThis cannot be undone.`);
+}

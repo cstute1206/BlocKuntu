@@ -1702,31 +1702,33 @@ impl Database {
     pub(crate) fn insert_unlock(
         &self,
         target: &str,
-        rule_id: &str,
+        rule_ids: &[String],
         minutes: u32,
         reason: &str,
         started_at: DateTime<Utc>,
         expires_at: DateTime<Utc>,
     ) -> Result<UnlockState, Error> {
-        self.conn.execute(
-            r#"
-            INSERT INTO unlocks (target, rule_id, reason, minutes, started_at, expires_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            "#,
-            params![
-                target,
-                rule_id,
-                reason,
-                i64::from(minutes),
-                format_time(started_at),
-                format_time(expires_at),
-            ],
+        let Some(rule_id) = rule_ids.first() else {
+            return Err(
+                crate::ConfigError::Validation("unlock requires at least one rule".into()).into(),
+            );
+        };
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO unlocks (target, rule_id, reason, minutes, started_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![target, rule_id, reason, i64::from(minutes), format_time(started_at), format_time(expires_at)],
         )?;
-
+        let id = transaction.last_insert_rowid();
+        for (position, rule_id) in rule_ids.iter().enumerate() {
+            transaction.execute("INSERT INTO unlock_rule_targets (unlock_id, rule_id, position) VALUES (?1, ?2, ?3)",
+                params![id, rule_id, position as i64])?;
+        }
+        transaction.commit()?;
         Ok(UnlockState {
-            id: self.conn.last_insert_rowid(),
+            id,
             target: target.to_string(),
-            rule_id: rule_id.to_string(),
+            rule_id: rule_id.clone(),
+            rule_ids: rule_ids.to_vec(),
             minutes,
             reason: reason.to_string(),
             started_at,
@@ -1739,21 +1741,29 @@ impl Database {
         rule_id: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<UnlockState>, Error> {
-        let now = format_time(now);
-        self.conn
+        let mut unlock = self
+            .conn
             .query_row(
-                r#"
-                SELECT id, target, rule_id, minutes, reason, started_at, expires_at
-                FROM unlocks
-                WHERE rule_id = ?1 AND expires_at > ?2
-                ORDER BY expires_at DESC
-                LIMIT 1
-                "#,
-                params![rule_id, now],
+                "SELECT id, target, rule_id, minutes, reason, started_at, expires_at FROM unlocks
+             WHERE (rule_id = ?1 OR EXISTS (
+                 SELECT 1 FROM unlock_rule_targets WHERE unlock_id = unlocks.id AND rule_id = ?1
+             )) AND expires_at > ?2 ORDER BY expires_at DESC LIMIT 1",
+                params![rule_id, format_time(now)],
                 unlock_from_row,
             )
-            .optional()
-            .map_err(Error::from)
+            .optional()?;
+        if let Some(unlock) = unlock.as_mut() {
+            let mut statement = self.conn.prepare(
+                "SELECT rule_id FROM unlock_rule_targets WHERE unlock_id = ?1 ORDER BY position",
+            )?;
+            let ids = statement
+                .query_map([unlock.id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            if !ids.is_empty() {
+                unlock.rule_ids = ids;
+            }
+        }
+        Ok(unlock)
     }
 
     pub(crate) fn count_unlocks_since(&self, since: DateTime<Utc>) -> Result<u32, Error> {
@@ -2178,6 +2188,14 @@ pub fn migrate_database(conn: &Connection) -> Result<(), Error> {
             ON unlocks(rule_id, started_at);
         CREATE INDEX IF NOT EXISTS idx_unlocks_rule_expires
             ON unlocks(rule_id, expires_at);
+
+        CREATE TABLE IF NOT EXISTS unlock_rule_targets (
+            unlock_id INTEGER NOT NULL REFERENCES unlocks(id) ON DELETE CASCADE,
+            rule_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (unlock_id, rule_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_unlock_rule_targets_rule ON unlock_rule_targets(rule_id, unlock_id);
 
         CREATE TABLE IF NOT EXISTS visits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3094,6 +3112,7 @@ fn unlock_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnlockState> {
         id: row.get(0)?,
         target: row.get(1)?,
         rule_id: row.get(2)?,
+        rule_ids: vec![row.get(2)?],
         minutes: minutes.try_into().unwrap_or(u32::MAX),
         reason: row.get(4)?,
         started_at: DateTime::parse_from_rfc3339(&started_at)
@@ -3123,6 +3142,118 @@ mod tests {
 
     fn timestamp(value: &str) -> DateTime<FixedOffset> {
         DateTime::parse_from_rfc3339(value).expect("timestamp should parse")
+    }
+
+    #[test]
+    fn grouped_unlocks_persist_and_count_as_one_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("grouped.sqlite3");
+        let now = timestamp("2026-10-20T10:00:00+02:00").with_timezone(&Utc);
+        let ids = vec!["first".to_string(), "second".to_string()];
+        let database = Database::open(&path).unwrap();
+        let grant = database
+            .insert_unlock(
+                "Games",
+                &ids,
+                2,
+                "A sufficiently long specific reason",
+                now,
+                now + Duration::minutes(2),
+            )
+            .unwrap();
+        assert_eq!(
+            database
+                .count_unlocks_since(now - Duration::seconds(1))
+                .unwrap(),
+            1
+        );
+        assert_eq!(database.unlock_reasons().unwrap().len(), 1);
+        drop(database);
+        let reopened = Database::open(path).unwrap();
+        for id in &ids {
+            assert_eq!(
+                reopened.active_unlock_for_rule(id, now).unwrap().unwrap(),
+                grant
+            );
+            assert!(reopened
+                .active_unlock_for_rule(id, now + Duration::minutes(2))
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn grouped_unlock_target_failure_rolls_back_the_entire_request() {
+        let database = Database::in_memory().unwrap();
+        database
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_second_target BEFORE INSERT ON unlock_rule_targets
+            WHEN NEW.rule_id = 'second' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;",
+            )
+            .unwrap();
+        let now = Utc::now();
+        assert!(database
+            .insert_unlock(
+                "Games",
+                &["first".into(), "second".into()],
+                2,
+                "A sufficiently long specific reason",
+                now,
+                now + Duration::minutes(2)
+            )
+            .is_err());
+        assert!(database
+            .active_unlock_for_rule("first", now)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            database
+                .count_unlocks_since(now - Duration::seconds(1))
+                .unwrap(),
+            0
+        );
+        assert!(database.unlock_reasons().unwrap().is_empty());
+        let targets: i64 = database
+            .conn
+            .query_row("SELECT COUNT(*) FROM unlock_rule_targets", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(targets, 0);
+    }
+
+    #[test]
+    fn legacy_single_list_unlock_survives_grouped_unlock_migration() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("legacy.sqlite3");
+        let now = Utc::now();
+        let database = Database::open(&path).unwrap();
+        database
+            .conn
+            .execute_batch("DROP TABLE unlock_rule_targets")
+            .unwrap();
+        database
+            .conn
+            .execute(
+                "INSERT INTO unlocks (target, rule_id, reason, minutes, started_at, expires_at)
+            VALUES ('legacy', 'legacy', 'Previous reason', 2, ?1, ?2)",
+                params![format_time(now), format_time(now + Duration::minutes(2))],
+            )
+            .unwrap();
+        drop(database);
+        let reopened = Database::open(path).unwrap();
+        let grant = reopened
+            .active_unlock_for_rule("legacy", now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(grant.rule_ids, ["legacy"]);
+        assert_eq!(
+            reopened
+                .count_unlocks_since(now - Duration::seconds(1))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
