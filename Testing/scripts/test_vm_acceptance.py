@@ -22,6 +22,7 @@ class ArtifactTests(unittest.TestCase):
         self.package = self.root / 'artifacts/test.deb'
         self.package.write_bytes(b'exact CI payload')
         self.report = {'passed': True, 'build_provenance_verified': True, 'component': 'deb',
+                       'os_release': 'ID=debian\n',
                        'commit': 'a' * 40, 'artifacts': [{'filename': 'test.deb', 'sha256': hashlib.sha256(self.package.read_bytes()).hexdigest()}]}
         self.path = self.root / 'result.json'
 
@@ -29,7 +30,7 @@ class ArtifactTests(unittest.TestCase):
         self.path.write_text(json.dumps(self.report))
         return suite.artifact(self.path)
 
-    def test_accepts_exact_verified_package(self):
+    def test_accepts_exact_verified_debian_package_for_ubuntu(self):
         self.assertEqual(self.check_report()[0], self.package)
 
     def test_rejects_mutated_artifact(self):

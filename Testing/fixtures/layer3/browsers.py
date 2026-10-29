@@ -133,6 +133,25 @@ def stop(browser):
     run('systemctl', '--user', 'stop', 'blockuntu-test-' + browser, check=False)
 
 
+def wait_for_allowlist_expiry(seconds=225, rpc_timeout=None):
+    """Observe natural expiry with the RPC budget, bounded by the overall wait."""
+    if rpc_timeout is None:
+        rpc_timeout = json.loads((WORK / 'smoke-plan.json').read_text())['deadlines_seconds']['rpc']
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f'Website allowlist did not expire within {seconds:g}s')
+        response = rpc('evaluate_url', {
+            'url': 'http://outside.blockuntu.test:18080/outside', 'probe': True,
+        }, timeout=min(rpc_timeout, remaining))
+        if response.get('decision') == 'allow':
+            return
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(1, remaining))
+
+
 def navigate(browser, url, *, window=None):
     app = APPS[browser]
     name, role = (('Search with Google or enter address', 'combo box') if browser == 'firefox'
@@ -552,7 +571,7 @@ def run_cases(case, result, run_id, guest='ubuntu', p32_case=None, p32_ids=None,
                 # The three-minute session is bounded even after an assertion failure.
                 return {'session': session, 'outside_rejected': True, 'listed_allowed': True}
             browser_case('VM-WAL-004', allowlist)
-            wait(lambda: rpc('evaluate_url', {'url': 'http://outside.blockuntu.test:18080/outside', 'probe': True}).get('decision') == 'allow', 225)
+            wait_for_allowlist_expiry()
         finally:
             stop(browser)
             (WORK / 'browser-metadata.json').write_text(json.dumps(metadata, indent=2))

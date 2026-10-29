@@ -122,7 +122,11 @@ Native Messaging outage/repair or SQLite recovery specified here.
 | DES-AAL-006 | Exhaust a Tier 3 application-allowlist allowance, unlock the rejecting rule, and let the unlock expire. | Relaunched rejected processes work only during the fixed unlock and are terminated again after expiry; allowance stays exhausted. |
 | DES-AAL-007 | Recover SQLite from a policy snapshot containing an active-capable application allowlist. | Per-process semantics and recovery exemptions remain intact after recovery. |
 
-## Package-upgrade cases
+## Package-upgrade cases (deferred)
+
+Upgrade implementation and validation remain deferred by agreement for this
+release. The cases below are backlog, outside the current release gate, and
+must not be counted as passing or inferred from fresh-install acceptance.
 
 | ID | Actions | Expected result |
 | --- | --- | --- |

@@ -3,11 +3,25 @@
 Local execution evidence: [reports/phase-2-validation.md](reports/phase-2-validation.md).
 
 `.github/workflows/package-ci.yml` runs on main, `v*` tags, and manual dispatch.
-It builds Ubuntu 24.04 and Debian 13 DEBs, Fedora 43 RPMs, Arch packages, and
+It builds one Debian 13 DEB candidate for Debian/Ubuntu, Fedora 43 RPMs, Arch packages, and
 both browser extension archives on x86-64 runners. Inspector regression tests
 must pass first. Jobs are independent, and failures do not cancel sibling jobs.
 The workflow does not publish releases or replace Layer 1 source validation.
 Release acceptance requires Layer 1 and the later VM layers on the same commit.
+
+The separate Ubuntu package build is retired. The Debian-built DEB is the single
+download and the exact artifact selected for Ubuntu smoke and selected/full E2E
+runs. Ubuntu remains a runtime test guest alongside Fedora and CachyOS. A shared
+package candidate still needs installed-package acceptance on the intended OS;
+the `.deb` format alone does not establish compatibility with every derivative
+or older distribution release. The existing gate has no Debian desktop guest.
+
+The retained CI artifact is `package-debian-x86_64-COMMIT`, containing
+`debian/result.json` and `debian/artifacts/blockuntu_0.2.0-1_amd64.deb`.
+Candidate manifests use `package_reports.debian`; verified VM inputs keep
+`guest: ubuntu` and point their report and package paths to these Debian files.
+Smoke, recovery and selected/full E2E evidence must use that same commit and
+package SHA-256. Historical Ubuntu-built evidence remains historical.
 
 ## Version and build contract
 
@@ -19,7 +33,7 @@ versions. Version tags for this workflow use `v0.2.0-1` and must match the contr
 
 Builds use `npm ci`, Cargo `--locked`, and Tauri's forwarded `-- --locked`.
 CI requires a clean checkout and committed lockfiles, and checks that the build
-has not changed them. The Debian and Ubuntu builds use Rust 1.93.0; Fedora and
+has not changed them. The Debian build uses Rust 1.93.0; Fedora and
 Arch use distribution toolchains. Live OS repositories and the rolling Arch
 image mean this is functional reproducibility, not byte-for-byte reproducibility.
 Record environment details when investigating differences between runs.
@@ -103,10 +117,12 @@ archived scripts match this run's build output. It makes no behavioral claim
 about allowlists or daemon/GUI schema compatibility. `PKG-ALLOW-002` and
 `PKG-ALLOW-003` are retired, not silently reported as passing.
 
-`PKG-UPGRADE-001` and `PKG-UPGRADE-002` are explicitly skipped: there is no
-previous accepted release and upgrade implementation is deferred by agreement.
-Before shipping a subsequent release, implement the version comparison and
-upgrade-path coverage, including the known Debian `prerm` cleanup concern.
+`PKG-UPGRADE-001` and `PKG-UPGRADE-002` remain explicitly skipped by agreement.
+No accepted upgrade baseline is selected in the package contract. Upgrade
+implementation and Layers 2–4 upgrade validation remain deferred for this
+release and are not release-gate requirements or passing results. This includes
+version comparison, upgrade-path preservation and the known Debian `prerm`
+cleanup concern. Do not claim upgrade support from fresh-install acceptance.
 
 The fixture suite uses synthetic ELF headers to exercise production Debian
 assembly and damaged-package detection. Those fixtures are not runnable builds;

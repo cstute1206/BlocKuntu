@@ -277,7 +277,7 @@ def inspect_package(entries, meta, hooks, kind):
         require(set(config) == {'strict_mode'}, 'Default config unexpectedly introduces policy/list settings')
     case('PKG-ALLOW-001', no_allowlist)
     for identifier in ['PKG-UPGRADE-001', 'PKG-UPGRADE-002']:
-        results.append({'id': identifier, 'status': 'skip', 'reason': 'Initial release: no previous accepted package; upgrade implementation deferred.'})
+        results.append({'id': identifier, 'status': 'skip', 'reason': 'Upgrade implementation and validation deferred by agreement; no accepted upgrade baseline selected.'})
     return results
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import pyatspi
 from accessibility import app_name, apps, click, dump, find, texts, walk
 from guest import WORK, host_action, rpc, run, wait
+from ui_controls import focus_app, nodes, press_observed
 
 
 def chooser_app(title):
@@ -86,7 +87,7 @@ def chooser_button(application, *names):
 
 
 def leave_desktop_overview(guest):
-    """Close GNOME's overview if a modal chooser dispatch exposed it."""
+    """Close GNOME's overview before interacting with the GUI or a chooser."""
     if guest == 'fedora':
         # Fedora 44 can expose the first chooser in GNOME's overview, while
         # later choosers open directly. Esc is only safe in the overview.
@@ -162,7 +163,11 @@ patterns = [{{kind = "domain", value = "allowed.blockuntu.test"}}]
         assert serial, 'Installation ID is empty'
         evidence['installation_id_present'] = True
         # Never include recovery credential values in evidence.
-        click('Get started')
+        # A short viewport can leave the button below the modal's scroll area.
+        # Native focus reveals it; observe dismissal after the keyboard action.
+        leave_desktop_overview(guest)
+        focus_app()
+        press_observed('Get started', lambda: not nodes(role='dialog', name='Welcome to BlocKuntu'))
         click('Settings')
         click('Notifications')
         wait(lambda: serial in texts(), 30)

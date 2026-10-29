@@ -48,18 +48,27 @@ From the repository root, with the configured libvirt/SSH environment available:
 python3 Testing/scripts/vm-acceptance.py \
   --guest ubuntu \
   --run-id ubuntu-smoke-unique-id \
-  --package-report /path/to/new-layer2/ubuntu/result.json
+  --package-report /path/to/new-layer2/debian/result.json
 ```
 
 Set `--guest` to `ubuntu`, `fedora`, or `cachyos`, and supply that guest's
-provenance-verified Layer 2 report and sibling artifact directory. The default
-guest is Ubuntu.
+provenance-verified Layer 2 report and sibling artifact directory. Ubuntu uses
+the single Debian-built DEB report; Fedora uses the RPM and CachyOS uses the
+Arch report. The default guest is Ubuntu. Smoke and selected/full E2E selections
+reuse this same exact package; removing the Ubuntu build does not remove Ubuntu
+runtime coverage or make unimplemented full-catalog groups executable.
 Run IDs contain 1–40 lowercase letters, digits or hyphens and must be new.
 The report's `artifacts/` sibling directory must contain its exact DEB, RPM,
 or Arch package.
 A failed or source-unverified report, ambiguous package selection, symlink,
 or checksum mismatch is rejected before creating a VM. The guest independently
 checks the transferred package hash and installed version.
+
+The read-only probe waiting for a browser allowlist Detox to expire uses the
+plan's RPC deadline (60 seconds), capped by the remaining 225-second expiry
+wait. It does not cancel Detox or retry mutations. Other fixture RPC calls
+retain their existing five-second limit. RPC timeout errors identify the method
+without exposing request parameters.
 
 The command creates an independent clone of the selected guest, verifies the
 Phase 0 baseline and reboot, installs the existing CI package, refreshes group
@@ -124,6 +133,12 @@ native `/usr/bin/firefox` package and records its package version.
 Native Google Chrome is provided by
 the Ubuntu template and installed on Fedora; CachyOS uses its native Chromium
 package. A missing prerequisite is not an application pass.
+
+GUI form entry waits for the text field to be focused and visible. Dropdown
+selection explicitly opens the native popup and observes both its closure and
+the requested selected option before moving to the next field. An input dispatch
+acknowledgement alone is insufficient: Fedora's WebKit/GTK popup can retain its
+keyboard grab while accessibility already reports focus on the next field.
 
 Only dedicated profiles under `Testing/layer3/` are used. Chrome uses
 `--password-store=basic` to avoid an autologin keyring prompt; no personal account

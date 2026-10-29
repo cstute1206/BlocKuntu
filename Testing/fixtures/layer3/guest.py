@@ -16,21 +16,34 @@ from layer3_runtime import (P32_DOMAIN_CASES, GUI_EDIT_CASES, HELPER_CASES, eval
                             process_budget_seconds, require_stage_passed)
 
 WORK = Path('/home/akhi/Testing/layer3')
+RPC_SOCKET = '/run/blockuntu/blockuntud.sock'
 
 
 def run(*args, check=True, timeout=60):
     return subprocess.run(args, text=True, capture_output=True, check=check, timeout=timeout)
 
 
-def rpc(method, params=None):
-    with socket.socket(socket.AF_UNIX) as client:
-        client.settimeout(5)
-        client.connect('/run/blockuntu/blockuntud.sock')
-        client.sendall(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params or {}}).encode())
-        client.shutdown(socket.SHUT_WR)
-        chunks = []
-        while chunk := client.recv(65536):
-            chunks.append(chunk)
+def rpc(method, params=None, *, timeout=5):
+    deadline = time.monotonic() + timeout
+    try:
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(timeout)
+            client.connect(RPC_SOCKET)
+            client.sendall(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params or {}}).encode())
+            client.shutdown(socket.SHUT_WR)
+            chunks = []
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('RPC response deadline expired')
+                client.settimeout(remaining)
+                chunk = client.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+    except TimeoutError as error:
+        # Do not retry mutations or include credential-bearing params in errors.
+        raise TimeoutError(f'RPC {method} timed out after {timeout:g}s') from error
     reply = json.loads(b''.join(chunks))
     if 'error' in reply:
         raise RuntimeError(json.dumps(reply['error']))
@@ -303,7 +316,8 @@ def main():
                           p32_browsers={row['browser_package'].removesuffix('-native')
                                         for row in p32_plan['observations'] if row['browser_package']} if p32_plan else None)
         except Exception as error:
-            result['cases'].append({'id': 'SETUP-BROWSERS', 'status': 'blocked', 'reason': str(error)})
+            result['cases'].append({'id': 'SETUP-BROWSERS', 'status': 'blocked',
+                'reason': f'{type(error).__name__}: {error}'})
             save_result(result)
             raise
         require_stage_passed(smoke_plan, result['cases'], 'browsers')

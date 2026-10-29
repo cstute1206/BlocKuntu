@@ -76,8 +76,9 @@ class ReleaseStatusTests(unittest.TestCase):
     def test_minimal_candidate_is_incomplete_and_does_not_shrink_gate(self):
         result = release.report(self.spec(), self.receipt)
         self.assertEqual(result['status'], 'incomplete')
-        self.assertEqual(len([r for r in result['checks'] if r['id'].startswith('package:')]), 6)
+        self.assertEqual(len([r for r in result['checks'] if r['id'].startswith('package:')]), 5)
         self.assertEqual(len([r for r in result['checks'] if r['id'].startswith('smoke:')]), 3)
+        self.assertEqual(result['policy'], 'release-gate-v2')
         self.assertFalse(result['full_catalog_acceptance'])
         self.assertEqual(result['checks'][-1]['status'], 'not_selected')
 
@@ -127,10 +128,21 @@ class ReleaseStatusTests(unittest.TestCase):
         self.assertTrue(receipt['runs']['package'].get('error'))
         self.assertEqual(release.ci_checks(spec, receipt)[0]['status'], 'unverified')
 
+    def test_debian_build_is_shared_with_ubuntu_smoke_and_e2e(self):
+        self.packages()
+        audited = self.smoke()
+        self.assertEqual(self.e2e(self.host_result())['status'], 'pass')
+        result = release.report(self.spec(), self.receipt, live=True,
+                                smoke_auditor=Mock(return_value=audited))
+        self.assertEqual(result['status'], 'ready')
+        self.assertNotIn('ubuntu', self.data['package_reports'])
+        self.assertEqual(release.load(self.root / 'smoke.json')['packages']['ubuntu'],
+                         release.package_checks(self.spec())[1]['debian'])
+
     def test_changed_or_missing_artifact_cannot_pass(self):
         self.packages()
         spec = self.spec()
-        binary = self.root / 'ubuntu/artifacts/fixture.deb'
+        binary = self.root / 'debian/artifacts/fixture.deb'
         binary.write_bytes(b'changed after inspection')
         checks, _ = release.package_checks(spec)
         self.assertEqual(checks[0]['status'], 'fail')
@@ -145,13 +157,13 @@ class ReleaseStatusTests(unittest.TestCase):
 
     def test_false_pass_flag_missing_assertions_and_wrong_distro_are_rejected(self):
         self.packages()
-        path = self.root / 'ubuntu/result.json'
+        path = self.root / 'debian/result.json'
         original = release.load(path)
         for mutation in ('assertion', 'provenance', 'distro', 'sha'):
             report = copy.deepcopy(original)
             if mutation == 'assertion': report['cases'].pop()
             elif mutation == 'provenance': report['build_provenance_verified'] = False
-            elif mutation == 'distro': report['os_release'] = 'ID=debian\n'
+            elif mutation == 'distro': report['os_release'] = 'ID=ubuntu\n'
             else: report['commit'] = 'b' * 40
             write_json(path, report)
             checks, _ = release.package_checks(self.spec())
@@ -184,7 +196,7 @@ class ReleaseStatusTests(unittest.TestCase):
 
     def test_malformed_package_evidence_is_reported_as_failure(self):
         self.packages()
-        write_json(self.root / 'ubuntu/result.json', ['a JSON array cannot be a package report'])
+        write_json(self.root / 'debian/result.json', ['a JSON array cannot be a package report'])
         checks, _ = release.package_checks(self.spec())
         self.assertEqual(checks[0]['status'], 'fail')
         receipt = copy.deepcopy(self.receipt)
@@ -235,25 +247,26 @@ class ReleaseStatusTests(unittest.TestCase):
         self.packages()
         self.data['recovery_checks'] = [{'suite': 'p43', 'guest': 'ubuntu', 'summaries': ['recovery.json']}]
         write_json(self.root / 'recovery.json', {'package_commit': self.data['commit']})
-        expected = release.package_checks(self.spec())[1]['ubuntu']
+        expected = release.package_checks(self.spec())[1]['debian']
         result = {'scope': 'ubuntu-p43', 'status': 'pass', 'package_commit': self.data['commit'],
             'package_sha256': expected['sha256'], 'installed_version': expected['version'],
             'all_owned_clones_removed': True, 'required_passes': 12}
-        self.assertEqual(release.recovery_checks(self.spec(), {'ubuntu': expected},
+        self.assertEqual(release.recovery_checks(self.spec(), {'debian': expected},
             {'p43': Mock(return_value=result)})[0]['status'], 'pass')
         result['package_sha256'] = 'f' * 64
-        self.assertEqual(release.recovery_checks(self.spec(), {'ubuntu': expected},
+        self.assertEqual(release.recovery_checks(self.spec(), {'debian': expected},
             {'p43': Mock(return_value=result)})[0]['status'], 'mismatch')
         result['package_sha256'] = expected['sha256']
         self.data['recovery_checks'][0]['qualify'] = True
-        self.assertEqual(release.recovery_checks(self.spec(), {'ubuntu': expected},
+        self.assertEqual(release.recovery_checks(self.spec(), {'debian': expected},
             {'p43': Mock(return_value=result)})[0]['status'], 'fail')
 
     def test_invalid_configuration_rejected_and_paths_resolve_from_manifest(self):
-        self.data['package_reports'] = {'ubuntu': 'relative/result.json'}
-        self.assertEqual(self.spec()['package_reports']['ubuntu'], self.root / 'relative/result.json')
+        self.data['package_reports'] = {'debian': 'relative/result.json'}
+        self.assertEqual(self.spec()['package_reports']['debian'], self.root / 'relative/result.json')
         for field, value in (('commit', 'short'), ('schema_version', True),
                 ('ci_runs', {'source': True}), ('package_reports', {'typo': 'x'}),
+                ('package_reports', {'ubuntu': 'relative/result.json'}),
                 ('recovery_checks', [{'suite': 'p41', 'guest': 'ubuntu', 'required': False}])):
             original = self.data[field]
             self.data[field] = value
@@ -366,7 +379,7 @@ class ReleaseStatusTests(unittest.TestCase):
         self.data['commit'] = fixture.commit
         self.data['e2e_reports'] = [str(path)]
         spec = self.spec()
-        packages = {'ubuntu': prepared['expected']['ubuntu']}
+        packages = {'debian': prepared['expected']['ubuntu']}
         row = release.e2e_checks(spec, packages)[0]
         self.assertEqual(row['status'], 'pass')
         self.assertEqual(row['report_sha256'], release.sha256(path))
@@ -388,7 +401,7 @@ class ReleaseStatusTests(unittest.TestCase):
                              ('installed_version', 'another-version')):
             with self.subTest(field=field):
                 self.assertEqual(self.e2e({**original, field: value})['status'], 'mismatch')
-        self.data['package_reports'].pop('ubuntu')
+        self.data['package_reports'].pop('debian')
         self.assertEqual(self.e2e(original)['status'], 'unverified')
 
     def test_e2e_missing_unfinished_failed_and_invalid_reports_block_readiness(self):

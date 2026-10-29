@@ -6,18 +6,21 @@ This layer builds the distribution artifacts and inspects their contents. It
 does not start a real desktop session, validate Native Messaging in a browser,
 or prove that systemd services operate after installation.
 
-## Agreed initial-release scope
+## Agreed package scope
 
 Distribution packages share upstream version `0.2.0` and revision `1`:
 Debian `0.2.0-1`, RPM `0.2.0-1` (plus Fedora's distribution suffix),
 and Arch `0.2.0-1`. Application and browser-extension versions remain independent.
 The machine-readable contract is `Testing/package-ci/contract.json`.
 
-Targets are Ubuntu 24.04, Debian 13, Fedora 43, and rolling Arch/CachyOS,
-all x86-64 (`amd64` in Debian metadata). These are build targets; installed
+Build targets are Debian 13, Fedora 43, and rolling Arch/CachyOS,
+all x86-64 (`amd64` in Debian metadata). One Debian-built DEB candidate serves
+Debian/Ubuntu; there is no separate Ubuntu build. Ubuntu remains the DEB runtime
+guest for smoke and selected/full E2E, using the exact Debian artifact and hash.
+These are build targets; installed
 acceptance remains Layer 3. Reproducibility means functional builds from recorded
 source and locked language dependencies, not byte-identical package archives.
-There is no previous accepted release; both upgrade cases are explicitly deferred.
+No accepted upgrade baseline is selected; both upgrade cases remain explicitly deferred.
 
 Implementation and commands: [../phase-2.md](../phase-2.md).
 
@@ -79,7 +82,10 @@ tree.
 | PKG-UPGRADE-001 | Compare the candidate with the previous accepted package version. | `apt`, `dnf`, or `pacman` considers the candidate newer. |
 | PKG-UPGRADE-002 | Inspect upgrade hooks for service and policy handling. | An upgrade is distinguishable from final removal and does not execute destructive purge cleanup. |
 
-Both cases are reported as skipped for this first release because no accepted baseline exists and upgrade implementation is deferred. Before the next release, implement these checks and the actual upgrade/policy-preservation tests in Layers 3 and 4. The known Debian `prerm` upgrade cleanup concern remains open.
+Both cases remain skipped by agreement for this release. Upgrade implementation,
+version comparison and upgrade/policy-preservation tests in Layers 3 and 4 remain
+deferred, outside the release gate. The known Debian `prerm` upgrade cleanup
+concern remains open. Fresh-install acceptance does not establish upgrade support.
 
 ## Completion criteria
 

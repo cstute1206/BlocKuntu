@@ -45,6 +45,8 @@ def field(label):
 def edit(node, value):
     assert enabled(node), 'Text field is disabled'
     assert node.queryComponent().grabFocus()
+    wait(lambda: node.getState().contains(pyatspi.STATE_FOCUSED) and
+         node.getState().contains(pyatspi.STATE_SHOWING), 15)
     # WebKit exposes HTML inputs through Text/Component but not EditableText.
     host_action('type_form', value=value)
     wait(lambda:node.queryText().getText(0,node.queryText().characterCount)==value,15)
@@ -55,14 +57,32 @@ def choose(node, label):
     options = [child for child in walk(node) if child.getRoleName() in ('menu item', 'list item')]
     labels = [child.name for child in options]
     assert label in labels, ('Select option unavailable', node.name, labels, label)
-    if [child.name for child in options
-            if child.getState().contains(pyatspi.STATE_SELECTED)] == [label]:
+    def selected():
+        return [child.name for child in walk(node)
+                if child.getRoleName() in ('menu item', 'list item') and
+                child.getState().contains(pyatspi.STATE_SELECTED)]
+    def expanded():
+        return node.getState().contains(pyatspi.STATE_EXPANDED)
+    if selected() == [label]:
+        if expanded():
+            host_action('keys', keys=['KEY_ESC'])
+            wait(lambda: not expanded() and selected() == [label], 15)
         return
     assert node.queryComponent().grabFocus()
+    wait(lambda: node.getState().contains(pyatspi.STATE_FOCUSED) and
+         node.getState().contains(pyatspi.STATE_SHOWING), 15)
+    # Closed HTML selects handle navigation keys differently across WebKit/GTK
+    # versions. Open the native popup explicitly before navigating its options.
+    if not expanded():
+        host_action('keys', keys=['KEY_SPACE'])
+        wait(expanded, 15)
     host_action('keys', keys=['KEY_HOME'])
     for _ in range(labels.index(label)):
         host_action('keys', keys=['KEY_DOWN'])
     host_action('keys', keys=['KEY_ENTER'])
+    # An acknowledged key dispatch does not prove the popup released its grab.
+    # Typing into the next field while it is open can go to the menu instead.
+    wait(lambda: not expanded() and selected() == [label], 15)
     host_action('keys', keys=['KEY_TAB'])
 
 

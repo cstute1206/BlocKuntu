@@ -1,6 +1,7 @@
 """Exercise the destructive-operation boundary without touching libvirt."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,6 +12,35 @@ import xml.etree.ElementTree as ET
 spec = importlib.util.spec_from_file_location("phase0_vm", Path(__file__).with_name("phase0-vm.py"))
 vm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(vm)
+
+
+class CloneStorageAccessTests(unittest.TestCase):
+    def test_private_clone_directories_remain_private_and_allow_qemu_traversal(self):
+        with tempfile.TemporaryDirectory(dir=vm.ROOT / "runtime") as temporary:
+            runtime = Path(temporary)
+            directory = runtime / 'run' / 'ubuntu'
+            previous = os.umask(0o077)
+            try:
+                directory.mkdir(parents=True)
+                paths = [directory / name for name in ('disk.qcow2', 'VARS.fd')]
+                for path in paths:
+                    path.write_bytes(b'owned clone fixture')
+            finally:
+                os.umask(previous)
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            # A numeric UID avoids requiring a libvirt account on hosted CI.
+            with patch.object(vm, 'RUNTIME', runtime):
+                vm.grant_qemu_access(directory, paths, user='65534')
+            for path in (runtime, directory.parent, directory):
+                acl = subprocess.check_output(['getfacl', '-cpn', str(path)], text=True)
+                self.assertIn('user:65534:--x\n', acl)
+                self.assertIn('group::---\n', acl)
+                self.assertIn('other::---\n', acl)
+            for path in paths:
+                acl = subprocess.check_output(['getfacl', '-cpn', str(path)], text=True)
+                self.assertIn('user:65534:rw-\n', acl)
+                self.assertIn('group::---\n', acl)
+                self.assertIn('other::---\n', acl)
 
 
 class CloneGuardTests(unittest.TestCase):

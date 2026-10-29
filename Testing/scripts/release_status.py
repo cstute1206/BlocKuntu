@@ -14,15 +14,15 @@ from layer3_group_audit import audit_summaries
 
 ROOT = Path(__file__).resolve().parents[1]
 GUESTS = ('ubuntu', 'fedora', 'cachyos')
-PACKAGES = {'ubuntu': 'deb', 'debian': 'deb', 'fedora': 'rpm',
+PACKAGES = {'debian': 'deb', 'fedora': 'rpm',
             'arch': 'arch', 'firefox': 'firefox', 'chrome': 'chrome'}
-GUEST_PACKAGES = {'ubuntu': 'ubuntu', 'fedora': 'fedora', 'cachyos': 'arch'}
+GUEST_PACKAGES = {'ubuntu': 'debian', 'fedora': 'fedora', 'cachyos': 'arch'}
 WORKFLOWS = {'source': '.github/workflows/ci.yml', 'package': '.github/workflows/package-ci.yml'}
 SOURCE_JOBS = {'Source / Test harness', *(f'Source / Rust / {name}' for name in
     ('core', 'daemon', 'native', 'tauri')), *(f'Source / Frontend / {name}' for name in
     ('gui', 'firefox', 'chrome'))}
 PACKAGE_JOBS = {'Package inspector regression tests',
-    *(f'Package / {name} / x86-64' for name in ('ubuntu', 'debian', 'fedora', 'arch')),
+    *(f'Package / {name} / x86-64' for name in ('debian', 'fedora', 'arch')),
     *(f'Package / {name} extension' for name in ('firefox', 'chrome'))}
 
 
@@ -204,10 +204,10 @@ def package_checks(spec):
             if (report.get('layer') != 'package-ci' or report.get('source_clean') is not True or
                     report.get('passed') is not True or report.get('build_provenance_verified') is not True):
                 raise ValueError('Package build did not pass with recorded build provenance')
-            if target in ('ubuntu', 'debian'):
+            if target == 'debian':
                 release = dict(line.split('=', 1) for line in report.get('os_release', '').splitlines() if '=' in line)
                 if release.get('ID', '').strip('"') != target:
-                    raise ValueError('Debian/Ubuntu build environment differs from selected target')
+                    raise ValueError('DEB build environment differs from selected Debian target')
             expected = {contract.BUILD_IDS[component], 'PKG-META-001', 'PKG-META-003'}
             if component in contract.CONTRACT['targets']:
                 expected |= {'PKG-META-002', *contract.PACKAGE_CASES}
@@ -478,7 +478,7 @@ def report(spec, receipt=None, *, live=False, smoke_auditor=audit_summaries, rec
     required = [row for row in rows if row['required']]
     status = ('ready' if all(row['status'] == 'pass' for row in required) else
               'not_ready' if any(row['status'] in ('fail', 'mismatch') for row in required) else 'incomplete')
-    return {'schema_version': 1, 'kind': 'release-status', 'policy': 'release-gate-v1',
+    return {'schema_version': 1, 'kind': 'release-status', 'policy': 'release-gate-v2',
         'candidate': {key: spec[key] for key in ('name', 'commit', 'repository')},
         'generated_at': dt.datetime.now(dt.timezone.utc).isoformat(),
         'reporter_sha256': sha256(Path(__file__)), 'status': status,
@@ -494,7 +494,7 @@ def markdown(result):
     lines = [f'# Release status: {cell(selected["name"])}', '',
         f'**{result["status"].upper()}** — `{selected["commit"]}`', '',
         f'Repository: {cell(selected["repository"])}. Generated: {result["generated_at"]}.', '',
-        'Scope: source/package CI, six package outputs, three-guest smoke, current VM safety, '
+        'Scope: source/package CI, five package outputs, three-guest smoke, current VM safety, '
         'and explicitly selected recovery/E2E reports. Full catalog acceptance is not claimed.', '',
         '| Check | Required | Status | Detail |', '| --- | --- | --- | --- |']
     lines += [f'| {cell(row["id"])} | {"yes" if row["required"] else "no"} | {row["status"]} | {cell(row["reason"])} |'

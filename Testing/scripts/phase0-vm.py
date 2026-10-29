@@ -196,6 +196,22 @@ def fingerprint(public_key):
     return "SHA256:" + base64.b64encode(hashlib.sha256(base64.b64decode(fields[1])).digest()).decode().rstrip("=")
 
 
+def grant_qemu_access(directory, paths, log=None, *, user="libvirt-qemu"):
+    """Allow QEMU to traverse private clone directories and open only its storage."""
+    directory = Path(directory)
+    if (directory.parent.parent != RUNTIME or directory.is_symlink() or
+            directory.parent.is_symlink() or
+            any(Path(path).parent != directory or Path(path).is_symlink() for path in paths)):
+        raise ValueError("QEMU access requires storage in an owned runtime directory")
+    # A caller's umask may create these directories as 0700. File ACLs alone
+    # cannot let QEMU traverse them. Do not grant directory listing or change
+    # permissions for other users; evidence and owner records stay private.
+    for parent in (RUNTIME, directory.parent, directory):
+        run(["setfacl", "-m", f"u:{user}:x", parent], log=log)
+    for path in paths:
+        run(["setfacl", "-m", f"u:{user}:rw", path], log=log)
+
+
 def prepare(key, run_id):
     item = config_guest(key)
     directory = RUNTIME / run_id / key
@@ -262,8 +278,7 @@ def prepare(key, run_id):
     ET.indent(original)
     ET.ElementTree(original).write(xml_path, encoding="unicode")
     # Existing host ACL permits qemu traversal of the home directory.
-    for path in new_paths:
-        run(["setfacl", "-m", "u:libvirt-qemu:rw", path], log=log)
+    grant_qemu_access(directory, new_paths, log)
     virsh("define", xml_path, log=log)
     record["stage"] = "defined"
     save(directory / "owner.json", record)

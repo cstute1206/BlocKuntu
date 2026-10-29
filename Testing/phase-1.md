@@ -32,11 +32,13 @@ targets, and doctests. Frontend jobs run tests, production compilation, and
 Svelte or manifest checks. These commands do not build distributable packages,
 install BlocKuntu, launch its daemon, or operate VMs.
 
-The harness job uses Python 3.12 and Node 22, with `build-essential`, `dpkg-dev`,
+The harness job uses Python 3.12 and Node 22, with `acl`, `build-essential`, `dpkg-dev`,
 `rpm`, and `libarchive-tools` for temporary package fixtures. It discovers all
 `Testing/scripts/test_*.py` tests and retains the command log and result JSON in
 `Testing/results/pr-ci/harness/`. It requires loopback sockets for the local HTTP
 fixtures, but no libvirt, VM images, local credentials or historical results.
+The ACL regression uses temporary files and a numeric user ID to verify that
+private clone directories permit QEMU traversal even with a restrictive umask.
 Group-runner tests generate synthetic packages and evidence in temporary
 directories; those fixtures establish validator behavior, not VM acceptance.
 

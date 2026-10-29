@@ -35,7 +35,6 @@ An example of populated input fields (replace every placeholder with real input)
   "ci_runs": {"source": 12345, "package": 12346},
   "ci_receipt": null,
   "package_reports": {
-    "ubuntu": "../../package-ci/rc1/ubuntu/result.json",
     "debian": "../../package-ci/rc1/debian/result.json",
     "fedora": "../../package-ci/rc1/fedora/result.json",
     "arch": "../../package-ci/rc1/arch/result.json",
@@ -60,6 +59,13 @@ by their existing auditors. Provide every attempt summary in the selected smoke
 series, including retries: the latest declared attempt per guest must pass, and
 earlier failures remain subject to cleanup checks. The report does not discover
 or assert the absence of attempts omitted from the candidate manifest.
+
+Use only `debian`, `fedora`, `arch`, `firefox` and `chrome` as package-report
+targets. The Debian report supplies the shared DEB for Ubuntu smoke, recovery
+and selected/full E2E evidence; the VM guest is still named `ubuntu`. New
+candidate manifests must replace the retired `package_reports.ubuntu` entry
+with the actual Debian build report, not rename an Ubuntu build report. Reports
+from historical Ubuntu artifacts do not establish acceptance of the Debian DEB.
 
 Recovery selections support `p41` (uninstall), `p42` (hosts) and `p43` (browser
 repair/outage). Every selected entry is required. Unselected catalog cases do
@@ -123,7 +129,7 @@ CI status is always presented with its observation timestamp. There is no invent
 age cutoff and no claim that a saved receipt represents current GitHub state.
 The current run attempt is queried, so a rerun is not confused with an earlier
 attempt. The workflow, repository, exact commit, selected run ID and all eight
-source/seven package job outcomes are checked; skipped jobs cannot count as passes.
+source/six package job outcomes are checked; skipped jobs cannot count as passes.
 
 On the configured VM host, also verify current base integrity and clone inventory:
 
@@ -139,21 +145,27 @@ the report stays incomplete until that required check passes. No guest is booted
 
 ## Gate and evidence boundaries
 
-The initial `release-gate-v1` policy requires:
+The current `release-gate-v2` policy requires:
 
 - source and package CI for the exact candidate;
-- all six existing package outputs (Ubuntu, Debian, Fedora, Arch, Firefox, Chrome);
+- all five package outputs (shared Debian/Ubuntu DEB, Fedora, Arch, Firefox, Chrome);
 - all 21 smoke observations per Ubuntu/Fedora/CachyOS guest;
 - current VM-host safety checks;
 - any explicitly selected recovery suites and E2E reports.
 
 The command checks complete package assertions, recorded clean-build provenance,
-and the hashes of all listed artifact files. It distinguishes the Ubuntu and
-Debian build reports. Smoke and recovery must match the selected native package's
+and the hashes of all listed artifact files. The DEB report must record a Debian
+build environment. Ubuntu smoke, recovery and E2E must match that shared DEB's
 commit, filename where available, SHA-256 and installed version. Browser/extension
 versions and harness manifests from smoke evidence appear in the report. Package
 origin remains the existing Layer 2 provenance process's responsibility; this
 command does not download or authenticate artifact archives on its own.
+
+Upgrade implementation and validation remain deferred by agreement. The two
+package upgrade cases stay explicit skips with no selected upgrade baseline;
+they are neither release blockers nor evidence of upgrade support. The previous
+`release-gate-v1` reports used separate Ubuntu and Debian builds and remain
+historical records of that policy.
 
 The `smoke_summaries` and `recovery_checks` adapters call existing evidence
 auditors, rather than accepting a summary's `pass` field. Evidence for another candidate is a mismatch;

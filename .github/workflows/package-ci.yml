@@ -31,23 +31,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [ubuntu, debian, fedora, arch]
+        target: [debian, fedora, arch]
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        if: matrix.target == 'ubuntu'
-        with:
-          node-version: 22
-      - name: Ubuntu build dependencies
-        if: matrix.target == 'ubuntu'
-        run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup default 1.93.0
-          sudo apt-get update
-          sudo apt-get install --yes build-essential file libayatana-appindicator3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev
-      - name: Build and inspect Ubuntu package
-        if: matrix.target == 'ubuntu'
-        run: python3 Testing/scripts/package-ci.py deb --output-dir Testing/results/package-ci/ubuntu
       - name: Build Debian environment
         if: matrix.target == 'debian'
         run: docker build -f Testing/package-ci/Dockerfile.debian -t blockuntu-debian-ci Testing/package-ci

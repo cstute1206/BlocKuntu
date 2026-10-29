@@ -26,7 +26,9 @@ class ObservedTransitionTests(unittest.TestCase):
         controls = load_controls()
         controls.pyatspi.STATE_SELECTED = 'selected'
         controls.pyatspi.STATE_SENSITIVE = 'sensitive'
+        controls.pyatspi.STATE_EXPANDED = 'expanded'
         node, selected, other = Mock(), Mock(), Mock()
+        node.getState.return_value.contains.side_effect = lambda state: state == 'sensitive'
         selected.name, other.name = 'Command', 'Path'
         for option, state in ((selected, True), (other, False)):
             option.getRoleName.return_value = 'menu item'
@@ -35,6 +37,71 @@ class ObservedTransitionTests(unittest.TestCase):
         controls.choose(node, 'Command')
         controls.host_action.assert_not_called()
         node.queryComponent.assert_not_called()
+
+    def selection_controls(self, *, commit=True, focus=True):
+        controls = load_controls()
+        for state in ('SELECTED', 'SENSITIVE', 'EXPANDED', 'FOCUSED', 'SHOWING'):
+            setattr(controls.pyatspi, 'STATE_' + state, state.lower())
+        node = Mock()
+        state = {'expanded': False, 'focused': False, 'selection': 0, 'pending': None}
+        node.getState.return_value.contains.side_effect = lambda flag: (
+            state.get(flag, flag in ('sensitive', 'showing')))
+        def grab():
+            state['focused'] = focus
+            return True
+        node.queryComponent.return_value.grabFocus.side_effect = grab
+        options = [Mock(), Mock()]
+        for index, (option, name) in enumerate(zip(options, ('Domain', 'Exact URL'))):
+            option.name = name
+            option.getRoleName.return_value = 'menu item'
+            option.getState.return_value.contains.side_effect = lambda flag, i=index: (
+                flag == 'selected' and state['selection'] == i)
+        controls.walk.return_value = options
+        def keys(action, keys):
+            self.assertEqual(action, 'keys')
+            key = keys[0]
+            if key == 'KEY_SPACE':
+                state['pending'] = 'open'
+            elif key in ('KEY_HOME', 'KEY_DOWN', 'KEY_ENTER'):
+                self.assertTrue(state['expanded'], 'Navigated a closed native popup')
+                if key == 'KEY_HOME': state['highlight'] = 0
+                elif key == 'KEY_DOWN': state['highlight'] += 1
+                else: state['pending'] = 'commit'
+            elif key == 'KEY_TAB':
+                self.assertFalse(state['expanded'], 'Moved on before popup closure')
+                self.assertEqual(state['selection'], 1)
+        def observed(ready, seconds):
+            # Native input is asynchronous: the dispatch acknowledgement precedes
+            # the accessibility transition, including committing the selection.
+            ready()
+            if state['pending'] == 'open': state['expanded'] = True
+            elif state['pending'] == 'commit':
+                state['expanded'] = False
+                if commit: state['selection'] = state['highlight']
+            state['pending'] = None
+            value = ready()
+            if not value: raise TimeoutError('Native transition did not occur')
+            return value
+        controls.host_action.side_effect = keys
+        controls.wait.side_effect = observed
+        return controls, node, state
+
+    def test_selection_waits_for_native_popup_and_committed_value(self):
+        controls, node, state = self.selection_controls()
+        controls.choose(node, 'Exact URL')
+        self.assertEqual(state['selection'], 1)
+        self.assertFalse(state['expanded'])
+        self.assertEqual(controls.host_action.call_args.kwargs['keys'], ['KEY_TAB'])
+
+    def test_popup_closure_without_requested_selection_is_a_failure(self):
+        controls, node, state = self.selection_controls(commit=False)
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        self.assertNotIn(['KEY_TAB'], [call.kwargs['keys'] for call in controls.host_action.call_args_list])
+
+    def test_successful_focus_request_without_actual_focus_cannot_send_keys(self):
+        controls, node, _ = self.selection_controls(focus=False)
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        controls.host_action.assert_not_called()
 
     def button_controls(self, sensitive=True, focus=True):
         controls = load_controls()

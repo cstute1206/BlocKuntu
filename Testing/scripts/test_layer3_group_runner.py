@@ -27,6 +27,9 @@ class GroupRunnerTests(unittest.TestCase):
 
     def test_exact_smoke_preflight_and_fixture_evidence(self):
         prepared = self.prepare('smoke', ['ubuntu'], 'p31c-test-unused', self.inputs)
+        report = Path(prepared['expected']['ubuntu']['report'])
+        self.assertEqual(report.parent.name, 'debian')
+        self.assertEqual(json.loads(report.read_text())['os_release'], 'ID=debian\n')
         self.assertEqual(len(prepared['runs']), 1)
         self.assertEqual(prepared['commit'], self.fixture.commit)
         checked = self.checked_bundle(prepared)
