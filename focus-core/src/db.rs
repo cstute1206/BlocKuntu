@@ -1486,7 +1486,17 @@ impl Database {
         value: &str,
         now: DateTime<Utc>,
     ) -> Result<(), Error> {
-        self.conn.execute(
+        self.set_service_states(&[(key, value)], now)
+    }
+
+    /// Persist related service state together, with one durable commit.
+    pub fn set_service_states(
+        &self,
+        values: &[(&str, &str)],
+        now: DateTime<Utc>,
+    ) -> Result<(), Error> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let mut statement = transaction.prepare(
             r#"
             INSERT INTO service_state (key, value, updated_at)
             VALUES (?1, ?2, ?3)
@@ -1494,8 +1504,13 @@ impl Database {
                 value = excluded.value,
                 updated_at = excluded.updated_at
             "#,
-            params![key, value, format_time(now)],
         )?;
+        let updated_at = format_time(now);
+        for (key, value) in values {
+            statement.execute(params![key, value, updated_at])?;
+        }
+        drop(statement);
+        transaction.commit()?;
         Ok(())
     }
 
@@ -3161,6 +3176,54 @@ fn unlock_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UnlockState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn related_service_states_commit_together_and_roll_back_on_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("service-state.sqlite3");
+        let database = Database::open(&path).unwrap();
+        let now = Utc::now();
+        database
+            .set_service_states(&[("first", "old"), ("second", "old")], now)
+            .unwrap();
+        database
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_second BEFORE UPDATE ON service_state \
+                 WHEN NEW.key = 'second' BEGIN SELECT RAISE(ABORT, 'write failed'); END;",
+            )
+            .unwrap();
+        assert!(database
+            .set_service_states(&[("first", "new"), ("second", "new")], now)
+            .is_err());
+        drop(database);
+        let reopened = Database::open(&path).unwrap();
+        assert_eq!(
+            reopened.service_state("first").unwrap().as_deref(),
+            Some("old")
+        );
+        assert_eq!(
+            reopened.service_state("second").unwrap().as_deref(),
+            Some("old")
+        );
+        reopened
+            .conn
+            .execute_batch("DROP TRIGGER reject_second")
+            .unwrap();
+        reopened
+            .set_service_states(&[("first", "new"), ("second", "new")], now)
+            .unwrap();
+        drop(reopened);
+        let committed = Database::open(&path).unwrap();
+        assert_eq!(
+            committed.service_state("first").unwrap().as_deref(),
+            Some("new")
+        );
+        assert_eq!(
+            committed.service_state("second").unwrap().as_deref(),
+            Some("new")
+        );
+    }
 
     fn timestamp(value: &str) -> DateTime<FixedOffset> {
         DateTime::parse_from_rfc3339(value).expect("timestamp should parse")

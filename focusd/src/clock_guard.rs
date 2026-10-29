@@ -212,17 +212,16 @@ fn persist_sample(
     state: &str,
     detail: &str,
 ) -> Result<()> {
-    database.set_service_state(STATUS_KEY, state, sample.wall_utc)?;
-    database.set_service_state(DETAIL_KEY, detail, sample.wall_utc)?;
-    database.set_service_state(
-        LAST_WALL_UTC_KEY,
-        &sample.wall_utc.to_rfc3339(),
-        sample.wall_utc,
-    )?;
-    database.set_service_state(LAST_BOOT_ID_KEY, &sample.boot_id, sample.wall_utc)?;
-    database.set_service_state(
-        LAST_BOOTTIME_SECONDS_KEY,
-        &format!("{:.3}", sample.boottime_seconds),
+    let wall_utc = sample.wall_utc.to_rfc3339();
+    let boottime = format!("{:.3}", sample.boottime_seconds);
+    database.set_service_states(
+        &[
+            (STATUS_KEY, state),
+            (DETAIL_KEY, detail),
+            (LAST_WALL_UTC_KEY, &wall_utc),
+            (LAST_BOOT_ID_KEY, &sample.boot_id),
+            (LAST_BOOTTIME_SECONDS_KEY, &boottime),
+        ],
         sample.wall_utc,
     )?;
     Ok(())
@@ -268,4 +267,35 @@ fn parse_utc(value: &str) -> Result<DateTime<Utc>> {
         .map_err(|err| {
             DaemonError::InvalidRequest(format!("invalid stored clock timestamp: {err}"))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_samples_survive_restart_without_clearing_a_tamper_latch() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("clock.sqlite3");
+        let database = Database::open(&path).unwrap();
+        database
+            .set_service_states(
+                &[
+                    (STATUS_KEY, STATUS_TAMPERED),
+                    (DETAIL_KEY, "Detected drift"),
+                ],
+                Utc::now(),
+            )
+            .unwrap();
+        let first = update_clock_integrity(&database, Utc::now()).unwrap();
+        drop(database);
+
+        let reopened = Database::open(&path).unwrap();
+        let second = update_clock_integrity(&reopened, Utc::now()).unwrap();
+        assert_eq!(second.state, STATUS_TAMPERED);
+        assert_eq!(second.detail, "Detected drift");
+        assert_eq!(second.last_wall_utc, Some(first.checked_at));
+        assert_eq!(second.boot_id, first.boot_id);
+        assert!(second.boottime_seconds >= first.boottime_seconds);
+    }
 }
