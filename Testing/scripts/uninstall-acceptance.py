@@ -25,7 +25,7 @@ SOURCES = [Path(__file__), ROOT / 'scripts/layer4_uninstall_contract.py', ROOT /
            ROOT / 'scripts/vm-acceptance.py', ROOT / 'scripts/phase0-vm.py',
            ROOT / 'scripts/layer3_contract.py', ROOT / 'scripts/layer3_runtime.py',
            *[ROOT / 'fixtures/layer3' / name for name in ('guest.py', 'accessibility.py',
-                                                        'ui_controls.py', 'browsers.py')],
+                                                        'ui_controls.py', 'browsers.py', 'gui.py')],
            ROOT / 'fixtures/layer4/uninstall.py', ROOT / 'fixtures/layer4/uninstall_ops.py',
            ROOT / 'fixtures/test-site/server.py', ROOT / 'fixtures/test-processes/test_process.c',
            ROOT / 'scripts/build-test-processes.sh']

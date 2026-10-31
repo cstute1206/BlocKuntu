@@ -34,17 +34,20 @@ class ObservedTransitionTests(unittest.TestCase):
             option.getRoleName.return_value = 'menu item'
             option.getState.return_value.contains.return_value = state
         controls.walk.return_value = [selected, other]
+        controls.nodes = Mock(side_effect=lambda **kw: [Mock()] if kw.get('role') == 'frame' else [])
+        controls.wait.side_effect = lambda ready, seconds: ready()
         controls.choose(node, 'Command')
         controls.host_action.assert_not_called()
         node.queryComponent.assert_not_called()
 
-    def selection_controls(self, *, commit=True, focus=True):
+    def selection_controls(self, *, commit=True, close=True, focus=True, report_expansion=True):
         controls = load_controls()
-        for state in ('SELECTED', 'SENSITIVE', 'EXPANDED', 'FOCUSED', 'SHOWING'):
+        for state in ('SELECTED', 'SENSITIVE', 'EXPANDED', 'FOCUSED', 'SHOWING', 'ACTIVE', 'SELECTABLE'):
             setattr(controls.pyatspi, 'STATE_' + state, state.lower())
         node = Mock()
         state = {'expanded': False, 'focused': False, 'selection': 0, 'pending': None}
         node.getState.return_value.contains.side_effect = lambda flag: (
+            report_expansion and state['expanded'] if flag == 'expanded' else
             state.get(flag, flag in ('sensitive', 'showing')))
         def grab():
             state['focused'] = focus
@@ -56,7 +59,16 @@ class ObservedTransitionTests(unittest.TestCase):
             option.getRoleName.return_value = 'menu item'
             option.getState.return_value.contains.side_effect = lambda flag, i=index: (
                 flag == 'selected' and state['selection'] == i)
-        controls.walk.return_value = options
+        frame, popup = Mock(), Mock()
+        popup.getState.return_value.contains.side_effect = lambda flag: flag == 'active'
+        cells = [Mock(), Mock()]
+        for cell, name in zip(cells, ('Domain', 'Exact URL')):
+            cell.name = name
+            cell.getRoleName.return_value = 'table cell'
+            cell.getState.return_value.contains.side_effect = lambda flag: flag in ('showing', 'selectable')
+        controls.walk.side_effect = lambda current: options if current is node else cells if current is popup else []
+        controls.nodes = Mock(side_effect=lambda **kw: [frame] if kw.get('role') == 'frame' else
+                              [popup] if kw.get('role') == 'window' and state['expanded'] else [])
         def keys(action, keys):
             self.assertEqual(action, 'keys')
             key = keys[0]
@@ -76,7 +88,7 @@ class ObservedTransitionTests(unittest.TestCase):
             ready()
             if state['pending'] == 'open': state['expanded'] = True
             elif state['pending'] == 'commit':
-                state['expanded'] = False
+                state['expanded'] = not close
                 if commit: state['selection'] = state['highlight']
             state['pending'] = None
             value = ready()
@@ -87,11 +99,53 @@ class ObservedTransitionTests(unittest.TestCase):
         return controls, node, state
 
     def test_selection_waits_for_native_popup_and_committed_value(self):
-        controls, node, state = self.selection_controls()
+        for report_expansion in (True, False):
+            with self.subTest(report_expansion=report_expansion):
+                controls, node, state = self.selection_controls(report_expansion=report_expansion)
+                controls.choose(node, 'Exact URL')
+                self.assertEqual(state['selection'], 1)
+                self.assertFalse(state['expanded'])
+                self.assertEqual(controls.host_action.call_args.kwargs['keys'], ['KEY_TAB'])
+
+    def test_popup_without_expanded_flag_must_close_before_moving_on(self):
+        controls, node, _ = self.selection_controls(close=False, report_expansion=False)
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        self.assertNotIn(['KEY_TAB'], [call.kwargs['keys'] for call in controls.host_action.call_args_list])
+
+    def test_unrelated_popup_cannot_substitute_for_the_select_menu(self):
+        controls, node, state = self.selection_controls(report_expansion=False)
+        state['expanded'] = True
+        popup = controls.nodes(role='window')[0]
+        controls.walk(popup)[0].name = 'Unrelated option'
+        self.assertIsNone(controls.select_popup_state(node, ['Domain', 'Exact URL']))
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        controls.host_action.assert_not_called()
+
+    def test_popup_options_must_be_visible_and_its_window_active(self):
+        controls, node, state = self.selection_controls(report_expansion=False)
+        state['expanded'] = True
+        popup = controls.nodes(role='window')[0]
+        popup.getState.return_value.contains.side_effect = lambda flag: False
+        self.assertEqual(controls.select_popup_state(node, ['Domain', 'Exact URL']), 'closed')
+        popup.getState.return_value.contains.side_effect = lambda flag: flag == 'active'
+        controls.walk(popup)[0].getState.return_value.contains.side_effect = lambda flag: flag == 'selectable'
+        self.assertIsNone(controls.select_popup_state(node, ['Domain', 'Exact URL']))
+
+    def test_already_selected_open_popup_is_committed_and_closed(self):
+        controls, node, state = self.selection_controls(report_expansion=False)
+        state.update(expanded=True, selection=1, highlight=1)
         controls.choose(node, 'Exact URL')
-        self.assertEqual(state['selection'], 1)
         self.assertFalse(state['expanded'])
-        self.assertEqual(controls.host_action.call_args.kwargs['keys'], ['KEY_TAB'])
+        self.assertEqual(state['selection'], 1)
+        controls.host_action.assert_called_once_with('keys', keys=['KEY_ENTER'])
+
+    def test_unavailable_accessibility_tree_does_not_prove_popup_closure(self):
+        controls, node, _ = self.selection_controls(report_expansion=False)
+        controls.nodes.return_value = []
+        controls.nodes.side_effect = None
+        self.assertIsNone(controls.select_popup_state(node, ['Domain', 'Exact URL']))
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        controls.host_action.assert_not_called()
 
     def test_popup_closure_without_requested_selection_is_a_failure(self):
         controls, node, state = self.selection_controls(commit=False)

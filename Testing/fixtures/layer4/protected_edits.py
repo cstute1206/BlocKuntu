@@ -13,7 +13,8 @@ import traceback
 
 from accessibility import click, dump, find, redact, texts
 from guest import WORK, host_action, rpc, run, wait, configure_desktop
-from ui_controls import edit, enabled, entries, field, focus_app, nodes, open_settings, press
+from gui import leave_desktop_overview
+from ui_controls import edit, enabled, entries, field, focus_app, nodes, open_settings, press, press_observed
 
 
 def main():
@@ -87,8 +88,9 @@ def main():
         run('systemd-run', '--user', '--collect', '--property=ExitType=cgroup',
             '--unit=blockuntu-acceptance-gui', 'gtk-launch', 'local.blockuntu.gui')
         find('Welcome to BlocKuntu', 'dialog', seconds=60)
-        click('Get started')
-        wait(lambda: not nodes(role='dialog', name='Welcome to BlocKuntu'), 30)
+        leave_desktop_overview(args.guest)
+        focus_app()
+        press_observed('Get started', lambda: not nodes(role='dialog', name='Welcome to BlocKuntu'))
         wait(lambda: rpc('status')['enforcement_state'] == 'active', 60)
         status = rpc('tier1_edit_status')
         assert status['credential_configured'] and status['protected_access_open']
@@ -140,7 +142,7 @@ def main():
         def valid():
             open_settings('Protected changes and uninstall')
             type_key('tier1')
-            wait(lambda: 'Tier 1 edits unlocked for 5 minutes.' in texts(), 30)
+            wait(lambda: 'Protected list edits unlocked for 5 minutes.' in texts(), 30)
             granted = rpc('tier1_edit_status')
             assert granted['active'] and granted['protected_access_open']
             assert 270 <= granted['remaining_seconds'] <= 300

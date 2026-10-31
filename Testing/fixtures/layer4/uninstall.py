@@ -86,6 +86,34 @@ def press_uninstall():
     host_action('keys', keys=['KEY_ENTER'])
 
 
+def protected_rejection(kind):
+    wait(lambda: not rpc('tier1_edit_status')['protected_access_open'], 30)
+    fresh_protected()
+    assert not enabled(combo('Protected settings access')), 'Protected access selector remains editable'
+    before = rpc('config_snapshot')
+    if kind == 'detox':
+        wait(lambda: not enabled(find('Uninstall BlocKuntu', 'button')), 30)
+        wait(lambda: 'Uninstall is unavailable until all active Detox sessions end.' in texts(), 30)
+    else:
+        type_phrase('uninstall')
+        press_uninstall()
+        wait(lambda: 'only available while no schedule or Detox is active' in texts(), 30)
+    try:
+        rpc('prepare_uninstall')
+    except RuntimeError as error:
+        if kind == 'detox':
+            assert 'Uninstall is unavailable until all active Detox sessions end.' in str(error), redact(error)
+        else:
+            assert 'GUI uninstall' in str(error) and 'only available' in str(error), redact(error)
+    else:
+        raise AssertionError('RPC prepared uninstall during protected activation')
+    assert no_lease()
+    assert rpc('config_snapshot') == before
+    assert rpc('status')['enforcement_state'] == 'active'
+    return {kind + '_active': True, 'gui_uninstall_rejected': True, 'settings_locked': True,
+            'rpc_uninstall_rejected': True, 'no_lease': True, 'checked_at': dt.datetime.now().astimezone().isoformat()}
+
+
 def select_uninstall_chrome_store(browser):
     """Fresh consent can rerender or redirect; use observed native tab focus."""
     import pyatspi
@@ -184,9 +212,10 @@ def onboard(browser, run_id):
 
 
 
-def probe_native_gui(label):
+def probe_native_gui(label, guest):
     """A rejected package transaction must preserve a working GUI uninstall path."""
     from ui_controls import focus_app
+    from gui import dismiss_welcome
     unit = 'blockuntu-p41-gui-' + label
     assert not nodes(role='frame'), 'A preexisting GUI would mask missing runtime dependencies'
     run('systemd-run', '--user', '--collect', '--unit=' + unit,
@@ -197,8 +226,7 @@ def probe_native_gui(label):
              nodes(role='button', name='Settings'), 30)
         focus_app()
         if nodes(role='dialog', name='Welcome to BlocKuntu'):
-            click('Get started')
-            wait(lambda: not nodes(role='dialog', name='Welcome to BlocKuntu'), 15)
+            dismiss_welcome(guest)
         click('Settings')
         find('Settings', 'dialog', seconds=15)
         click('Close Settings')
@@ -266,7 +294,7 @@ def main():
             assert collector_alive(), 'Independent collector is not healthy'
             if args.scenario != 'authorized' and args.guest != 'ubuntu':
                 configure_desktop(args.guest)
-                result['gui_baseline'] = probe_native_gui('baseline')
+                result['gui_baseline'] = probe_native_gui('baseline', args.guest)
             if args.scenario == 'authorized':
                 address = run('getent', 'ahostsv4', 'web.blockuntu.test').stdout.split()
                 assert address and address[0] == '127.0.0.1', 'Local browser fixture DNS is not configured'
@@ -274,8 +302,8 @@ def main():
                 run('systemd-run', '--user', '--collect', '--property=ExitType=cgroup',
                     '--unit=blockuntu-acceptance-gui', 'gtk-launch', 'local.blockuntu.gui')
                 find('Welcome to BlocKuntu', 'dialog', seconds=60)
-                click('Get started')
-                wait(lambda: not nodes(role='dialog', name='Welcome to BlocKuntu'), 30)
+                from gui import dismiss_welcome
+                dismiss_welcome(args.guest)
                 from browsers import setup
                 setup(args.guest)
                 result['browsers'] = [onboard(b, args.run_id) for b in BROWSERS]
@@ -305,7 +333,7 @@ def main():
                     before = json.loads((WORK / 'p41-baseline.json').read_text())['inspection']
                     assert installed_packages_preserved(before['package_inventory'], state['package_inventory']), 'Rejected transaction changed installed packages'
                     proof['all_packages_preserved'] = True
-                    result['gui_post_refusal'] = probe_native_gui('post-refusal')
+                    result['gui_post_refusal'] = probe_native_gui('post-refusal', args.guest)
                     proof['gui_restart_healthy'] = True
                 host_action('checkpoint', name='after-uninstall')
                 return {**proof, 'command_rejected': True, 'package_installed': True, 'no_lease': True,
@@ -336,22 +364,6 @@ def main():
                     'site_rule_ids': [scheduled['id']]})
                 result['schedule'] = {'end': end.isoformat(), 'response': schedule}
 
-            def protected_rejection(kind):
-                wait(lambda: not rpc('tier1_edit_status')['protected_access_open'], 30)
-                fresh_protected()
-                assert not enabled(combo('Protected settings access')), 'Protected access selector remains editable'
-                type_phrase('uninstall')
-                press_uninstall()
-                wait(lambda: 'only available while no schedule or Detox is active' in texts(), 30)
-                try:
-                    rpc('prepare_uninstall')
-                except RuntimeError as error:
-                    assert 'GUI uninstall' in str(error) and 'only available' in str(error), redact(error)
-                else:
-                    raise AssertionError('RPC prepared uninstall during protected activation')
-                assert no_lease()
-                return {kind + '_active': True, 'gui_uninstall_rejected': True, 'settings_locked': True,
-                        'rpc_uninstall_rejected': True, 'no_lease': True, 'checked_at': dt.datetime.now().astimezone().isoformat()}
             ready = case('DES-PROTECT-001', lambda: protected_rejection('schedule'), ready)
             if ready:
                 wait(lambda: dt.datetime.now().astimezone() >= end and rpc('tier1_edit_status')['protected_access_open'], 190)

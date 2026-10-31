@@ -10,6 +10,22 @@ from harness_fixtures import Layer3Fixture, write_json
 
 
 class GroupRunnerTests(unittest.TestCase):
+    def test_failed_setup_is_reported_before_missing_browser_metadata(self):
+        prepared = self.prepare('core', ['ubuntu'], 'setup-failure-test', self.inputs,
+                                case_ids=['VM-WEB-001'])
+        directory = self.fixture.bundle(prepared)
+        path = directory / 'result.json'
+        result = json.loads(path.read_text())
+        result.update(status='fail', cases=[{'id': 'VM-DATA-003', 'status': 'fail',
+                                            'error': 'Import control unavailable'}])
+        write_json(path, result)
+        (directory / 'browser-metadata.json').unlink()
+        checked = verify_bundle(prepared['runs'][0], prepared['expected']['ubuntu'],
+                                prepared['plan'], root=self.root)
+        self.assertFalse(checked['valid'])
+        self.assertEqual(checked['errors'], ['VM-DATA-003: Import control unavailable'])
+        self.assertEqual(checked['required_passes'], 0)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

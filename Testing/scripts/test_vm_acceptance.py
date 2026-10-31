@@ -14,6 +14,25 @@ spec.loader.exec_module(suite)
 
 
 class ArtifactTests(unittest.TestCase):
+    def test_failed_collection_does_not_create_fake_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            answer = types.SimpleNamespace(returncode=1, stdout='', stderr='cat: file absent')
+            receipt = suite.collect_artifact(root, 'browser-metadata.json', answer)
+            self.assertEqual(receipt['status'], 'unavailable')
+            self.assertEqual(receipt['stderr'], 'cat: file absent')
+            self.assertFalse((root / 'browser-metadata.json').exists())
+
+    def test_json_collection_separates_stderr_and_rejects_bad_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            answer = types.SimpleNamespace(returncode=0, stdout='{"version": "test"}', stderr='warning')
+            self.assertEqual(suite.collect_artifact(root, 'browser.json', answer)['status'], 'collected')
+            self.assertEqual(json.loads((root / 'browser.json').read_text()), {'version': 'test'})
+            answer.stdout = 'not json'
+            self.assertEqual(suite.collect_artifact(root, 'missing.json', answer)['status'], 'invalid_json')
+            self.assertFalse((root / 'missing.json').exists())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

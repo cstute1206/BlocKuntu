@@ -139,6 +139,10 @@ selection explicitly opens the native popup and observes both its closure and
 the requested selected option before moving to the next field. An input dispatch
 acknowledgement alone is insufficient: Fedora's WebKit/GTK popup can retain its
 keyboard grab while accessibility already reports focus on the next field.
+Ubuntu's WebKit can omit `EXPANDED` even while the native popup is visible.
+The helper also recognizes an active native popup containing the select's exact
+option labels. A temporarily unavailable accessibility tree is not treated as
+proof that the popup closed.
 
 Only dedicated profiles under `Testing/layer3/` are used. Chrome uses
 `--password-store=basic` to avoid an autologin keyring prompt; no personal account

@@ -19,7 +19,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 use crate::chrome_policy::{ChromePolicyManager, ChromePolicyRepairStatus};
-use crate::cli::{Args, DEFAULT_HOSTS_PATH, DEFAULT_POLICY_RECOVERY_PATH};
+use crate::cli::{Args, Command, DEFAULT_HOSTS_PATH, DEFAULT_POLICY_RECOVERY_PATH};
 use crate::clock_guard;
 use crate::error::{DaemonError, Result};
 use crate::firefox_policy::{FirefoxPolicyManager, RepairStatus};
@@ -218,7 +218,16 @@ impl DaemonApp {
     pub fn load(args: &Args) -> Result<Self> {
         create_parent_dir(&args.database, 0o700)?;
 
+        let policy_recovery = PolicyRecoveryManager::new(
+            &args.policy_recovery,
+            policy_recovery_immutable_enabled(args),
+        );
+        // Serialize startup reads/initialization with RPC snapshot + DB commits.
+        let policy_guard = policy_recovery.lock()?;
         let database_preexisting = args.database.exists();
+        // Preserve first-install initialization for standalone check/repair
+        // commands, without republishing a preexisting daemon policy.
+        let persist_policy = args.command() == Command::Serve || !database_preexisting;
         let mut database = Database::open(&args.database)?;
         database.set_event_log_path(&args.event_log)?;
         let retention_clock = clock_guard::guarded_now(&database, None, false)?;
@@ -228,21 +237,22 @@ impl DaemonApp {
                 ChronoDuration::days(EVENT_DETAIL_RETENTION_DAYS),
             )?;
         }
-        let policy_recovery = PolicyRecoveryManager::new(
-            &args.policy_recovery,
-            policy_recovery_immutable_enabled(args),
-        );
         let (mut config, recovered) = load_startup_policy(
             &database,
             &args.config,
             &policy_recovery,
             database_preexisting,
+            persist_policy,
         )?;
-        if ensure_mandatory_app_rules(&mut config) {
+        if ensure_mandatory_app_rules(&mut config) && persist_policy {
             database.replace_policy_config(&config)?;
         }
-        policy_recovery.write(&config)?;
-        if recovered {
+        // Maintenance commands enforce their loaded view, but must never publish
+        // it over policy being edited by the live daemon.
+        if persist_policy {
+            policy_guard.write(&config)?;
+        }
+        if recovered && persist_policy {
             database.record_event(
                 "policy_recovered",
                 Some("policy"),
@@ -253,6 +263,7 @@ impl DaemonApp {
                 Utc::now(),
             )?;
         }
+        drop(policy_guard);
         let core = Arc::new(Mutex::new(FocusCore::new(config, database)?));
         {
             let core = core.lock().map_err(|_| DaemonError::LockPoisoned)?;
@@ -1707,13 +1718,16 @@ fn load_startup_policy(
     config_path: &Path,
     policy_recovery: &PolicyRecoveryManager,
     database_preexisting: bool,
+    persist_policy: bool,
 ) -> Result<(focus_core::Config, bool)> {
     if database.has_policy_config()? {
         return Ok((database.load_policy_config()?, false));
     }
 
     if let Some(config) = policy_recovery.load()? {
-        database.replace_policy_config(&config)?;
+        if persist_policy {
+            database.replace_policy_config(&config)?;
+        }
         return Ok((config, true));
     }
 
@@ -1724,7 +1738,9 @@ fn load_startup_policy(
     }
 
     let config = focus_core::load_config(config_path)?;
-    database.replace_policy_config(&config)?;
+    if persist_policy {
+        database.replace_policy_config(&config)?;
+    }
     Ok((config, false))
 }
 
@@ -2474,8 +2490,9 @@ mod tests {
         let database =
             Database::open(temp.path().join("blockuntu.sqlite3")).expect("database should open");
 
-        let (loaded, recovered) = load_startup_policy(&database, &config_path, &recovery, false)
-            .expect("startup policy should restore");
+        let (loaded, recovered) =
+            load_startup_policy(&database, &config_path, &recovery, false, true)
+                .expect("startup policy should restore");
 
         assert!(recovered);
         assert_eq!(loaded, expected);
@@ -2496,7 +2513,7 @@ mod tests {
         let database =
             Database::open(temp.path().join("blockuntu.sqlite3")).expect("database should open");
 
-        let error = load_startup_policy(&database, &config_path, &recovery, true)
+        let error = load_startup_policy(&database, &config_path, &recovery, true, true)
             .expect_err("existing empty database should fail closed");
 
         assert!(matches!(error, DaemonError::MissingPolicyRecovery { .. }));
