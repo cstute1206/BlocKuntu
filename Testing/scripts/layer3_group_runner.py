@@ -126,6 +126,13 @@ def verify_bundle(item, expected, plan, *, root=ROOT):
     result = read_json(acceptance / 'result.json')
     if result.get('run_id') != run_id or result.get('guest') != guest:
         raise ValueError('Acceptance result has the wrong run ID or guest')
+    if result.get('status') != 'pass':
+        failure = result.get('primary_failure') or next(
+            (row for row in result.get('cases', []) if row.get('status') == 'fail'), None)
+        detail = (failure['id'] + ': ' + failure.get('error', 'Observation failed') if failure
+                  else result.get('error') or 'Executor did not complete successfully')
+        return {'valid': False, 'errors': [detail], 'primary_failure': failure,
+                'required_passes': 0}
     required_rows = [row for row in plan['observations']
                      if row['guest'] == guest and row['observation_id'] in item['observation_ids']]
     if set(item['observation_ids']) != {row['observation_id'] for row in required_rows}:
@@ -499,6 +506,8 @@ def execute(prepared, *, root=ROOT, invoke=None, checker=None):
             checked = checker(item, prepared['expected'][item['guest']], prepared['plan'], root=root)
             item['evidence_check'] = checked
             item['status'] = 'pass' if result.returncode == 0 and checked['valid'] else 'fail'
+            if not checked['valid']:
+                item['error'] = '; '.join(checked.get('errors', [])) or 'Acceptance evidence failed'
             if result.returncode and checked['valid']:
                 item['error'] = 'Executor exited nonzero despite passing evidence'
         except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
@@ -510,6 +519,9 @@ def execute(prepared, *, root=ROOT, invoke=None, checker=None):
             break
     summary['status'] = ('pass' if all(item['status'] == 'pass' for item in summary['runs'])
                          else 'fail')
+    if summary['status'] == 'fail':
+        summary['error'] = next((item['error'] for item in summary['runs'] if item.get('error')),
+                                'Acceptance group failed')
     summary['finished_at'] = dt.datetime.now(dt.timezone.utc).isoformat()
     save_summary(summary_path, summary)
     return summary_path, summary

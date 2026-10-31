@@ -10,7 +10,7 @@ def load_controls():
     dependencies = {
         'pyatspi': SimpleNamespace(),
         'accessibility': SimpleNamespace(**{name: Mock() for name in
-            ('apps', 'app_name', 'click', 'find', 'walk')}),
+            ('apps', 'app_name', 'click', 'find', 'walk', 'refresh_desktop_cache')}),
         'guest': SimpleNamespace(host_action=Mock(), wait=Mock()),
     }
     spec = importlib.util.spec_from_file_location('observed_ui_controls',
@@ -22,19 +22,192 @@ def load_controls():
 
 
 class ObservedTransitionTests(unittest.TestCase):
+    def activation_controls(self, *, new_pid=101, active=True):
+        controls = load_controls()
+        controls.pyatspi.STATE_ACTIVE = 'active'
+        before, after = Mock(), Mock()
+        before.getApplication.return_value.get_process_id.return_value = 101
+        after.getApplication.return_value.get_process_id.return_value = new_pid
+        before.getState.return_value.contains.return_value = False
+        after.getState.return_value.contains.return_value = active
+        state = {'presented': False}
+        controls.nodes = Mock(side_effect=lambda **kw: [after if state['presented'] else before])
+        activate = Mock(side_effect=lambda: state.update(presented=True))
+        controls.wait.side_effect = lambda ready, seconds: ready() or (_ for _ in ()).throw(TimeoutError())
+        return controls, activate
+
+    def test_named_activation_observes_the_original_process(self):
+        controls, activate = self.activation_controls()
+        controls.focus_app(activate=activate)
+        activate.assert_called_once()
+        controls.host_action.assert_not_called()
+
+    def test_activation_cannot_mask_a_restarted_gui(self):
+        controls, activate = self.activation_controls(new_pid=202)
+        with self.assertRaisesRegex(AssertionError, 'original process'):
+            controls.focus_app(activate=activate)
+
+    def test_activation_acknowledgement_without_focus_is_a_failure(self):
+        controls, activate = self.activation_controls(active=False)
+        with self.assertRaises(TimeoutError):
+            controls.focus_app(activate=activate)
+
+    def test_focus_rediscovers_a_live_frame_after_portal_cache_invalidation(self):
+        controls = load_controls()
+        controls.pyatspi.STATE_ACTIVE = 'active'
+        frame = Mock()
+        frame.getState.return_value.contains.return_value = True
+        state = {'stale': True}
+        controls.nodes = Mock(side_effect=lambda **kw: [] if state['stale'] else [frame])
+        controls.refresh_desktop_cache.side_effect = lambda: state.update(stale=False)
+        controls.wait.side_effect = lambda ready, seconds: ready() or (_ for _ in ()).throw(TimeoutError())
+        controls.focus_app()
+        controls.refresh_desktop_cache.assert_called_once()
+        controls.host_action.assert_not_called()
+
+    def test_cache_invalidation_cannot_substitute_for_a_live_frame(self):
+        controls = load_controls()
+        controls.nodes = Mock(return_value=[])
+        controls.wait.side_effect = lambda ready, seconds: ready() or (_ for _ in ()).throw(TimeoutError())
+        with self.assertRaises(TimeoutError):
+            controls.focus_app()
+        controls.refresh_desktop_cache.assert_called_once()
+        controls.host_action.assert_not_called()
+
     def test_already_selected_option_does_not_open_a_native_popup(self):
         controls = load_controls()
         controls.pyatspi.STATE_SELECTED = 'selected'
         controls.pyatspi.STATE_SENSITIVE = 'sensitive'
+        controls.pyatspi.STATE_EXPANDED = 'expanded'
         node, selected, other = Mock(), Mock(), Mock()
+        node.getState.return_value.contains.side_effect = lambda state: state == 'sensitive'
         selected.name, other.name = 'Command', 'Path'
         for option, state in ((selected, True), (other, False)):
             option.getRoleName.return_value = 'menu item'
             option.getState.return_value.contains.return_value = state
         controls.walk.return_value = [selected, other]
+        controls.nodes = Mock(side_effect=lambda **kw: [Mock()] if kw.get('role') == 'frame' else [])
+        controls.wait.side_effect = lambda ready, seconds: ready()
         controls.choose(node, 'Command')
         controls.host_action.assert_not_called()
         node.queryComponent.assert_not_called()
+
+    def selection_controls(self, *, commit=True, close=True, focus=True, report_expansion=True):
+        controls = load_controls()
+        for state in ('SELECTED', 'SENSITIVE', 'EXPANDED', 'FOCUSED', 'SHOWING', 'ACTIVE', 'SELECTABLE'):
+            setattr(controls.pyatspi, 'STATE_' + state, state.lower())
+        node = Mock()
+        state = {'expanded': False, 'focused': False, 'selection': 0, 'pending': None}
+        node.getState.return_value.contains.side_effect = lambda flag: (
+            report_expansion and state['expanded'] if flag == 'expanded' else
+            state.get(flag, flag in ('sensitive', 'showing')))
+        def grab():
+            state['focused'] = focus
+            return True
+        node.queryComponent.return_value.grabFocus.side_effect = grab
+        options = [Mock(), Mock()]
+        for index, (option, name) in enumerate(zip(options, ('Domain', 'Exact URL'))):
+            option.name = name
+            option.getRoleName.return_value = 'menu item'
+            option.getState.return_value.contains.side_effect = lambda flag, i=index: (
+                flag == 'selected' and state['selection'] == i)
+        frame, popup = Mock(), Mock()
+        popup.getState.return_value.contains.side_effect = lambda flag: flag == 'active'
+        cells = [Mock(), Mock()]
+        for cell, name in zip(cells, ('Domain', 'Exact URL')):
+            cell.name = name
+            cell.getRoleName.return_value = 'table cell'
+            cell.getState.return_value.contains.side_effect = lambda flag: flag in ('showing', 'selectable')
+        controls.walk.side_effect = lambda current: options if current is node else cells if current is popup else []
+        controls.nodes = Mock(side_effect=lambda **kw: [frame] if kw.get('role') == 'frame' else
+                              [popup] if kw.get('role') == 'window' and state['expanded'] else [])
+        def keys(action, keys):
+            self.assertEqual(action, 'keys')
+            key = keys[0]
+            if key == 'KEY_SPACE':
+                state['pending'] = 'open'
+            elif key in ('KEY_HOME', 'KEY_DOWN', 'KEY_ENTER'):
+                self.assertTrue(state['expanded'], 'Navigated a closed native popup')
+                if key == 'KEY_HOME': state['highlight'] = 0
+                elif key == 'KEY_DOWN': state['highlight'] += 1
+                else: state['pending'] = 'commit'
+            elif key == 'KEY_TAB':
+                self.assertFalse(state['expanded'], 'Moved on before popup closure')
+                self.assertEqual(state['selection'], 1)
+        def observed(ready, seconds):
+            # Native input is asynchronous: the dispatch acknowledgement precedes
+            # the accessibility transition, including committing the selection.
+            ready()
+            if state['pending'] == 'open': state['expanded'] = True
+            elif state['pending'] == 'commit':
+                state['expanded'] = not close
+                if commit: state['selection'] = state['highlight']
+            state['pending'] = None
+            value = ready()
+            if not value: raise TimeoutError('Native transition did not occur')
+            return value
+        controls.host_action.side_effect = keys
+        controls.wait.side_effect = observed
+        return controls, node, state
+
+    def test_selection_waits_for_native_popup_and_committed_value(self):
+        for report_expansion in (True, False):
+            with self.subTest(report_expansion=report_expansion):
+                controls, node, state = self.selection_controls(report_expansion=report_expansion)
+                controls.choose(node, 'Exact URL')
+                self.assertEqual(state['selection'], 1)
+                self.assertFalse(state['expanded'])
+                self.assertEqual(controls.host_action.call_args.kwargs['keys'], ['KEY_TAB'])
+
+    def test_popup_without_expanded_flag_must_close_before_moving_on(self):
+        controls, node, _ = self.selection_controls(close=False, report_expansion=False)
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        self.assertNotIn(['KEY_TAB'], [call.kwargs['keys'] for call in controls.host_action.call_args_list])
+
+    def test_unrelated_popup_cannot_substitute_for_the_select_menu(self):
+        controls, node, state = self.selection_controls(report_expansion=False)
+        state['expanded'] = True
+        popup = controls.nodes(role='window')[0]
+        controls.walk(popup)[0].name = 'Unrelated option'
+        self.assertIsNone(controls.select_popup_state(node, ['Domain', 'Exact URL']))
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        controls.host_action.assert_not_called()
+
+    def test_popup_options_must_be_visible_and_its_window_active(self):
+        controls, node, state = self.selection_controls(report_expansion=False)
+        state['expanded'] = True
+        popup = controls.nodes(role='window')[0]
+        popup.getState.return_value.contains.side_effect = lambda flag: False
+        self.assertEqual(controls.select_popup_state(node, ['Domain', 'Exact URL']), 'closed')
+        popup.getState.return_value.contains.side_effect = lambda flag: flag == 'active'
+        controls.walk(popup)[0].getState.return_value.contains.side_effect = lambda flag: flag == 'selectable'
+        self.assertIsNone(controls.select_popup_state(node, ['Domain', 'Exact URL']))
+
+    def test_already_selected_open_popup_is_committed_and_closed(self):
+        controls, node, state = self.selection_controls(report_expansion=False)
+        state.update(expanded=True, selection=1, highlight=1)
+        controls.choose(node, 'Exact URL')
+        self.assertFalse(state['expanded'])
+        self.assertEqual(state['selection'], 1)
+        controls.host_action.assert_called_once_with('keys', keys=['KEY_ENTER'])
+
+    def test_unavailable_accessibility_tree_does_not_prove_popup_closure(self):
+        controls, node, _ = self.selection_controls(report_expansion=False)
+        controls.nodes.return_value = []
+        controls.nodes.side_effect = None
+        self.assertIsNone(controls.select_popup_state(node, ['Domain', 'Exact URL']))
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        controls.host_action.assert_not_called()
+
+    def test_popup_closure_without_requested_selection_is_a_failure(self):
+        controls, node, state = self.selection_controls(commit=False)
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        self.assertNotIn(['KEY_TAB'], [call.kwargs['keys'] for call in controls.host_action.call_args_list])
+
+    def test_successful_focus_request_without_actual_focus_cannot_send_keys(self):
+        controls, node, _ = self.selection_controls(focus=False)
+        with self.assertRaises(TimeoutError): controls.choose(node, 'Exact URL')
+        controls.host_action.assert_not_called()
 
     def button_controls(self, sensitive=True, focus=True):
         controls = load_controls()

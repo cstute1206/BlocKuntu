@@ -1623,15 +1623,22 @@ fn import_policy_toml_method(
 
 fn persist_policy_config(context: &RpcContext, core: &mut FocusCore, next: Config) -> Result<()> {
     focus_core::validate_config(&next)?;
+    // A repair/startup process must not read or publish an intermediate policy,
+    // including the gap between a failed DB commit and snapshot rollback.
+    let recovery_guard = context
+        .policy_recovery
+        .as_ref()
+        .map(PolicyRecoveryManager::lock)
+        .transpose()?;
     let previous = core.config().clone();
     let now = Local::now().fixed_offset();
     core.database()
         .sync_schedule_activity_totals(&previous.schedules, now)?;
-    if let Some(policy_recovery) = &context.policy_recovery {
+    if let Some(policy_recovery) = &recovery_guard {
         policy_recovery.write(&next)?;
     }
     if let Err(database_error) = core.database().replace_policy_config(&next) {
-        if let Some(policy_recovery) = &context.policy_recovery {
+        if let Some(policy_recovery) = &recovery_guard {
             if let Err(recovery_error) = policy_recovery.write(&previous) {
                 return Err(DaemonError::PolicyPersistenceRollback {
                     database_error: database_error.to_string(),
@@ -5995,6 +6002,56 @@ mod tests {
             .expect("rules should be an array");
         assert!(rules.iter().any(|rule| rule["id"] == "hard"));
         assert!(rules.iter().any(|rule| rule["id"] == "replacement"));
+    }
+
+    #[test]
+    fn failed_policy_commit_restores_snapshot_while_holding_recovery_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let recovery = PolicyRecoveryManager::new(temp.path().join("policy.toml"), false);
+        let context = rpc_context().with_policy_recovery(recovery.clone());
+        let before = context.core.lock().unwrap().config().clone();
+        recovery.write(&before).unwrap();
+        {
+            let core = context.core.lock().unwrap();
+            core.database().replace_policy_config(&before).unwrap();
+            core.database()
+                .connection()
+                .execute_batch(
+                    "CREATE TRIGGER reject_test_policy BEFORE INSERT ON policy_site_lists
+                     WHEN NEW.id = 'snapshot-rollback'
+                     BEGIN SELECT RAISE(ABORT, 'injected policy commit failure'); END;",
+                )
+                .unwrap();
+        }
+        let response: Value = serde_json::from_slice(&handle_payload(
+            &context,
+            &serde_json::to_vec(&json!({
+                "jsonrpc": "2.0", "id": 732, "method": "import_policy_toml",
+                "params": {"toml": r#"
+                    [[rules]]
+                    id = "snapshot-rollback"
+                    name = "Must roll back"
+                    tier = "hard"
+                    patterns = [{ kind = "domain", value = "rollback.test" }]
+                "#}
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+        assert!(response["error"]
+            .to_string()
+            .contains("injected policy commit failure"));
+        let core = context.core.lock().unwrap();
+        assert_eq!(*core.config(), before);
+        let persisted = core.database().load_policy_config().unwrap();
+        assert_eq!(persisted.rules.len(), before.rules.len());
+        assert!(before
+            .rules
+            .iter()
+            .all(|rule| persisted.rules.contains(rule)));
+        assert_eq!(recovery.load().unwrap(), Some(before.clone()));
+        // The failed transaction must also release its file lock.
+        recovery.write(&before).unwrap();
     }
 
     #[test]

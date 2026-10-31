@@ -299,9 +299,10 @@ collect evidence without relying on the graphical session.
 milestone by the user's 2026-09-27 scope decision. Report that deferral and do
 not count the case as passed or as a current milestone gate. Historical smoke
 baselines now exist; a baseline/target upgrade pair is not selected for this
-milestone. Before the next release, select an accepted upgrade baseline
-and re-enable Layers 2–4 upgrade checks, including the known Debian `prerm`
-cleanup concern documented in `02-package-ci.md`.
+milestone. Upgrade implementation and Layers 2–4 upgrade validation remain
+deferred by agreement for this release; the known Debian `prerm` cleanup
+concern documented in `02-package-ci.md` remains open. Fresh-install smoke
+does not establish upgrade support.
 
 | ID | Actions | Expected result |
 | --- | --- | --- |

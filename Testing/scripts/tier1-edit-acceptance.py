@@ -22,7 +22,7 @@ ROOT = vm.ROOT
 
 def exercise(record, destination):
     sources = [ROOT / 'fixtures/layer3' / name for name in
-               ('guest.py', 'accessibility.py', 'ui_controls.py')]
+               ('guest.py', 'accessibility.py', 'ui_controls.py', 'gui.py')]
     sources += [ROOT / 'scripts' / name for name in ('layer3_contract.py', 'layer3_runtime.py')]
     sources += [ROOT / 'fixtures/layer4/protected_edits.py']
     for source in sources:
@@ -111,7 +111,7 @@ def main():
                    ROOT / 'scripts/vm-acceptance.py', ROOT / 'scripts/phase0-vm.py',
                    ROOT / 'scripts/layer3_contract.py', ROOT / 'scripts/layer3_runtime.py',
                    ROOT / 'fixtures/layer4/protected_edits.py',
-                   *[ROOT / 'fixtures/layer3' / name for name in ('guest.py', 'accessibility.py', 'ui_controls.py')]]
+                   *[ROOT / 'fixtures/layer3' / name for name in ('guest.py', 'accessibility.py', 'ui_controls.py', 'gui.py')]]
         vm.save(destination / 'harness-files.json', {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources})
         vm.save(destination / 'package-report.json', report)
         result = {'status': 'running', 'scope': selected_guest + '-tier1-protected-edits', 'layer': 4,

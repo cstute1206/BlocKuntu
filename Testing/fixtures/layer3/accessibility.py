@@ -23,11 +23,26 @@ def walk(node, depth=0):
 
 def apps():
     try:
-        return list(pyatspi.Registry.getDesktop(0))
+        desktop = pyatspi.Registry.getDesktop(0)
+        applications = []
+        for index in range(desktop.childCount):
+            try:
+                application = desktop.getChildAtIndex(index)
+                if application is not None:
+                    applications.append(application)
+            except Exception:
+                # A closing portal must not hide unrelated live applications.
+                continue
+        return applications
     except Exception:
         # A desktop application may be registering or temporarily busy.
         # Callers use bounded polling and must still observe the target.
         return []
+
+
+def refresh_desktop_cache():
+    """Invalidate toolkit/portal cache entries, then observe the live tree again."""
+    pyatspi.Registry.getDesktop(0).clearCache()
 
 
 def app_name(application):

@@ -217,6 +217,9 @@ post_upgrade() {
 }
 
 pre_remove() {
+  # The PreTransaction hook must have stopped every activation path before ALPM
+  # begins removal. Its private helper copy survives deletion of package files.
+  /run/blockuntu-package-removal/finish.sh --verify || return 1
   authorize_settings_uninstall || return 1
   policy_recovery='/etc/blockuntu/policy-recovery.toml'
   if [ -e "${policy_recovery}" ] && command -v chattr >/dev/null 2>&1; then
@@ -224,8 +227,6 @@ pre_remove() {
   fi
   remove_hosts_block
   remove_browser_policies
-  allow_systemd_stop
-  stop_units
   if [ -d /run/systemd/system ]; then
     systemctl disable ${unit_names} >/dev/null 2>&1 || true
   fi
@@ -233,11 +234,13 @@ pre_remove() {
 }
 
 post_remove() {
+  /run/blockuntu-package-removal/finish.sh --verify || return 1
+  # Retain the restart barrier until both binaries and managed data are gone.
+  rm -rf /etc/blockuntu /var/lib/blockuntu /run/blockuntu
+  /run/blockuntu-package-removal/finish.sh --finish || return 1
   clear_systemd_stop_override
   if [ -d /run/systemd/system ]; then
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl reset-failed ${unit_names} >/dev/null 2>&1 || true
   fi
-
-  rm -rf /etc/blockuntu /var/lib/blockuntu /run/blockuntu
 }

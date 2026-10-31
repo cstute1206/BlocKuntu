@@ -256,7 +256,25 @@ def prepare_cachyos(record, destination, refresh=False):
     vm.graphical_check(record, '-updated')
 
 
+def collect_artifact(destination, name, answer):
+    """Keep failed command output out of files consumed as JSON evidence."""
+    row = {'artifact': name, 'returncode': answer.returncode, 'stderr': answer.stderr}
+    if answer.returncode:
+        row.update(status='unavailable', stdout=answer.stdout)
+    else:
+        try:
+            if name.endswith('.json'):
+                json.loads(answer.stdout)
+            (destination / name).write_text(answer.stdout if name.endswith('.json')
+                                            else answer.stdout + answer.stderr)
+            row['status'] = 'collected'
+        except ValueError as error:
+            row.update(status='invalid_json', error=str(error), stdout=answer.stdout)
+    return row
+
+
 def collect(record, destination, plan, extra_plan=None):
+    receipt = []
     for name, command in {
         'journal.log': 'sudo -n journalctl -b --no-pager -u blockuntu.service -u blockuntu.socket -u blockuntu-watchdog.service -u blockuntu-hosts.service',
         'suite.log': 'journalctl --user -b --no-pager -u blockuntu-acceptance-suite',
@@ -266,6 +284,7 @@ def collect(record, destination, plan, extra_plan=None):
         'units.txt': 'systemctl show blockuntu.socket blockuntu.service blockuntu-watchdog.service blockuntu-hosts.path -p Id -p ActiveState -p UnitFileState -p NRestarts',
         'guest-results.json': 'cat Testing/layer3/result.json',
         'gui-health.json': 'cat Testing/layer3/gui-health.json',
+        'gui-import-failure.json': 'cat Testing/layer3/gui-import-failure.json',
         'export.toml': 'cat Testing/layer3/export.toml',
         'browser-metadata.json': 'cat Testing/layer3/browser-metadata.json',
         'firefox-failure.json': 'cat Testing/layer3/firefox-failure.json',
@@ -291,9 +310,10 @@ def collect(record, destination, plan, extra_plan=None):
     }.items():
         try:
             answer = vm.ssh(record, command, check=False)
-            (destination / name).write_text(answer.stdout + answer.stderr)
+            receipt.append(collect_artifact(destination, name, answer))
         except Exception as error:
-            (destination / name).write_text(str(error))
+            receipt.append({'artifact': name, 'status': 'transport_error', 'error': str(error)})
+    vm.save(destination / 'collection.json', receipt)
     failures = {f"{row['browser_package'].split('-')[0]}-{row['id'].lower()}-failure.json"
                 for selected in (plan, extra_plan) if selected is not None
                 for row in selected['observations'] if row['browser_package']}
@@ -544,6 +564,10 @@ def main():
                 guest = exercise_guest(record, destination, args.run_id, result, smoke_plan,
                                        selected_plan if p32 else None)
                 result['cases'].extend(guest['cases'])
+                failure = next((row for row in guest['cases'] if row.get('status') == 'fail'), None)
+                if failure:
+                    result['primary_failure'] = failure
+                    result['error'] = failure['id'] + ': ' + failure.get('error', 'Observation failed')
                 smoke_observations, result['smoke_coverage'] = evaluate_smoke(smoke_plan, result['cases'])
                 if p32:
                     remote = vm.ssh(record, 'cat Testing/layer3/p32-result.json', check=False)
@@ -587,7 +611,11 @@ def main():
                         result['selected_coverage']['observation_status']) else 'incomplete'
             result['acceptance_status'] = 'not_evaluated'
         except Exception as error:
-            result.update(status='fail', error=str(error))
+            result['status'] = 'fail'
+            if result.get('primary_failure'):
+                result.setdefault('secondary_errors', []).append(str(error))
+            else:
+                result['error'] = str(error)
             print(str(error), file=sys.stderr, flush=True)
         finally:
             try:

@@ -311,15 +311,17 @@ class PackageTests(unittest.TestCase):
         self.assertFalse([row for row in results if row['status'] == 'fail'], results)
         guard_path = 'usr/share/libalpm/hooks/00-blockuntu-removal.hook'
         for old, new in [(b'AbortOnFail', b''), (b'PreTransaction', b'PostTransaction'),
-                         (b'Operation = Remove', b'Operation = Upgrade')]:
+                         (b'Operation = Remove', b'Operation = Upgrade'),
+                         (b' --pacman-prepare', b'')]:
             broken = copy.deepcopy(entries)
             broken[guard_path]['data'] = broken[guard_path]['data'].replace(old, new)
             inspected = inspect_package(broken, meta, hooks, 'arch')
             self.assertEqual(next(row['status'] for row in inspected if row['id'] == 'PKG-HARD-001'), 'fail')
-        broken = copy.deepcopy(entries)
-        del broken['usr/lib/blockuntu/check-package-removal-lease.sh']
-        inspected = inspect_package(broken, meta, hooks, 'arch')
-        self.assertEqual(next(row['status'] for row in inspected if row['id'] == 'PKG-HARD-001'), 'fail')
+        for helper in ('check-package-removal-lease.sh', 'prepare-package-removal.sh'):
+            broken = copy.deepcopy(entries)
+            del broken['usr/lib/blockuntu/' + helper]
+            inspected = inspect_package(broken, meta, hooks, 'arch')
+            self.assertEqual(next(row['status'] for row in inspected if row['id'] == 'PKG-HARD-001'), 'fail')
 
         # Exercise the RPM guard contract with the production action file.
         rpm_entries = copy.deepcopy(entries)

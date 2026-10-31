@@ -25,7 +25,7 @@ SOURCES = [Path(__file__), ROOT / 'scripts/layer4_uninstall_contract.py', ROOT /
            ROOT / 'scripts/vm-acceptance.py', ROOT / 'scripts/phase0-vm.py',
            ROOT / 'scripts/layer3_contract.py', ROOT / 'scripts/layer3_runtime.py',
            *[ROOT / 'fixtures/layer3' / name for name in ('guest.py', 'accessibility.py',
-                                                        'ui_controls.py', 'browsers.py')],
+                                                        'ui_controls.py', 'browsers.py', 'gui.py')],
            ROOT / 'fixtures/layer4/uninstall.py', ROOT / 'fixtures/layer4/uninstall_ops.py',
            ROOT / 'fixtures/test-site/server.py', ROOT / 'fixtures/test-processes/test_process.c',
            ROOT / 'scripts/build-test-processes.sh']
@@ -103,12 +103,11 @@ def handle_action(record, destination, action, scenario):
     elif kind == 'keys':
         vm.virsh('send-key', record['uuid'], '--codeset', 'linux', *action['keys'])
     elif kind == 'focus_gui':
-        # The authorized baseline has three applications. Keeping Alt held
-        # while moving one place past Alt-Tab reaches the third application;
-        # independent Alt-Tab chords would only toggle the two browsers.
-        # The guest must observe the actual GUI's active frame before input.
-        vm.virsh('send-key', record['uuid'], '--codeset', 'linux', '--holdtime', '100',
-                 'KEY_LEFTALT', 'KEY_TAB', 'KEY_RIGHT')
+        # The installed single-instance handler presents the existing window.
+        # The guest separately requires its original PID and ACTIVE state.
+        checked(record, 'systemd-run --user --collect --property=ExitType=cgroup '
+                '--unit=blockuntu-p41-present-' + action['id'] +
+                ' /usr/bin/gtk-launch local.blockuntu.gui')
     else:
         credential = kind == 'type_credential'
         if credential:

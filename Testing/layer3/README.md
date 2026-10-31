@@ -77,6 +77,13 @@ have a null budget. A budget does not make a group runnable.
 
 ## Serialized smoke and isolated groups
 
+For new candidates, the `ubuntu` record in `verified-inputs.json` points to
+the Debian CI report (`debian/result.json`) and its sibling `.deb`, with the
+Debian artifact's exact version and SHA-256. The guest remains `ubuntu` for
+smoke and selected/full E2E plans. Fedora and CachyOS still select their RPM
+and Arch artifacts. Historical commands below retain their original inputs;
+use a new candidate's verified inputs and new run prefix for fresh acceptance.
+
 `layer3-run-groups.py` is the execution boundary for known groups. It verifies
 the complete selection and every selected Layer 2 package against the local
 provenance report before starting a VM. It rejects unimplemented groups,

@@ -26,13 +26,14 @@ class Layer3Fixture:
         packages = []
         for guest, component, suffix in (('ubuntu', 'deb', '.deb'),
                 ('fedora', 'rpm', '.rpm'), ('cachyos', 'arch', '.pkg.tar.zst')):
-            report = self.root / 'packages' / guest / 'result.json'
+            target = 'debian' if guest == 'ubuntu' else guest
+            report = self.root / 'packages' / target / 'result.json'
             package = report.parent / 'artifacts' / ('fixture' + suffix)
             package.parent.mkdir(parents=True)
-            package.write_bytes(b'Synthetic package bytes for ' + guest.encode())
+            package.write_bytes(b'Synthetic package bytes for ' + target.encode())
             digest = hashlib.sha256(package.read_bytes()).hexdigest()
             write_json(report, {'passed': True, 'build_provenance_verified': True,
-                'component': component, 'commit': self.commit,
+                'component': component, 'commit': self.commit, 'os_release': 'ID=' + target + '\n',
                 'package_metadata': {'version': '0.2.0-1'},
                 'artifacts': [{'filename': package.name, 'sha256': digest}]})
             packages.append({'guest': guest, 'report': str(report), 'package': str(package),

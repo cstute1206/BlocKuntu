@@ -4,12 +4,13 @@ import stat
 import tomllib
 from pathlib import Path
 import pyatspi
-from accessibility import app_name, apps, click, dump, find, texts, walk
+from accessibility import app_name, apps, click, dump, find, texts, walk, refresh_desktop_cache
 from guest import WORK, host_action, rpc, run, wait
+from ui_controls import focus_app, nodes, press_observed
 
 
-def chooser_app(title):
-    """Return the native chooser's AT-SPI application across GNOME/KDE."""
+def visible_chooser(title):
+    """Return only the matching, currently showing native chooser."""
     def locate():
         for application in apps():
             name = app_name(application)
@@ -29,7 +30,64 @@ def chooser_app(title):
                 except Exception:
                     continue
         return None
-    return wait(locate, 30)
+    return locate()
+
+
+def chooser_app(title):
+    return wait(lambda: visible_chooser(title), 30)
+
+
+def dismiss_welcome(guest):
+    leave_desktop_overview(guest)
+    focus_app()
+    press_observed('Get started', lambda: not nodes(role='dialog', name='Welcome to BlocKuntu'))
+
+
+def import_idle():
+    """Success text can appear before the asynchronous refresh finishes."""
+    return next((node for node in nodes(role='button', name='Append TOML', showing=False)
+                 if node.getState().contains(pyatspi.STATE_SENSITIVE)), None)
+
+
+def choose_policy_import(policy, guest, expected):
+    title, stage, application = 'Append BlocKuntu policy', 'ready', None
+    try:
+        assert not visible_chooser(title), 'A previous import chooser is still open'
+        focus_app()
+        wait(import_idle, 60)
+        stage = 'open-chooser'
+        application = press_observed('Append TOML', lambda: visible_chooser(title))
+        leave_desktop_overview(guest)
+        stage = 'select-file'
+        host_action('keys', keys=['KEY_LEFTCTRL', 'KEY_L'])
+        entry = chooser_editable(application)
+        assert entry.queryEditableText().setTextContents(str(policy))
+        host_action('keys', keys=['KEY_ENTER'])
+        item = chooser_item(application, policy.name)
+        assert item.parent.querySelection().selectChild(item.getIndexInParent())
+        chooser_button(application, 'Select', 'Open')
+        stage = 'chooser-closure'
+        def returned_to_application():
+            refresh_desktop_cache()
+            return not visible_chooser(title) and nodes(role='frame')
+        wait(returned_to_application, 30)
+        focus_app()
+        stage = 'completed-import'
+        wait(lambda: import_idle() and expected.lower() in texts().lower(), 60)
+    except Exception as error:
+        evidence = {'stage': stage, 'error': str(error), 'applications': {}}
+        for app in dict.fromkeys(['blockuntu-gui', application, 'gnome-shell']):
+            if app:
+                try:
+                    evidence['applications'][app] = dump(app)
+                except Exception as capture_error:
+                    evidence['applications'][app] = {'capture_error': str(capture_error)}
+        (WORK / 'gui-import-failure.json').write_text(json.dumps(evidence, indent=2))
+        try:
+            host_action('screenshot', name='gui-import-failure')
+        except Exception:
+            pass
+        raise
 
 
 def chooser_editable(application):
@@ -86,7 +144,7 @@ def chooser_button(application, *names):
 
 
 def leave_desktop_overview(guest):
-    """Close GNOME's overview if a modal chooser dispatch exposed it."""
+    """Close GNOME's overview before interacting with the GUI or a chooser."""
     if guest == 'fedora':
         # Fedora 44 can expose the first chooser in GNOME's overview, while
         # later choosers open directly. Esc is only safe in the overview.
@@ -162,7 +220,9 @@ patterns = [{{kind = "domain", value = "allowed.blockuntu.test"}}]
         assert serial, 'Installation ID is empty'
         evidence['installation_id_present'] = True
         # Never include recovery credential values in evidence.
-        click('Get started')
+        # A short viewport can leave the button below the modal's scroll area.
+        # Native focus reveals it; observe dismissal after the keyboard action.
+        dismiss_welcome(guest)
         click('Settings')
         click('Notifications')
         wait(lambda: serial in texts(), 30)
@@ -200,17 +260,7 @@ patterns = [{{kind = "domain", value = "allowed.blockuntu.test"}}]
     click('Rules and logging')
 
     def choose_import(expected='Policy appended from'):
-        click('Append TOML')
-        dialog_app = chooser_app('Append BlocKuntu policy')
-        leave_desktop_overview(guest)
-        host_action('keys', keys=['KEY_LEFTCTRL', 'KEY_L'])
-        entry = chooser_editable(dialog_app)
-        assert entry.queryEditableText().setTextContents(str(policy))
-        host_action('keys', keys=['KEY_ENTER'])
-        item = chooser_item(dialog_app, 'import.toml')
-        assert item.parent.querySelection().selectChild(item.getIndexInParent())
-        chooser_button(dialog_app, 'Select', 'Open')
-        wait(lambda: expected.lower() in texts().lower(), 30)
+        choose_policy_import(policy, guest, expected)
 
     def imported():
         choose_import()

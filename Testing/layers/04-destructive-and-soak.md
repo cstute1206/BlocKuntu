@@ -29,6 +29,14 @@ Never run these cases on the development host or a personal browser profile.
 | DES-UNINSTALL-006 | Inspect the system after authorized uninstall. | Units, daemon/native-host binaries, managed browser policies, Native Messaging manifests, and the BlocKuntu hosts block are removed; unrelated hosts and browser policy content remain. |
 | DES-UNINSTALL-007 | Keep a browser open during authorized GUI uninstall. | Ordinary browser-management pages remain reachable and the extension does not permanently fail-close after the native host disappears. |
 
+Arch final removal also requires a successful ALPM PreTransaction shutdown:
+all five units must be inactive or failed with no service processes remaining.
+A runtime restart barrier preserves the unconsumed authorization lease until
+the removal scriptlet accepts it, and remains until managed state is removed.
+A failed preparation aborts the transaction and attempts to restore the installed
+services; record shutdown and restoration diagnostics. Package absence alone
+does not satisfy DES-UNINSTALL-006. Upgrade acceptance remains deferred.
+
 ## Hosts-file hardening cases
 
 Preserve the VM's original `/etc/hosts` on the host as evidence before these
@@ -122,7 +130,11 @@ Native Messaging outage/repair or SQLite recovery specified here.
 | DES-AAL-006 | Exhaust a Tier 3 application-allowlist allowance, unlock the rejecting rule, and let the unlock expire. | Relaunched rejected processes work only during the fixed unlock and are terminated again after expiry; allowance stays exhausted. |
 | DES-AAL-007 | Recover SQLite from a policy snapshot containing an active-capable application allowlist. | Per-process semantics and recovery exemptions remain intact after recovery. |
 
-## Package-upgrade cases
+## Package-upgrade cases (deferred)
+
+Upgrade implementation and validation remain deferred by agreement for this
+release. The cases below are backlog, outside the current release gate, and
+must not be counted as passing or inferred from fresh-install acceptance.
 
 | ID | Actions | Expected result |
 | --- | --- | --- |
