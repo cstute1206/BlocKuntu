@@ -10,7 +10,7 @@ from unittest.mock import patch
 def load_fixture(name, work):
     accessibility = types.ModuleType('accessibility')
     for function in ('app_name', 'apps', 'click', 'dump', 'find', 'texts', 'walk',
-                     'visible_document_text'):
+                     'visible_document_text', 'refresh_desktop_cache'):
         setattr(accessibility, function, lambda *args, **kwargs: {})
     guest = types.ModuleType('guest')
     guest.WORK = work

@@ -54,12 +54,8 @@ def functional_baseline():
 
 
 def fresh_protected():
-    import pyatspi
-    def active():
-        return any(n.getState().contains(pyatspi.STATE_ACTIVE) for n in nodes(role='frame'))
-    if not active():
-        host_action('focus_gui')
-        wait(active, 15)
+    from ui_controls import focus_app
+    focus_app(activate=lambda: host_action('focus_gui'))
     if nodes(role='dialog', name='Settings'):
         click('Close Settings')
     press('Refresh')

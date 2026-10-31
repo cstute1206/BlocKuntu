@@ -4,7 +4,7 @@ import stat
 import tomllib
 from pathlib import Path
 import pyatspi
-from accessibility import app_name, apps, click, dump, find, texts, walk
+from accessibility import app_name, apps, click, dump, find, texts, walk, refresh_desktop_cache
 from guest import WORK, host_action, rpc, run, wait
 from ui_controls import focus_app, nodes, press_observed
 
@@ -67,7 +67,10 @@ def choose_policy_import(policy, guest, expected):
         assert item.parent.querySelection().selectChild(item.getIndexInParent())
         chooser_button(application, 'Select', 'Open')
         stage = 'chooser-closure'
-        wait(lambda: not visible_chooser(title), 30)
+        def returned_to_application():
+            refresh_desktop_cache()
+            return not visible_chooser(title) and nodes(role='frame')
+        wait(returned_to_application, 30)
         focus_app()
         stage = 'completed-import'
         wait(lambda: import_idle() and expected.lower() in texts().lower(), 60)

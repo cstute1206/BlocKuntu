@@ -160,6 +160,8 @@ def inspect():
                   '/etc/dnf/libdnf5-plugins/actions.d/blockuntu-removal.actions')
     elif guest == 'cachyos':
         paths += ('/usr/lib/blockuntu/check-package-removal-lease.sh',
+                  '/usr/lib/blockuntu/prepare-package-removal.sh',
+                  '/run/blockuntu-package-removal',
                   '/usr/share/libalpm/hooks/00-blockuntu-removal.hook')
     return {'checked_at': dt.datetime.now(dt.timezone.utc).isoformat(),
             'package': package_state(), 'package_inventory': inventory, 'browser_handoff': browser_handoff(),
@@ -172,7 +174,9 @@ def inspect():
             'user_native_copies': sorted(str(p) for p in Path('/home/akhi').glob('**/blockuntu-native*') if p.is_file()),
             'units': command('systemctl', 'show', 'blockuntu.service', 'blockuntu.socket',
                              'blockuntu-watchdog.service', 'blockuntu-hosts.path', 'blockuntu-hosts.service',
-                             '-p', 'Id', '-p', 'LoadState', '-p', 'ActiveState'),
+                             '-p', 'Id', '-p', 'LoadState', '-p', 'ActiveState',
+                             '-p', 'MainPID', '-p', 'ControlPID', '-p', 'SubState',
+                             '-p', 'RefuseManualStop', '-p', 'Restart', '-p', 'DropInPaths'),
             'collector': command('systemctl', 'is-active', 'blockuntu-p41-collector.service')}
 
 

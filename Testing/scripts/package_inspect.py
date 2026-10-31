@@ -247,8 +247,11 @@ def inspect_package(entries, meta, hooks, kind):
             require(syntax.returncode == 0, 'Invalid transaction guard syntax')
             if kind == 'arch':
                 hook = text('usr/share/libalpm/hooks/00-blockuntu-removal.hook', 0o644)
+                preparation = text(target['helper_dir'] + '/prepare-package-removal.sh', 0o755)
+                require(subprocess.run(['sh', '-n'], input=preparation.encode(), capture_output=True).returncode == 0,
+                        'Invalid removal preparation syntax')
                 for line in ['Operation = Remove', 'Type = Package', 'Target = blockuntu',
-                             'When = PreTransaction', 'Exec = /' + helper, 'AbortOnFail']:
+                             'When = PreTransaction', 'Exec = /' + helper + ' --pacman-prepare', 'AbortOnFail']:
                     require(line in hook.splitlines(), f'Missing ALPM transaction protection: {line}')
             else:
                 action = text('etc/dnf/libdnf5-plugins/actions.d/blockuntu-removal.actions', 0o644)

@@ -106,6 +106,8 @@ EOF
 
   install -Dm644 packaging/deb/blockuntu.toml \
     "${pkgdir}/etc/blockuntu/config.toml"
+  install -Dm755 scripts/prepare-package-removal.sh \
+    "${pkgdir}/usr/lib/blockuntu/prepare-package-removal.sh"
 
   for size in 32 64 128; do
     install -Dm644 "focus-gui/src-tauri/icons/${size}x${size}.png" \

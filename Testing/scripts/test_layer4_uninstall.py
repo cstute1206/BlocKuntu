@@ -106,11 +106,15 @@ if(!cases.every(Boolean)) process.exit(1);
             with self.assertRaises(ValueError):
                 validate_action(bad, scenario)
         with patch.object(runner.vm, 'guarded') as guard, patch.object(runner.vm, 'virsh') as virsh, \
-                patch.object(runner, 'checked'):
+                patch.object(runner, 'checked') as checked:
             runner.handle_action({'uuid': 'owned-clone'}, Path('/unused'), action, 'authorized')
         guard.assert_called_once()
-        virsh.assert_called_once_with('send-key', 'owned-clone', '--codeset', 'linux', '--holdtime', '100',
-                                     'KEY_LEFTALT', 'KEY_TAB', 'KEY_RIGHT')
+        virsh.assert_not_called()
+        self.assertEqual(checked.call_count, 2)  # Activation, then the normal completion receipt.
+        self.assertEqual(checked.call_args_list[0].args, ({'uuid': 'owned-clone'},
+            'systemd-run --user --collect --property=ExitType=cgroup '
+            '--unit=blockuntu-p41-present-' + action['id'] +
+            ' /usr/bin/gtk-launch local.blockuntu.gui'))
 
     def test_credential_keyboard_encoding_is_bounded(self):
         self.assertTrue(input_keys('BLOCKUNTU-UNINSTALL-RECOVERY-AB01'))

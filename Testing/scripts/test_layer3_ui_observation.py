@@ -10,7 +10,7 @@ def load_controls():
     dependencies = {
         'pyatspi': SimpleNamespace(),
         'accessibility': SimpleNamespace(**{name: Mock() for name in
-            ('apps', 'app_name', 'click', 'find', 'walk')}),
+            ('apps', 'app_name', 'click', 'find', 'walk', 'refresh_desktop_cache')}),
         'guest': SimpleNamespace(host_action=Mock(), wait=Mock()),
     }
     spec = importlib.util.spec_from_file_location('observed_ui_controls',
@@ -22,6 +22,58 @@ def load_controls():
 
 
 class ObservedTransitionTests(unittest.TestCase):
+    def activation_controls(self, *, new_pid=101, active=True):
+        controls = load_controls()
+        controls.pyatspi.STATE_ACTIVE = 'active'
+        before, after = Mock(), Mock()
+        before.getApplication.return_value.get_process_id.return_value = 101
+        after.getApplication.return_value.get_process_id.return_value = new_pid
+        before.getState.return_value.contains.return_value = False
+        after.getState.return_value.contains.return_value = active
+        state = {'presented': False}
+        controls.nodes = Mock(side_effect=lambda **kw: [after if state['presented'] else before])
+        activate = Mock(side_effect=lambda: state.update(presented=True))
+        controls.wait.side_effect = lambda ready, seconds: ready() or (_ for _ in ()).throw(TimeoutError())
+        return controls, activate
+
+    def test_named_activation_observes_the_original_process(self):
+        controls, activate = self.activation_controls()
+        controls.focus_app(activate=activate)
+        activate.assert_called_once()
+        controls.host_action.assert_not_called()
+
+    def test_activation_cannot_mask_a_restarted_gui(self):
+        controls, activate = self.activation_controls(new_pid=202)
+        with self.assertRaisesRegex(AssertionError, 'original process'):
+            controls.focus_app(activate=activate)
+
+    def test_activation_acknowledgement_without_focus_is_a_failure(self):
+        controls, activate = self.activation_controls(active=False)
+        with self.assertRaises(TimeoutError):
+            controls.focus_app(activate=activate)
+
+    def test_focus_rediscovers_a_live_frame_after_portal_cache_invalidation(self):
+        controls = load_controls()
+        controls.pyatspi.STATE_ACTIVE = 'active'
+        frame = Mock()
+        frame.getState.return_value.contains.return_value = True
+        state = {'stale': True}
+        controls.nodes = Mock(side_effect=lambda **kw: [] if state['stale'] else [frame])
+        controls.refresh_desktop_cache.side_effect = lambda: state.update(stale=False)
+        controls.wait.side_effect = lambda ready, seconds: ready() or (_ for _ in ()).throw(TimeoutError())
+        controls.focus_app()
+        controls.refresh_desktop_cache.assert_called_once()
+        controls.host_action.assert_not_called()
+
+    def test_cache_invalidation_cannot_substitute_for_a_live_frame(self):
+        controls = load_controls()
+        controls.nodes = Mock(return_value=[])
+        controls.wait.side_effect = lambda ready, seconds: ready() or (_ for _ in ()).throw(TimeoutError())
+        with self.assertRaises(TimeoutError):
+            controls.focus_app()
+        controls.refresh_desktop_cache.assert_called_once()
+        controls.host_action.assert_not_called()
+
     def test_already_selected_option_does_not_open_a_native_popup(self):
         controls = load_controls()
         controls.pyatspi.STATE_SELECTED = 'selected'

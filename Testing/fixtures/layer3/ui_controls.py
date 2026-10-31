@@ -1,6 +1,6 @@
 """Native AT-SPI form operations for installed-product acceptance."""
 import pyatspi
-from accessibility import apps, app_name, click, find, walk
+from accessibility import apps, app_name, click, find, walk, refresh_desktop_cache
 from guest import host_action, wait
 
 
@@ -115,13 +115,34 @@ def combo(label):
         if n.name==label or n.name.startswith(label+' ')),None),15)
 
 
-def focus_app(app='blockuntu-gui'):
-    frames=wait(lambda:nodes(app=app,role='frame'),15)
+def focus_app(app='blockuntu-gui', *, activate=None):
+    if activate is not None:
+        refresh_desktop_cache()
+    def current_frames():
+        found = nodes(app=app, role='frame')
+        if not found:
+            refresh_desktop_cache()
+            found = nodes(app=app, role='frame')
+        return found
+    frames=wait(current_frames,15)
     # A modal close or native app switch can replace the accessible frame.
     # Requery the desktop instead of polling the original frame indefinitely.
     def active():return any(n.getState().contains(pyatspi.STATE_ACTIVE)
         for n in nodes(app=app,role='frame'))
     if active():return
+    if activate is not None:
+        original = {frame.getApplication().get_process_id() for frame in frames}
+        activate()
+        def activated_original():
+            refresh_desktop_cache()
+            current = nodes(app=app, role='frame')
+            if not current:
+                return False
+            assert {frame.getApplication().get_process_id() for frame in current} == original, \
+                'Application activation replaced or duplicated the original process'
+            return any(frame.getState().contains(pyatspi.STATE_ACTIVE) for frame in current)
+        wait(activated_original, 15)
+        return
     # GNOME can leave a newly launched window visible inside its overview.
     # Exit that shell surface before attempting native application switching.
     host_action('keys',keys=['KEY_ESC'])

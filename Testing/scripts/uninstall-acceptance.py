@@ -103,12 +103,11 @@ def handle_action(record, destination, action, scenario):
     elif kind == 'keys':
         vm.virsh('send-key', record['uuid'], '--codeset', 'linux', *action['keys'])
     elif kind == 'focus_gui':
-        # The authorized baseline has three applications. Keeping Alt held
-        # while moving one place past Alt-Tab reaches the third application;
-        # independent Alt-Tab chords would only toggle the two browsers.
-        # The guest must observe the actual GUI's active frame before input.
-        vm.virsh('send-key', record['uuid'], '--codeset', 'linux', '--holdtime', '100',
-                 'KEY_LEFTALT', 'KEY_TAB', 'KEY_RIGHT')
+        # The installed single-instance handler presents the existing window.
+        # The guest separately requires its original PID and ACTIVE state.
+        checked(record, 'systemd-run --user --collect --property=ExitType=cgroup '
+                '--unit=blockuntu-p41-present-' + action['id'] +
+                ' /usr/bin/gtk-launch local.blockuntu.gui')
     else:
         credential = kind == 'type_credential'
         if credential:

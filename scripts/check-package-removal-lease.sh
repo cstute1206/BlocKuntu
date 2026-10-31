@@ -2,6 +2,7 @@
 # Transaction guards must validate without consuming: the removal scriptlet
 # consumes the same daemon-issued lease after the package manager commits.
 removal_message='BlocKuntu refuses direct package-manager removal.'
+prepare_pacman=0
 reject_package_uninstall() {
   printf '%s\n' "${removal_message}" \
     'Open BlocKuntu Settings and use its uninstall action instead.' >&2
@@ -10,6 +11,10 @@ reject_package_uninstall() {
 
 case "$#:$1" in
   0:) removal_message='BlocKuntu refuses direct Pacman removal.' ;;
+  1:--pacman-prepare)
+    removal_message='BlocKuntu refuses direct Pacman removal.'
+    prepare_pacman=1
+    ;;
   2:--dnf-action)
     case "$2" in
       E) ;; # Final erase requires GUI authorization.
@@ -32,4 +37,7 @@ case "${expires_at}" in ''|*[!0-9]*) reject_package_uninstall ;; esac
 now="$(/usr/bin/date -u +%s)" || reject_package_uninstall
 [ "${now}" -le "${expires_at}" ] || reject_package_uninstall
 [ "${lease_token}" = "${expected_token}" ] || reject_package_uninstall
+if [ "$prepare_pacman" -eq 1 ]; then
+  /usr/lib/blockuntu/prepare-package-removal.sh || exit 1
+fi
 exit 0

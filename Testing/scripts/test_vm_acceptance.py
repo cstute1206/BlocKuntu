@@ -243,7 +243,7 @@ class CachyOSBaselineTests(unittest.TestCase):
 class ChooserEvidenceTests(unittest.TestCase):
     def test_nautilus_filler_is_a_chooser_but_taskbar_entries_are_not(self):
         accessibility = types.ModuleType('accessibility')
-        for name in ('app_name', 'apps', 'click', 'dump', 'find', 'texts', 'walk'):
+        for name in ('app_name', 'apps', 'click', 'dump', 'find', 'texts', 'walk', 'refresh_desktop_cache'):
             setattr(accessibility, name, lambda *args, **kwargs: None)
         guest = types.ModuleType('guest')
         guest.WORK = Path('/unused')
@@ -395,7 +395,8 @@ class BrowserEvidenceTests(unittest.TestCase):
         ])
         fake = types.SimpleNamespace(STATE_SHOWING=1,
             Atspi=types.SimpleNamespace(set_timeout=lambda *args: None),
-            Registry=types.SimpleNamespace(getDesktop=lambda index: [browser]))
+            Registry=types.SimpleNamespace(getDesktop=lambda index: types.SimpleNamespace(
+                childCount=1, getChildAtIndex=lambda child: browser)))
         spec = importlib.util.spec_from_file_location('acceptance_accessibility',
             Path(__file__).parents[1] / 'fixtures/layer3/accessibility.py')
         module = importlib.util.module_from_spec(spec)

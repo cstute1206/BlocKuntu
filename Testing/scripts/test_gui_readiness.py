@@ -15,7 +15,7 @@ def load_gui():
     dependencies = {
         'pyatspi': SimpleNamespace(STATE_SENSITIVE='sensitive'),
         'accessibility': SimpleNamespace(**{name: Mock() for name in
-            ('app_name', 'apps', 'click', 'dump', 'find', 'texts', 'walk')}),
+            ('app_name', 'apps', 'click', 'dump', 'find', 'texts', 'walk', 'refresh_desktop_cache')}),
         'guest': SimpleNamespace(WORK=Path('/unused'), **{name: Mock() for name in
             ('host_action', 'rpc', 'run', 'wait')}),
         'ui_controls': SimpleNamespace(**{name: Mock() for name in
@@ -78,6 +78,26 @@ class ImportReadinessTests(unittest.TestCase):
         self.assertEqual(state['completed_polls'], 3)
         self.assertFalse(state['chooser'])
         self.assertEqual(gui.focus_app.call_count, 2)
+        gui.refresh_desktop_cache.assert_called()
+
+    def test_missing_chooser_does_not_prove_the_application_returned(self):
+        gui = load_gui()
+        gui.visible_chooser = Mock(side_effect=[None, 'chooser-app', None])
+        gui.nodes.return_value = []
+        gui.import_idle = Mock(return_value=True)
+        gui.press_observed.side_effect = lambda name, ready: ready()
+        gui.leave_desktop_overview = Mock()
+        gui.chooser_editable = Mock()
+        gui.chooser_item = Mock()
+        gui.chooser_button = Mock()
+        gui.wait.side_effect = lambda ready, seconds: ready() or (_ for _ in ()).throw(TimeoutError('no live frame'))
+        gui.dump.return_value = []
+        with tempfile.TemporaryDirectory() as directory:
+            gui.WORK = Path(directory)
+            with self.assertRaisesRegex(TimeoutError, 'no live frame'):
+                gui.choose_policy_import(Path('/fixture/import.toml'), 'ubuntu', 'success')
+            self.assertEqual(json.loads((gui.WORK / 'gui-import-failure.json').read_text())['stage'],
+                             'chooser-closure')
 
     def test_readiness_failure_keeps_stage_and_accessibility_evidence(self):
         gui = load_gui()
