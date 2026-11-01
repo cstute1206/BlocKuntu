@@ -46,3 +46,10 @@ released even when input dispatch fails. Only the original active GUI process
 permits further form input; neither a successful launcher nor a replacement
 GUI process proves recovery. The uninstall suites qualify this adapter with
 both browsers still open before the complete acceptance batches can advance.
+
+Activation journals are queried by the exact unit names in the current run's
+activation receipts. When no activation has been recorded (including direct
+remove/purge and early authorized checkpoints), `gui-activation-journal.json`
+records `not_applicable`. A failed journal read or malformed receipt remains a
+collection failure, with the output retained. All three uninstall scenario
+branches must be exercised when qualifying collector changes.
