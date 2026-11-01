@@ -36,3 +36,13 @@ any failed suite ends as `completed_with_failures`, returns nonzero and does
 not make the release ready. Final release reporting also checks explicitly
 selected reports. Upgrades remain deferred; unimplemented catalog cases are
 excluded from the executable plan.
+
+Authorized-uninstall focus recovery records the launcher result, its journal,
+the original GUI process identity, and active-window observations in each
+clone's acceptance evidence. If relaunching the installed single instance does
+not focus its original window, a bounded native Alt+Tab selection tries up to
+eight offsets while retaining Alt across the Tab presses. The modifier is
+released even when input dispatch fails. Only the original active GUI process
+permits further form input; neither a successful launcher nor a replacement
+GUI process proves recovery. The uninstall suites qualify this adapter with
+both browsers still open before the complete acceptance batches can advance.

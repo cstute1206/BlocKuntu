@@ -52,6 +52,33 @@ class ObservedTransitionTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             controls.focus_app(activate=activate)
 
+    def test_native_fallback_reaches_the_original_window_behind_two_browsers(self):
+        controls, activate = self.activation_controls(active=False)
+        controls.apps.return_value = []
+        selected, observations = [], []
+        def switch(offset):
+            selected.append(offset)
+            frame = controls.nodes()[0]
+            frame.getState.return_value.contains.return_value = offset == 2
+        controls.focus_app(activate=activate, select_window=switch, report=observations.append)
+        self.assertEqual(selected, [1, 2])
+        self.assertEqual(observations[-1]['stage'], 'switch-2-focused')
+        self.assertEqual(observations[-1]['original_pids'], [101])
+
+    def test_native_fallback_never_accepts_a_different_process(self):
+        controls, activate = self.activation_controls(active=False)
+        def replaced(offset):
+            controls.nodes()[0].getApplication.return_value.get_process_id.return_value = 202
+        with self.assertRaisesRegex(AssertionError, 'original process'):
+            controls.focus_app(activate=activate, select_window=replaced)
+
+    def test_native_fallback_is_bounded_when_every_window_selection_is_ignored(self):
+        controls, activate = self.activation_controls(active=False)
+        switch = Mock()
+        with self.assertRaisesRegex(TimeoutError, 'bounded window selection'):
+            controls.focus_app(activate=activate, select_window=switch)
+        self.assertEqual([call.args[0] for call in switch.call_args_list], list(range(1, 9)))
+
     def test_focus_rediscovers_a_live_frame_after_portal_cache_invalidation(self):
         controls = load_controls()
         controls.pyatspi.STATE_ACTIVE = 'active'

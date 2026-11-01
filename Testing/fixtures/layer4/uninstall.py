@@ -55,7 +55,13 @@ def functional_baseline():
 
 def fresh_protected():
     from ui_controls import focus_app
-    focus_app(activate=lambda: host_action('focus_gui'))
+    path = WORK / 'p41-focus.json'
+    attempts = json.loads(path.read_text()) if path.exists() else []
+    def report(observation):
+        attempts.append({'at': dt.datetime.now(dt.timezone.utc).isoformat(), **observation})
+        save(path, attempts)
+    focus_app(activate=lambda: host_action('focus_gui'),
+              select_window=lambda steps: host_action('select_gui_window', steps=steps), report=report)
     if nodes(role='dialog', name='Settings'):
         click('Close Settings')
     press('Refresh')

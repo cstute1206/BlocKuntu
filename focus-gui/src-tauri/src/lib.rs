@@ -2427,9 +2427,17 @@ fn tray_enforcement_label(state: &str) -> &'static str {
 
 fn show_main_window(app: &AppHandle<Wry>) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        for (operation, result) in [
+            ("unminimize", window.unminimize()),
+            ("show", window.show()),
+            ("focus", window.set_focus()),
+        ] {
+            if let Err(error) = result {
+                eprintln!("BlocKuntu window activation failed ({operation}): {error}");
+            }
+        }
+    } else {
+        eprintln!("BlocKuntu window activation failed: main window is unavailable");
     }
 }
 
@@ -2452,6 +2460,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if !login_startup::tray_requested(argv) {
+                eprintln!(
+                    "BlocKuntu received existing-instance activation (pid={})",
+                    std::process::id()
+                );
                 show_main_window(app);
                 emit_runtime_refresh(app);
             }

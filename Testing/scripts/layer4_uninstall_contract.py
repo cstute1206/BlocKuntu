@@ -161,14 +161,17 @@ def validate_action(request, scenario):
               'type_url': {'id', 'action', 'url'},
               'screenshot': {'id', 'action', 'name'},
               'focus_gui': {'id', 'action'},
+              'select_gui_window': {'id', 'action', 'steps'},
               'checkpoint': {'id', 'action', 'name'},
               'fault': {'id', 'action', 'name'}}
     action = request.get('action')
     if not isinstance(action, str) or action not in fields or set(request) != fields[action]:
         raise ValueError('Malformed uninstall action')
-    if action == 'focus_gui':
+    if action in ('focus_gui', 'select_gui_window'):
         if scenario != 'authorized':
             raise ValueError('GUI focus is only available in the authorized journey')
+        if action == 'select_gui_window' and (type(request['steps']) is not int or not 1 <= request['steps'] <= 8):
+            raise ValueError('Window selection requires 1-8 native switcher steps')
     elif action == 'type_credential':
         if scenario != 'authorized' or request['slot'] not in ('invalid', 'uninstall'):
             raise ValueError('Unknown uninstall credential slot')
