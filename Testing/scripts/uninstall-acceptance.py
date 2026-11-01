@@ -43,8 +43,46 @@ def upload(record, source, name=None):
     suite.upload(record, source, REMOTE + (name or Path(source).name))
 
 
+def collect_activation_journal(record, destination):
+    """Empty activation history is expected; failed journal reads are not."""
+    status = {'status': 'not_applicable', 'units': []}
+    metadata = destination / 'gui-activation-journal.json'
+    try:
+        receipts = Path(record['evidence']) / 'acceptance'
+        for path in sorted(receipts.iterdir()):
+            if not path.name.startswith('activation-') or path.suffix != '.json':
+                continue
+            match = re.fullmatch(r'activation-([a-f0-9]{32})\.json', path.name)
+            if not match or path.is_symlink() or not path.is_file():
+                raise ValueError('Invalid activation receipt: ' + path.name)
+            unit = 'blockuntu-p41-present-' + match[1]
+            if json.loads(path.read_text()).get('unit') != unit:
+                raise ValueError('Activation unit differs from its recorded request')
+            status['units'].append(unit + '.service')
+        if not status['units']:
+            status['reason'] = 'No GUI activation was recorded before this checkpoint.'
+            (destination / 'activation.log').write_text(status['reason'] + '\n')
+        else:
+            command = shlex.join(['journalctl', '--user', '-b', '--no-pager',
+                                  *[arg for unit in status['units'] for arg in ('-u', unit)]])
+            answer = checked(record, command, check=False, timeout=45)
+            (destination / 'activation.log').write_text(redact(answer.stdout + answer.stderr))
+            status.update(status='collected', returncode=answer.returncode)
+            if answer.returncode:
+                raise RuntimeError('Activation journal returned ' + str(answer.returncode) + '; see activation.log')
+    except Exception as error:
+        status.update(status='error', error=redact(error))
+        save(metadata, status)
+        raise
+    save(metadata, status)
+
+
 def collect(record, destination, scenario, baseline=False):
     errors = []
+    try:
+        collect_activation_journal(record, destination)
+    except Exception as error:
+        errors.append({'file': 'activation.log', 'error': redact(error)})
     commands = {
         'guest-results.json': 'cat Testing/layer3/p41-result.json',
         'inspection.json': 'sudo -n /usr/bin/python3 Testing/layer3/uninstall_ops.py inspect',
@@ -53,7 +91,6 @@ def collect(record, destination, scenario, baseline=False):
         'collector.log': 'sudo -n journalctl -b --no-pager -u blockuntu-p41-collector.service',
         'suite.log': 'journalctl --user -b --no-pager -u blockuntu-p41-suite',
         'gui.log': 'journalctl --user -b --no-pager -u blockuntu-acceptance-gui',
-        'activation.log': "journalctl --user -b --no-pager -u 'blockuntu-p41-present-*'",
         ('dpkg.log' if record['template'] == 'ubuntu' else 'native-package.log'): 'sudo -n /usr/bin/python3 Testing/layer3/uninstall_ops.py native-log',
     }
     if baseline:
@@ -63,9 +100,9 @@ def collect(record, destination, scenario, baseline=False):
     for name, command in commands.items():
         try:
             answer = checked(record, command, check=False, timeout=45)
-            if answer.returncode:
-                raise RuntimeError('Evidence command returned ' + str(answer.returncode))
             (destination / name).write_text(redact(answer.stdout + answer.stderr))
+            if answer.returncode:
+                raise RuntimeError('Evidence command returned ' + str(answer.returncode) + '; see ' + name)
         except Exception as error:
             errors.append({'file': name, 'error': redact(error)})
     for name in ('p41-focus.json', 'p41-gui-baseline.json', 'p41-gui-post-refusal.json',
@@ -107,6 +144,8 @@ def handle_action(record, destination, action, scenario):
     elif kind == 'focus_gui':
         # Capture launcher completion; the guest separately observes real focus.
         unit = 'blockuntu-p41-present-' + action['id']
+        # Retain intent even when transport fails before a launcher result exists.
+        save(destination / ('activation-' + action['id'] + '.json'), {'unit': unit, 'status': 'requested'})
         try:
             answer = checked(record, 'systemd-run --user --wait --pipe --collect '
                              '--property=Type=exec --property=ExitType=cgroup --unit=' + unit +

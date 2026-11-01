@@ -269,6 +269,115 @@ class EvidenceTests(unittest.TestCase):
             verify_guest(result, 'authorized')
 
 
+class ActivationJournalTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.acceptance = self.root / 'acceptance'
+        self.acceptance.mkdir()
+        self.record = {'uuid': 'owned-clone', 'template': 'ubuntu', 'evidence': str(self.root)}
+
+    def receipt(self, identifier='a' * 32, unit=None):
+        unit = unit or 'blockuntu-p41-present-' + identifier
+        p = self.acceptance / ('activation-' + identifier + '.json')
+        p.write_text(json.dumps({'unit': unit}))
+        return p
+
+    def answer(self, record, command, **kwargs):
+        return SimpleNamespace(returncode=0, stdout='evidence\n', stderr='')
+
+    def test_absent_activation_is_expected_for_all_scenarios_and_checkpoints(self):
+        for scenario in ('remove', 'purge', 'authorized'):
+            for checkpoint in ('baseline', 'before-uninstall', 'after-uninstall', ''):
+                destination = self.acceptance / checkpoint
+                destination.mkdir(exist_ok=True)
+                with self.subTest(scenario=scenario, checkpoint=checkpoint), \
+                        patch.object(runner, 'checked', side_effect=self.answer) as checked:
+                    self.assertEqual(runner.collect(self.record, destination, scenario), [])
+                    self.assertFalse(any('blockuntu-p41-present-' in call.args[1] for call in checked.call_args_list))
+                    status = json.loads((destination / 'gui-activation-journal.json').read_text())
+                    self.assertEqual(status['status'], 'not_applicable')
+                    self.assertEqual(status['units'], [])
+
+    def test_nested_checkpoint_and_final_collection_use_exact_recorded_units(self):
+        self.receipt('a' * 32)
+        self.receipt('b' * 32)
+        for checkpoint in ('baseline', ''):
+            destination = self.acceptance / checkpoint
+            destination.mkdir(exist_ok=True)
+            with self.subTest(checkpoint=checkpoint), patch.object(runner, 'checked', side_effect=self.answer) as checked:
+                runner.collect_activation_journal(self.record, destination)
+            command = checked.call_args.args[1]
+            self.assertNotIn('*', command)
+            for identifier in ('a' * 32, 'b' * 32):
+                self.assertIn('-u blockuntu-p41-present-' + identifier + '.service', command)
+            status = json.loads((destination / 'gui-activation-journal.json').read_text())
+            self.assertEqual(status['status'], 'collected')
+            self.assertEqual(len(status['units']), 2)
+
+    def test_real_journal_failure_remains_fatal_and_preserves_redacted_output(self):
+        self.receipt()
+        secret = 'BLOCKUNTU-UNINSTALL-RECOVERY-AB12'
+        def answer(record, command, **kwargs):
+            if 'blockuntu-p41-present-' in command:
+                return SimpleNamespace(returncode=1, stdout='partial\n', stderr='Permission denied ' + secret)
+            return self.answer(record, command, **kwargs)
+        with patch.object(runner, 'checked', side_effect=answer):
+            errors = runner.collect(self.record, self.acceptance, 'authorized')
+        self.assertEqual([row['file'] for row in errors], ['activation.log'])
+        log = (self.acceptance / 'activation.log').read_text()
+        self.assertIn('partial', log)
+        self.assertIn('Permission denied', log)
+        self.assertNotIn(secret, log)
+        status = json.loads((self.acceptance / 'gui-activation-journal.json').read_text())
+        self.assertEqual(status['status'], 'error')
+        self.assertEqual(status['returncode'], 1)
+
+    def test_other_evidence_failures_are_not_masked_by_empty_activation_history(self):
+        def answer(record, command, **kwargs):
+            if command.startswith('sudo -n journalctl') and '-u blockuntu.service' in command:
+                return SimpleNamespace(returncode=1, stdout='', stderr='Journal unavailable')
+            return self.answer(record, command, **kwargs)
+        with patch.object(runner, 'checked', side_effect=answer):
+            errors = runner.collect(self.record, self.acceptance, 'remove')
+        self.assertEqual([row['file'] for row in errors], ['journal.log'])
+        self.assertEqual((self.acceptance / 'journal.log').read_text(), 'Journal unavailable')
+
+    def test_invalid_activation_receipts_cannot_supply_journal_arguments(self):
+        for value in ('wrong-unit', 'blockuntu-p41-present-' + 'a' * 32 + '; reboot', None):
+            with self.subTest(value=value):
+                p = self.receipt()
+                p.write_text('not json' if value is None else json.dumps({'unit': value}))
+                with patch.object(runner, 'checked') as checked:
+                    with self.assertRaises((ValueError, TypeError)):
+                        runner.collect_activation_journal(self.record, self.acceptance)
+                    checked.assert_not_called()
+                self.assertEqual(json.loads((self.acceptance / 'gui-activation-journal.json').read_text())['status'], 'error')
+
+    def test_receipts_from_other_runs_do_not_create_activation_history(self):
+        self.receipt()
+        other = self.root / 'other'
+        (other / 'acceptance').mkdir(parents=True)
+        record = {**self.record, 'evidence': str(other)}
+        with patch.object(runner, 'checked') as checked:
+            runner.collect_activation_journal(record, other / 'acceptance')
+        checked.assert_not_called()
+        self.assertEqual(json.loads((other / 'acceptance/gui-activation-journal.json').read_text())['status'], 'not_applicable')
+
+    def test_activation_intent_survives_a_transport_failure(self):
+        def failed(record, command, **kwargs):
+            receipt = json.loads((self.acceptance / ('activation-' + 'a' * 32 + '.json')).read_text())
+            self.assertEqual(receipt['status'], 'requested')
+            raise RuntimeError('Transport failed')
+        with patch.object(runner.vm, 'guarded'), patch.object(runner, 'checked', side_effect=failed):
+            with self.assertRaisesRegex(RuntimeError, 'Transport failed'):
+                runner.handle_action(self.record, self.acceptance, {'id': 'a' * 32, 'action': 'focus_gui'}, 'authorized')
+        with patch.object(runner, 'checked', side_effect=self.answer) as checked:
+            runner.collect_activation_journal(self.record, self.acceptance)
+        self.assertIn('blockuntu-p41-present-' + 'a' * 32 + '.service', checked.call_args.args[1])
+
+
 class RetentionTests(unittest.TestCase):
     def fixtures(self):
         return SimpleNamespace(unchanged=Mock(), cleanup=Mock()), SimpleNamespace(stop=Mock())
