@@ -115,7 +115,7 @@ def combo(label):
         if n.name==label or n.name.startswith(label+' ')),None),15)
 
 
-def focus_app(app='blockuntu-gui', *, activate=None):
+def focus_app(app='blockuntu-gui', *, activate=None, select_window=None, report=None):
     if activate is not None:
         refresh_desktop_cache()
     def current_frames():
@@ -132,7 +132,28 @@ def focus_app(app='blockuntu-gui', *, activate=None):
     if active():return
     if activate is not None:
         original = {frame.getApplication().get_process_id() for frame in frames}
-        activate()
+        def observed(stage, error=None):
+            if report is None:
+                return
+            current = nodes(app=app, role='frame')
+            active_windows = []
+            for application in apps():
+                try:
+                    count = min(application.childCount, 100)
+                except Exception:
+                    continue
+                for index in range(count):
+                    try:
+                        window = application.getChildAtIndex(index)
+                        if window.getRoleName() == 'frame' and window.getState().contains(pyatspi.STATE_ACTIVE):
+                            active_windows.append({'app': app_name(application), 'title': window.name,
+                                                   'pid': application.get_process_id()})
+                    except Exception:
+                        continue
+            report({'stage': stage, 'original_pids': sorted(original),
+                    'frames': [{'title': n.name, 'pid': n.getApplication().get_process_id(),
+                                'active': n.getState().contains(pyatspi.STATE_ACTIVE)} for n in current],
+                    'active_windows': active_windows, 'error': error})
         def activated_original():
             refresh_desktop_cache()
             current = nodes(app=app, role='frame')
@@ -141,8 +162,28 @@ def focus_app(app='blockuntu-gui', *, activate=None):
             assert {frame.getApplication().get_process_id() for frame in current} == original, \
                 'Application activation replaced or duplicated the original process'
             return any(frame.getState().contains(pyatspi.STATE_ACTIVE) for frame in current)
-        wait(activated_original, 15)
-        return
+        observed('before-activation')
+        activate()
+        try:
+            wait(activated_original, 3)
+            observed('activation-focused')
+            return
+        except TimeoutError:
+            observed('activation-unfocused')
+        # Keep Alt held across repeated Tab presses in one native switcher
+        # invocation. Increasing the offset can reach windows behind both
+        # browsers, unlike repeatedly toggling the two most recent windows.
+        if select_window is not None:
+            for offset in range(1, 9):
+                select_window(offset)
+                try:
+                    wait(activated_original, 2)
+                    observed('switch-' + str(offset) + '-focused')
+                    return
+                except TimeoutError:
+                    observed('switch-' + str(offset) + '-unfocused')
+        observed('failed', 'Original BlocKuntu window did not become active')
+        raise TimeoutError('Original BlocKuntu window did not become active after bounded window selection')
     # GNOME can leave a newly launched window visible inside its overview.
     # Exit that shell surface before attempting native application switching.
     host_action('keys',keys=['KEY_ESC'])

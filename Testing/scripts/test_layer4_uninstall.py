@@ -106,15 +106,65 @@ if(!cases.every(Boolean)) process.exit(1);
             with self.assertRaises(ValueError):
                 validate_action(bad, scenario)
         with patch.object(runner.vm, 'guarded') as guard, patch.object(runner.vm, 'virsh') as virsh, \
-                patch.object(runner, 'checked') as checked:
+                patch.object(runner, 'checked', return_value=SimpleNamespace(returncode=0, stdout='', stderr='')) as checked, \
+                patch.object(runner, 'save') as save:
             runner.handle_action({'uuid': 'owned-clone'}, Path('/unused'), action, 'authorized')
         guard.assert_called_once()
         virsh.assert_not_called()
         self.assertEqual(checked.call_count, 2)  # Activation, then the normal completion receipt.
         self.assertEqual(checked.call_args_list[0].args, ({'uuid': 'owned-clone'},
-            'systemd-run --user --collect --property=ExitType=cgroup '
+            'systemd-run --user --wait --pipe --collect --property=Type=exec --property=ExitType=cgroup '
             '--unit=blockuntu-p41-present-' + action['id'] +
             ' /usr/bin/gtk-launch local.blockuntu.gui'))
+        self.assertEqual(save.call_args.args[1]['returncode'], 0)
+
+    def test_activation_failure_is_retained_and_acknowledged_for_focus_fallback(self):
+        for answer in (SimpleNamespace(returncode=1, stdout='', stderr='activation rejected'),
+                       subprocess.TimeoutExpired('fixed launcher', 20, stderr='not completed')):
+            with self.subTest(answer=answer), patch.object(runner.vm, 'guarded'), \
+                    patch.object(runner, 'checked') as checked, patch.object(runner, 'save') as save:
+                checked.side_effect = [answer, SimpleNamespace(returncode=0)]
+                runner.handle_action({'uuid': 'owned-clone'}, Path('/unused'), self.request('focus_gui'), 'authorized')
+                self.assertEqual(checked.call_count, 2)
+                receipt = save.call_args.args[1]
+                self.assertIn('unit', receipt)
+                self.assertIn('stderr', receipt)
+                self.assertNotEqual(receipt['returncode'], 0)
+
+    def test_window_selection_is_bounded_and_cannot_choose_a_vm_or_arbitrary_key(self):
+        validate_action(self.request('select_gui_window', steps=8), 'authorized')
+        for steps in (0, 9, -1, True, '2'):
+            with self.subTest(steps=steps), self.assertRaises(ValueError):
+                validate_action(self.request('select_gui_window', steps=steps), 'authorized')
+        for scenario in ('remove', 'purge'):
+            with self.assertRaises(ValueError):
+                validate_action(self.request('select_gui_window', steps=1), scenario)
+        with self.assertRaises(ValueError):
+            validate_action(self.request('select_gui_window', steps=1, target='Ubuntu'), 'authorized')
+
+    def test_native_switcher_holds_alt_across_tabs_and_always_releases_it(self):
+        for broken in (False, True):
+            events = []
+            def dispatch(*args):
+                if args[0] == 'qemu-monitor-command':
+                    key = json.loads(args[2])['arguments']['events'][0]['data']
+                    events.append(('alt', key['down']))
+                    return SimpleNamespace(stdout='{"return": {}}')
+                events.append(('tab', args[-1]))
+                if broken: raise RuntimeError('input failure')
+            with self.subTest(broken=broken), patch.object(runner.vm, 'guarded'), \
+                    patch.object(runner.vm, 'virsh', side_effect=dispatch), \
+                    patch.object(runner, 'checked'), patch.object(runner.time, 'sleep'):
+                if broken:
+                    with self.assertRaisesRegex(RuntimeError, 'input failure'):
+                        runner.handle_action({'uuid': 'owned-clone'}, Path('/unused'),
+                                             self.request('select_gui_window', steps=2), 'authorized')
+                else:
+                    runner.handle_action({'uuid': 'owned-clone'}, Path('/unused'),
+                                         self.request('select_gui_window', steps=2), 'authorized')
+            self.assertEqual(events[0], ('alt', True))
+            self.assertEqual(events[-1], ('alt', False))
+            self.assertEqual(sum(e[0] == 'tab' for e in events), 1 if broken else 2)
 
     def test_credential_keyboard_encoding_is_bounded(self):
         self.assertTrue(input_keys('BLOCKUNTU-UNINSTALL-RECOVERY-AB01'))

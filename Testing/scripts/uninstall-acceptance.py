@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import time
 
 from layer4_uninstall_contract import (SCENARIOS, CASES, cases_for, finalize, input_keys,
@@ -52,6 +53,7 @@ def collect(record, destination, scenario, baseline=False):
         'collector.log': 'sudo -n journalctl -b --no-pager -u blockuntu-p41-collector.service',
         'suite.log': 'journalctl --user -b --no-pager -u blockuntu-p41-suite',
         'gui.log': 'journalctl --user -b --no-pager -u blockuntu-acceptance-gui',
+        'activation.log': "journalctl --user -b --no-pager -u 'blockuntu-p41-present-*'",
         ('dpkg.log' if record['template'] == 'ubuntu' else 'native-package.log'): 'sudo -n /usr/bin/python3 Testing/layer3/uninstall_ops.py native-log',
     }
     if baseline:
@@ -66,7 +68,7 @@ def collect(record, destination, scenario, baseline=False):
             (destination / name).write_text(redact(answer.stdout + answer.stderr))
         except Exception as error:
             errors.append({'file': name, 'error': redact(error)})
-    for name in ('p41-gui-baseline.json', 'p41-gui-post-refusal.json',
+    for name in ('p41-focus.json', 'p41-gui-baseline.json', 'p41-gui-post-refusal.json',
                  'p41-before-uninstall.json', 'p41-after.json', 'p41-cleanup.json',
                  'p41-handoff.json', 'p41-gui-failure.json', 'p41-firefox-failure.json',
                  'p41-' + browsers_for(record['template'])[1] + '-failure.json', 'p41-cleanup-findings.json', 'p41-browser-recovery.json'):
@@ -103,11 +105,35 @@ def handle_action(record, destination, action, scenario):
     elif kind == 'keys':
         vm.virsh('send-key', record['uuid'], '--codeset', 'linux', *action['keys'])
     elif kind == 'focus_gui':
-        # The installed single-instance handler presents the existing window.
-        # The guest separately requires its original PID and ACTIVE state.
-        checked(record, 'systemd-run --user --collect --property=ExitType=cgroup '
-                '--unit=blockuntu-p41-present-' + action['id'] +
-                ' /usr/bin/gtk-launch local.blockuntu.gui')
+        # Capture launcher completion; the guest separately observes real focus.
+        unit = 'blockuntu-p41-present-' + action['id']
+        try:
+            answer = checked(record, 'systemd-run --user --wait --pipe --collect '
+                             '--property=Type=exec --property=ExitType=cgroup --unit=' + unit +
+                             ' /usr/bin/gtk-launch local.blockuntu.gui', check=False, timeout=20)
+            receipt = {'unit': unit, 'returncode': answer.returncode,
+                       'stdout': answer.stdout, 'stderr': answer.stderr}
+        except subprocess.TimeoutExpired as error:
+            receipt = {'unit': unit, 'returncode': None, 'timed_out': True,
+                       'stdout': str(error.stdout or ''), 'stderr': str(error.stderr or '')}
+        save(destination / ('activation-' + action['id'] + '.json'), receipt)
+        completion['activation_returncode'] = receipt['returncode']
+    elif kind == 'select_gui_window':
+        def alt(down):
+            event = {'execute': 'input-send-event', 'arguments': {'events': [
+                {'type': 'key', 'data': {'down': down, 'key': {'type': 'qcode', 'data': 'alt'}}}]}}
+            answer = vm.virsh('qemu-monitor-command', record['uuid'], json.dumps(event))
+            response = json.loads(answer.stdout)
+            if 'error' in response:
+                raise RuntimeError('Native switcher modifier dispatch failed: ' + str(response['error']))
+        try:
+            alt(True)
+            for _ in range(action['steps']):
+                vm.virsh('send-key', record['uuid'], '--codeset', 'linux', '--holdtime', '120', 'KEY_TAB')
+                time.sleep(0.2)
+        finally:
+            # Release the modifier even if a Tab dispatch fails mid-selection.
+            alt(False)
     else:
         credential = kind == 'type_credential'
         if credential:
