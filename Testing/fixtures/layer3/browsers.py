@@ -152,13 +152,18 @@ def wait_for_allowlist_expiry(seconds=225, rpc_timeout=None):
             time.sleep(min(1, remaining))
 
 
-def navigate(browser, url, *, window=None):
+def navigate(browser, url, *, window=None, select_window=None, report=None):
     app = APPS[browser]
+    def focus():
+        from ui_controls import focus_app
+        if select_window is None:
+            focus_app(app)
+        else:
+            focus_app(app, select_window=select_window, report=report)
     name, role = (('Search with Google or enter address', 'combo box') if browser == 'firefox'
                   else ('Address and search bar', 'entry'))
     if window is None:
-        from ui_controls import focus_app
-        focus_app(app)
+        focus()
         # A new browser can steal focus back to its document during startup.
         # Observe native address-bar selection before typing the fixture URL.
         host_action('keys', keys=['KEY_LEFTCTRL', 'KEY_L'])
@@ -169,8 +174,7 @@ def navigate(browser, url, *, window=None):
         if not window.getState().contains(pyatspi.STATE_ACTIVE):
             # Closing the GUI settings leaves the GUI in front. Chrome's
             # address-bar grabFocus alone does not raise its native window.
-            from ui_controls import focus_app
-            focus_app(app)
+            focus()
         node = wait(lambda: next((n for n in walk(window) if n.name == name and
                     n.getRoleName() == role and n.getState().contains(pyatspi.STATE_SHOWING)), None), 15)
     assert node.queryComponent().grabFocus(), 'Browser address bar did not receive focus'
