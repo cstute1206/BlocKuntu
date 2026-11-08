@@ -116,7 +116,8 @@ def combo(label):
 
 
 def focus_app(app='blockuntu-gui', *, activate=None, select_window=None, report=None):
-    if activate is not None:
+    native_selection = activate is not None or select_window is not None
+    if native_selection:
         refresh_desktop_cache()
     def current_frames():
         found = nodes(app=app, role='frame')
@@ -129,8 +130,8 @@ def focus_app(app='blockuntu-gui', *, activate=None, select_window=None, report=
     # Requery the desktop instead of polling the original frame indefinitely.
     def active():return any(n.getState().contains(pyatspi.STATE_ACTIVE)
         for n in nodes(app=app,role='frame'))
-    if active():return
-    if activate is not None:
+    if not native_selection and active():return
+    if native_selection:
         original = {frame.getApplication().get_process_id() for frame in frames}
         def observed(stage, error=None):
             if report is None:
@@ -150,7 +151,7 @@ def focus_app(app='blockuntu-gui', *, activate=None, select_window=None, report=
                                                    'pid': application.get_process_id()})
                     except Exception:
                         continue
-            report({'stage': stage, 'original_pids': sorted(original),
+            report({'app': app, 'stage': stage, 'original_pids': sorted(original),
                     'frames': [{'title': n.name, 'pid': n.getApplication().get_process_id(),
                                 'active': n.getState().contains(pyatspi.STATE_ACTIVE)} for n in current],
                     'active_windows': active_windows, 'error': error})
@@ -162,10 +163,18 @@ def focus_app(app='blockuntu-gui', *, activate=None, select_window=None, report=
             assert {frame.getApplication().get_process_id() for frame in current} == original, \
                 'Application activation replaced or duplicated the original process'
             return any(frame.getState().contains(pyatspi.STATE_ACTIVE) for frame in current)
+        if activated_original():
+            observed('already-focused')
+            return
         observed('before-activation')
-        activate()
+        if activate is not None:
+            activate()
+        else:
+            # Browser recovery must select the existing process, without a
+            # launcher that could create a replacement browser or window.
+            host_action('keys', keys=['KEY_ESC'])
         try:
-            wait(activated_original, 3)
+            wait(activated_original, 3 if activate is not None else 1)
             observed('activation-focused')
             return
         except TimeoutError:
@@ -182,8 +191,8 @@ def focus_app(app='blockuntu-gui', *, activate=None, select_window=None, report=
                     return
                 except TimeoutError:
                     observed('switch-' + str(offset) + '-unfocused')
-        observed('failed', 'Original BlocKuntu window did not become active')
-        raise TimeoutError('Original BlocKuntu window did not become active after bounded window selection')
+        observed('failed', 'Original ' + app + ' window did not become active')
+        raise TimeoutError('Original ' + app + ' window did not become active after bounded window selection')
     # GNOME can leave a newly launched window visible inside its overview.
     # Exit that shell surface before attempting native application switching.
     host_action('keys',keys=['KEY_ESC'])

@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from test_layer3_dependencies import load_fixture
+from test_layer3_ui_observation import load_controls
 
 
 class WindowNavigationTests(unittest.TestCase):
@@ -91,6 +92,97 @@ class WindowNavigationTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             browser.navigate('chrome','http://web.blockuntu.test:18080/free')
         browser.host_action.assert_called_once_with('keys',keys=['KEY_LEFTCTRL','KEY_L'])
+
+
+class BrowserRecoveryFocusTests(unittest.TestCase):
+    """Exercise real navigation/focus helpers against native MRU ordering."""
+
+    def fixture(self, *, replace_process=False, ignore_selection=False):
+        browser = load_fixture('browsers', '/unused')
+        controls = load_controls()
+        flags = SimpleNamespace(STATE_ACTIVE='active', STATE_SHOWING='showing', STATE_FOCUSED='focused')
+        controls.pyatspi = browser.pyatspi = flags
+        order = ['Firefox', 'Ubuntu', 'Google Chrome']
+        applications, frames = {}, {}
+        for pid, name in enumerate(order, 101):
+            application, frame = Mock(), Mock()
+            application.name = name
+            application.get_process_id.return_value = pid
+            application.childCount = 1
+            application.getChildAtIndex.return_value = frame
+            frame.name = name + ' window'
+            frame.getApplication.return_value = application
+            frame.getRoleName.return_value = 'frame'
+            frame.getState.return_value.contains.side_effect = lambda flag, app=name: (
+                flag == 'showing' or flag == 'active' and order[0] == app)
+            applications[name], frames[name] = application, frame
+        controls.apps.return_value = list(applications.values())
+        controls.app_name.side_effect = lambda application: application.name
+        controls.nodes = Mock(side_effect=lambda app='blockuntu-gui', **kw: [frames[app]])
+        def wait(ready, seconds):
+            value = ready()
+            if not value:
+                raise TimeoutError('Required native transition did not occur')
+            return value
+        controls.wait.side_effect = wait
+        browser.wait = wait
+        selections = []
+        def native(action, **request):
+            if action == 'keys':
+                self.assertEqual(request['keys'], ['KEY_ESC'])
+                return
+            self.assertEqual(action, 'select_gui_window')
+            offset = request['steps']
+            selections.append(offset)
+            if replace_process:
+                applications['Google Chrome'].get_process_id.return_value = 999
+            if not ignore_selection:
+                selected = order[offset % len(order)]
+                order.remove(selected)
+                order.insert(0, selected)
+        controls.host_action.side_effect = native
+        bar = Mock()
+        bar.getState.return_value.contains.side_effect = lambda flag: (
+            flag == 'showing' or flag == 'focused' and order[0] == 'Google Chrome')
+        bar.queryComponent.return_value.grabFocus.side_effect = lambda: order[0] == 'Google Chrome'
+        browser.find = Mock(return_value=bar)
+        def browser_input(action, **request):
+            self.assertEqual(order[0], 'Google Chrome', 'Input went to an unrelated application')
+        browser.host_action = Mock(side_effect=browser_input)
+        patcher = patch.dict('sys.modules', ui_controls=controls)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return browser, controls, order, selections
+
+    def test_recovery_reaches_original_browser_behind_two_other_applications(self):
+        browser, controls, order, selections = self.fixture()
+        observations = []
+        self.assertEqual(order, ['Firefox', 'Ubuntu', 'Google Chrome'])
+        browser.navigate('chrome', 'chrome://extensions',
+                         select_window=lambda offset: controls.host_action('select_gui_window', steps=offset),
+                         report=observations.append)
+        self.assertEqual(selections, [1, 2])
+        self.assertEqual(order[0], 'Google Chrome')
+        self.assertEqual(observations[-1]['stage'], 'switch-2-focused')
+        self.assertEqual(observations[-1]['original_pids'], [103])
+        self.assertEqual(observations[2]['active_windows'][0]['app'], 'Ubuntu')
+        browser.host_action.assert_any_call('type_url', url='chrome://extensions')
+
+    def test_replaced_browser_cannot_receive_recovery_input(self):
+        browser, controls, _, _ = self.fixture(replace_process=True)
+        with self.assertRaisesRegex(AssertionError, 'original process'):
+            browser.navigate('chrome', 'chrome://extensions',
+                             select_window=lambda offset: controls.host_action('select_gui_window', steps=offset))
+        browser.host_action.assert_not_called()
+
+    def test_ignored_selection_is_bounded_and_does_not_type_into_another_app(self):
+        browser, controls, order, selections = self.fixture(ignore_selection=True)
+        with self.assertRaisesRegex(TimeoutError, 'Google Chrome.*bounded window selection'):
+            browser.navigate('chrome', 'chrome://extensions',
+                             select_window=lambda offset: controls.host_action('select_gui_window', steps=offset))
+        self.assertEqual(selections, list(range(1, 9)))
+        self.assertEqual(order[0], 'Firefox')
+        browser.host_action.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

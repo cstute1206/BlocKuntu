@@ -490,11 +490,20 @@ def main():
                     browser = row['browser']
                     main = run('systemctl', '--user', 'show', 'blockuntu-test-' + browser, '-p', 'MainPID', '--value').stdout.strip()
                     observed = {'same_process': main == row['main_pid'] and main != '0',
-                                'main_pid': main, 'management_accessible': False, 'http_accessible': False, 'errors': {}}
+                                'main_pid': main, 'management_accessible': False, 'http_accessible': False,
+                                'errors': {}, 'tracebacks': {}, 'focus': []}
                     observations[browser] = observed
+                    def recovery_navigate(url, stage):
+                        def report(entry):
+                            observed['focus'].append({'at': dt.datetime.now(dt.timezone.utc).isoformat(),
+                                                      'check': stage, **entry})
+                            save(WORK / 'p41-browser-recovery.json', observations)
+                        navigate(browser, url,
+                                 select_window=lambda steps: host_action('select_gui_window', steps=steps),
+                                 report=report)
                     if observed['same_process']:
                         try:
-                            navigate(browser, 'about:addons' if browser == 'firefox' else 'chrome://extensions')
+                            recovery_navigate('about:addons' if browser == 'firefox' else 'chrome://extensions', 'management')
                             if browser == 'firefox':
                                 # about:addons can default to its discovery view.
                                 page(browser, 'Add-ons Manager', 45)
@@ -507,12 +516,14 @@ def main():
                             observed['management_accessible'] = True
                         except Exception as error:
                             observed['errors']['management'] = redact(error)
+                            observed['tracebacks']['management'] = redact(traceback.format_exc())
                         try:
-                            navigate(browser, 'http://web.blockuntu.test:18080/' + browser + '/exact/blocked')
+                            recovery_navigate('http://web.blockuntu.test:18080/' + browser + '/exact/blocked', 'http')
                             page(browser, 'BlocKuntu test route /' + browser + '/exact/blocked', 45)
                             observed['http_accessible'] = True
                         except Exception as error:
                             observed['errors']['http'] = redact(error)
+                            observed['tracebacks']['http'] = redact(traceback.format_exc())
                         host_action('screenshot', name='p41-' + browser + '-recovered')
                     else:
                         observed['errors']['process'] = 'Original browser process disappeared; no replacement launched'

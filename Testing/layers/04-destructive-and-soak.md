@@ -29,6 +29,12 @@ Never run these cases on the development host or a personal browser profile.
 | DES-UNINSTALL-006 | Inspect the system after authorized uninstall. | Units, daemon/native-host binaries, managed browser policies, Native Messaging manifests, and the BlocKuntu hosts block are removed; unrelated hosts and browser policy content remain. |
 | DES-UNINSTALL-007 | Keep a browser open during authorized GUI uninstall. | Ordinary browser-management pages remain reachable and the extension does not permanently fail-close after the native host disappears. |
 
+The P4.1 browser recovery check uses bounded native window selection before
+entering either recovery URL. It verifies the existing browser process and
+active frame, including when another application is ahead of the browser in
+the window switcher. Recovery evidence records focus stages and exception
+tracebacks; page-content and original-browser requirements remain mandatory.
+
 Arch final removal also requires a successful ALPM PreTransaction shutdown:
 all five units must be inactive or failed with no service processes remaining.
 A runtime restart barrier preserves the unconsumed authorization lease until
