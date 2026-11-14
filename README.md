@@ -84,7 +84,7 @@ The RPM helper requires a suitable Fedora build environment; the Arch Docker hel
 
 ## Testing
 
-The repository includes source tests, package validation, installed-package smoke tests, and selected VM acceptance scenarios. See [Testing](Testing/README.md) for their scope and how to run them.
+The repository includes source tests, package validation, installed-package smoke tests, and selected VM acceptance scenarios. See [Testing](Testing/README.md) for their scope and how to run them. But I would say, that they are very overengineered, so use them with caution.
 
 ## License
 
